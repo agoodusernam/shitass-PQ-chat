@@ -3,22 +3,8 @@ import socket
 import threading
 import json
 from typing import Optional
-import requests
 
 from shared import SecureChatProtocol, send_message, receive_message, create_error_message, MSG_TYPE_KEY_VERIFICATION, MSG_TYPE_KEY_EXCHANGE_RESPONSE
-
-def get_own_ip() -> str:
-    """
-    Send a request to https://api.ipify.org to get the public IP address of the server.
-    """
-    try:
-        response = requests.get("https://api.ipify.org?format=json")
-        response.raise_for_status()
-        data = response.json()
-        return data.get("ip", "localhost")
-    except requests.RequestException as e:
-        print(f"Error getting own IP: {e}")
-        return "localhost"  # Fallback to localhost if API fails
     
 
 class SecureChatServer:
