@@ -8,7 +8,7 @@ from shared import SecureChatProtocol, send_message, receive_message
 class SecureChatClient:
     """Secure chat client with end-to-end encryption."""
     
-    def __init__(self, host='localhost', port=8888):
+    def __init__(self, host='localhost', port=16384):
         self.host = host
         self.port = port
         self.socket = None
@@ -313,19 +313,19 @@ def main():
         print("Using default host: localhost")
     
     try:
-        port_input = input("Enter server port (default: 8888): ").strip()
+        port_input = input("Enter server port (default: 16384): ").strip()
         if port_input:
             try:
                 port = int(port_input)
             except ValueError:
-                print("Invalid port number, using default 8888")
-                port = 8888
+                print("Invalid port number, using default 16384")
+                port = 16384
         else:
-            port = 8888
+            port = 16384
     except EOFError:
         # Non-interactive mode, use defaults
-        port = 8888
-        print("Using default port: 8888")
+        port = 16384
+        print("Using default port: 16384")
     
     # Create and connect client
     client = SecureChatClient(host, port)

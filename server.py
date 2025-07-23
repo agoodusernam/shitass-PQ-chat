@@ -3,13 +3,28 @@ import socket
 import threading
 import json
 from typing import Optional
+import requests
 
 from shared import SecureChatProtocol, send_message, receive_message, create_error_message, MSG_TYPE_KEY_VERIFICATION, MSG_TYPE_KEY_EXCHANGE_RESPONSE
+
+def get_own_ip() -> str:
+    """
+    Send a request to https://api.ipify.org to get the public IP address of the server.
+    """
+    try:
+        response = requests.get("https://api.ipify.org?format=json")
+        response.raise_for_status()
+        data = response.json()
+        return data.get("ip", "localhost")
+    except requests.RequestException as e:
+        print(f"Error getting own IP: {e}")
+        return "localhost"  # Fallback to localhost if API fails
+    
 
 class SecureChatServer:
     """Secure chat server that handles two-client connections with end-to-end encryption."""
     
-    def __init__(self, host='localhost', port=8888):
+    def __init__(self, host='localhost', port=16384):
         self.host = host
         self.port = port
         self.clients: dict[str, 'ClientHandler'] = {}
@@ -287,10 +302,11 @@ class ClientHandler:
                 self.socket.close()
             except:
                 pass
+            
             self.server.remove_client(self.client_id)
 
 if __name__ == "__main__":
-    server = SecureChatServer()
+    server = SecureChatServer("0.0.0.0", 16384)
     try:
         server.start()
     except KeyboardInterrupt:
