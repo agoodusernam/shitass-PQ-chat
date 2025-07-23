@@ -1,124 +1,99 @@
-# Secure End-to-End Encrypted Chat Application
+# Post-Quantum E2E Encrypted Chat
 
-## Overview
+A cryptographically secure, end-to-end encrypted chat application using post-quantum cryptography (ML-KEM) for key exchange and AES-GCM for symmetric encryption. It is designed to be secure against both classical and quantum adversaries.
 
-This is a cryptographically secure, end-to-end encrypted chat application that uses post-quantum cryptography (ML-KEM) for key exchange and AES-GCM for message encryption. The application is designed to be secure against packet capture and modification attacks.
+## ✨ Features
 
-## Security Features
+-   **Quantum-Resistant Key Exchange**: Utilizes ML-KEM-1024 (a NIST PQC standard) to protect against future quantum computer attacks.
+-   **End-to-End Encryption**: Messages are encrypted on the client-side using AES-256-GCM. The server only routes encrypted data and cannot read message contents.
+-   **Forward Secrecy**: Keys are ephemeral, with a new shared secret generated for each session.
+-   **Message Integrity & Authentication**: HMAC-SHA256 ensures that messages cannot be tampered with in transit.
+-   **Replay Attack Prevention**: A monotonic message counter prevents attackers from replaying old messages.
 
-- **Post-Quantum Cryptography**: Uses ML-KEM-1024 for key exchange, providing security against quantum computer attacks
-- **End-to-End Encryption**: Messages are encrypted with AES-GCM using keys derived from the ML-KEM shared secret
-- **Message Authentication**: HMAC-SHA256 provides message authentication and integrity protection
-- **Replay Protection**: Message counters prevent replay attacks
-- **Key Derivation**: HKDF derives separate encryption and MAC keys from the shared secret
-- **Secure Transport**: Length-prefixed message protocol prevents message boundary attacks
+## 🚀 Getting Started
 
-## Architecture
+### Prerequisites
 
-### Files
+-   Python 3.9+
+-   `pip` for installing dependencies
 
-- `shared.py` - Core cryptographic protocol implementation
-- `server.py` - TCP server that routes messages between two clients
-- `client.py` - Interactive chat client with automatic key exchange
-- `a.py` / `b.py` - Original manual encryption tools (for reference)
-- `test_secure_chat.py` - Comprehensive test suite
+### Installation
 
-### Protocol Flow
+1.  Clone the repository:
+    ```bash
+    git clone <your-repo-url>
+    cd <your-repo-directory>
+    ```
 
-1. **Connection**: Two clients connect to the server
-2. **Key Exchange**: 
-   - Server initiates key exchange between clients
-   - Client 1 generates ML-KEM keypair and sends public key
-   - Client 2 receives public key, generates shared secret and ciphertext
-   - Client 1 receives ciphertext and derives the same shared secret
-3. **Secure Communication**: 
-   - Both clients derive encryption and MAC keys using HKDF
-   - Messages are encrypted with AES-GCM and authenticated with HMAC
-   - Server routes encrypted messages without being able to decrypt them
+2.  Install the required packages:
+    ```bash
+    pip install -r requirements.txt
+    ```
 
-## Usage
+### Running the Application
 
-### Running the Chat Application
+1.  **Start the server** in a terminal window. It will wait for two clients to connect.
+    ```bash
+    python server.py
+    ```
 
-1. **Start the server**:
-   ```bash
-   python server.py
-   ```
+2.  **Start the first client** in a new terminal window.
+    ```bash
+    python client.py
+    ```
 
-2. **Connect first client**:
-   ```bash
-   python client.py
-   ```
+3.  **Start the second client** in a third terminal window.
+    ```bash
+    python client.py
+    ```
 
-3. **Connect second client**:
-   ```bash
-   python client.py
-   ```
+Once both clients are connected, the key exchange will complete automatically. You can then begin sending secure messages.
 
-4. **Chat securely**: After automatic key exchange, both clients can send encrypted messages
+## 🧪 Running Tests
 
-### Running Tests
+To verify the cryptographic implementation and protocol security, run the test suite:
 
 ```bash
 python test_secure_chat.py
 ```
 
-This runs comprehensive tests including:
-- Cryptographic function tests
-- Key exchange verification
-- Security feature tests (replay protection, message authentication)
-- Integration tests
+The tests cover key exchange, encryption/decryption, message authentication, and replay protection.
 
-## Security Analysis
+## 🛠️ Architecture
 
-### Threats Addressed
+The application consists of three main components:
 
-1. **Packet Capture**: All messages are encrypted with AES-GCM using post-quantum secure keys
-2. **Packet Modification**: HMAC authentication detects any tampering
-3. **Replay Attacks**: Message counters prevent message replay
-4. **Man-in-the-Middle**: ML-KEM key exchange provides forward secrecy
-5. **Quantum Attacks**: ML-KEM is quantum-resistant
+-   `server.py`: The central server that listens for client connections and relays encrypted messages between them. It has no knowledge of the encryption keys.
+-   `client.py`: The client application that users interact with. It handles the UI, key generation, encryption, and decryption.
+-   `shared.py`: A core module containing the cryptographic protocol logic used by both the client and server for message handling and key exchange.
 
-### Assumptions
+### Protocol Flow
 
-- Server is used only for message routing and cannot decrypt messages
-- Initial key exchange assumes an insecure alternate communication method exists
-- No identity verification is performed (as specified in requirements)
-- Only two clients are supported per server instance
+1.  **Connection**: Two clients connect to the server.
+2.  **Key Exchange Initiation**: The server instructs the clients to begin the key exchange process.
+3.  **ML-KEM Exchange**:
+    -   Client A generates an ML-KEM key pair and sends its public key to Client B (via the server).
+    -   Client B uses the public key to generate a shared secret and an encapsulated ciphertext, which it sends back to Client A.
+    -   Client A decapsulates the ciphertext with its private key to derive the same shared secret.
+4.  **Secure Communication**:
+    -   Both clients use HKDF to derive encryption and MAC keys from the shared secret.
+    -   All subsequent messages are encrypted with AES-GCM and authenticated with HMAC-SHA256 before being sent.
 
-## Dependencies
+## 🔒 Security Overview
 
-- `kyber-py~=1.0.1` - ML-KEM implementation
-- `cryptography~=45.0.5` - AES-GCM and HKDF implementation
+This project is designed to be secure against a range of threats.
 
-## Technical Details
+| Threat Model                 | Mitigation                                                              |
+| ---------------------------- | ----------------------------------------------------------------------- |
+| **Eavesdropping**            | AES-256-GCM end-to-end encryption.                                      |
+| **Quantum Attack**           | ML-KEM-1024 for key exchange is resistant to quantum algorithms.        |
+| **Packet Tampering**         | HMAC-SHA256 detects any modification to messages in transit.            |
+| **Replay Attacks**           | A message counter in the authenticated data prevents message replay.    |
+| **Man-in-the-Middle (MITM)** | ML-KEM provides forward secrecy. *Note: Assumes an out-of-band method to verify public keys if identity verification is needed.* |
 
-### Encryption
+### Cryptographic Details
 
-- **Key Exchange**: ML-KEM-1024 (post-quantum secure)
-- **Symmetric Encryption**: AES-256-GCM
-- **Key Derivation**: HKDF-SHA256
-- **Message Authentication**: HMAC-SHA256
-
-### Message Format
-
-```
-[32-byte HMAC][JSON message with encrypted payload]
-```
-
-### Key Exchange Messages
-
-1. **Init**: `{"type": 1, "public_key": "<base64>"}`
-2. **Response**: `{"type": 2, "ciphertext": "<base64>"}`
-3. **Encrypted Message**: `{"type": 3, "nonce": "<base64>", "ciphertext": "<base64>"}`
-
-## Testing Results
-
-All security tests pass:
-- ✅ Key generation and exchange
-- ✅ Message encryption/decryption
-- ✅ Replay attack protection
-- ✅ Message authentication
-- ✅ End-to-end integration
-
-The application successfully provides cryptographically secure, end-to-end encrypted communication that is resistant to packet capture, modification, and quantum attacks.
+-   **Key Encapsulation**: ML-KEM-1024
+-   **Symmetric Cipher**: AES-256-GCM
+-   **Key Derivation**: HKDF with SHA-256
+-   **Message Authentication**: HMAC with SHA-256
