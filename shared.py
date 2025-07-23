@@ -28,6 +28,9 @@ class SecureChatProtocol:
         self.peer_public_key: bytes | None = None
         self.peer_key_verified = False
         self.own_public_key: bytes | None = None
+        # Perfect Forward Secrecy - Key Ratcheting
+        self.chain_key: bytes | None = None
+        self.seen_counters: set = set()  # Track seen counters for replay protection
         
     def generate_keypair(self) -> tuple[bytes, bytes]:
         """Generate ML-KEM keypair for key exchange."""
@@ -45,7 +48,43 @@ class SecureChatProtocol:
             info=b"key_derivation"
         )
         derived = hkdf.derive(shared_secret)
+        
+        # Initialize chain keys for perfect forward secrecy
+        self._initialize_chain_keys(shared_secret)
+        
         return derived[:32], derived[32:]  # encryption_key, mac_key
+    
+    def _initialize_chain_keys(self, shared_secret: bytes):
+        """Initialize chain key for perfect forward secrecy."""
+        # Derive a single chain key that both parties will use
+        chain_hkdf = HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=b"SecureChat2025",
+            info=b"chain_key_root"
+        )
+        
+        self.chain_key = chain_hkdf.derive(shared_secret)
+    
+    def _derive_message_key(self, chain_key: bytes, counter: int) -> bytes:
+        """Derive a message key from the chain key and counter."""
+        hkdf = HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=b"SecureChat2025",
+            info=f"message_key_{counter}".encode()
+        )
+        return hkdf.derive(chain_key)
+    
+    def _ratchet_chain_key(self, chain_key: bytes, counter: int) -> bytes:
+        """Advance the chain key (ratchet forward)."""
+        hkdf = HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=b"SecureChat2025",
+            info=f"chain_key_{counter}".encode()
+        )
+        return hkdf.derive(chain_key)
     
     def generate_key_fingerprint(self, public_key: bytes) -> str:
         """Generate a human-readable word-based fingerprint for a public key."""
@@ -237,65 +276,84 @@ class SecureChatProtocol:
             raise ValueError(f"Key exchange response failed: {e}")
     
     def encrypt_message(self, plaintext: str) -> bytes:
-        """Encrypt a message with authentication and replay protection."""
-        if not self.shared_key:
-            raise ValueError("No shared key established")
+        """Encrypt a message with authentication and replay protection using perfect forward secrecy."""
+        if not self.shared_key or not self.chain_key:
+            raise ValueError("No shared key or chain key established")
         
-        # Increment message counter for replay protection
         self.message_counter += 1
         
-        # Create message with counter
-        message_data = {
-            "counter": self.message_counter,
-            "text": plaintext
-        }
-        message_json = json.dumps(message_data).encode('utf-8')
+        # Derive unique message key for this message
+        message_key = self._derive_message_key(self.chain_key, self.message_counter)
         
-        # Encrypt with AES-GCM (provides built-in authentication)
-        aesgcm = AESGCM(self.encryption_key)
+        # Ratchet the chain key forward for the next message
+        self.chain_key = self._ratchet_chain_key(self.chain_key, self.message_counter)
+        
+        # Encrypt with AES-GCM using the unique message key
+        aesgcm = AESGCM(message_key)
         nonce = os.urandom(12)
-        ciphertext = aesgcm.encrypt(nonce, message_json, None)
+        ciphertext = aesgcm.encrypt(nonce, plaintext.encode('utf-8'), None)
         
-        # Create authenticated message
+        # Securely delete the message key
+        message_key = b'\x00' * len(message_key)
+        del message_key
+        
+        # Create authenticated message with counter outside the ciphertext
         encrypted_message = {
-            "version": PROTOCOL_VERSION,
-            "type": MSG_TYPE_ENCRYPTED_MESSAGE,
-            "nonce": base64.b64encode(nonce).decode('utf-8'),
+            "version":    PROTOCOL_VERSION,
+            "type":       MSG_TYPE_ENCRYPTED_MESSAGE,
+            "counter":    self.message_counter,  # Counter is now in plaintext
+            "nonce":      base64.b64encode(nonce).decode('utf-8'),
             "ciphertext": base64.b64encode(ciphertext).decode('utf-8')
         }
         
-        message_bytes = json.dumps(encrypted_message).encode('utf-8')
-        
-        # Return message directly (AES-GCM already provides authentication)
-        return message_bytes
+        return json.dumps(encrypted_message).encode('utf-8')
     
     def decrypt_message(self, data: bytes) -> str:
-        """Decrypt and authenticate a message."""
-        if not self.shared_key:
-            raise ValueError("No shared key established")
-        
+        """Decrypt and authenticate a message using perfect forward secrecy."""
+        if not self.shared_key or not self.chain_key:
+            raise ValueError("No shared key or chain key established")
+
         try:
             message = json.loads(data.decode('utf-8'))
             if message["type"] != MSG_TYPE_ENCRYPTED_MESSAGE:
                 raise ValueError("Invalid message type")
-            
+
             nonce = base64.b64decode(message["nonce"])
             ciphertext = base64.b64decode(message["ciphertext"])
-            
-            # Decrypt with AES-GCM (provides built-in authentication)
-            aesgcm = AESGCM(self.encryption_key)
+            counter = message["counter"]
+
+            # Check for replay attacks or very old messages
+            if counter <= self.peer_counter:
+                raise ValueError("Replay attack or out-of-order message detected")
+
+            # To handle message loss, ratchet the chain key forward until we "catch up"
+            # to the counter of the received message.
+            temp_chain_key = self.chain_key
+            skipped_counter = self.peer_counter
+            while skipped_counter < counter:
+                skipped_counter += 1
+                # Derive the message key for this counter step
+                message_key = self._derive_message_key(temp_chain_key, skipped_counter)
+                # Ratchet the chain key forward for the next step
+                temp_chain_key = self._ratchet_chain_key(temp_chain_key, skipped_counter)
+
+            # Now, message_key is the key for the received message (with 'counter'),
+            # and temp_chain_key is the next chain key.
+            aesgcm = AESGCM(message_key)
             decrypted_data = aesgcm.decrypt(nonce, ciphertext, None)
-            
-            # Parse decrypted message
-            message_data = json.loads(decrypted_data.decode('utf-8'))
-            
-            # Check counter for replay protection
-            if message_data["counter"] <= self.peer_counter:
-                raise ValueError("Replay attack detected")
-            
-            self.peer_counter = message_data["counter"]
-            return message_data["text"]
-            
+
+            # If decryption is successful, commit the new state
+            self.chain_key = temp_chain_key
+            self.peer_counter = counter
+
+            # Securely delete the message key
+            message_key = b'\x00' * len(message_key)
+            del message_key
+
+            return decrypted_data.decode('utf-8')
+
+        except ValueError as e:
+            raise e
         except Exception as e:
             raise ValueError(f"Decryption failed: {e}")
 
