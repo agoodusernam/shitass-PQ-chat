@@ -4,7 +4,6 @@ import os
 import json
 import struct
 import hashlib
-import hmac
 from kyber_py.ml_kem import ML_KEM_1024
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -356,6 +355,99 @@ class SecureChatProtocol:
             raise e
         except Exception as e:
             raise ValueError(f"Decryption failed: {e}")
+    
+    # High-level wrapper methods for GUI client compatibility
+    def initiate_key_exchange(self) -> bytes:
+        """Initiate key exchange by generating keypair and creating init message."""
+        # Generate keypair and store private key
+        public_key, self.private_key = self.generate_keypair()
+        
+        # Create key exchange init message
+        return self.create_key_exchange_init(public_key)
+    
+    def handle_key_exchange_init(self, message_data: bytes) -> bytes:
+        """Handle key exchange initiation from peer and return response."""
+        # Process the init message and get shared secret + ciphertext
+        shared_secret, ciphertext = self.process_key_exchange_init(message_data)
+        
+        # Create and return the response message
+        return self.create_key_exchange_response(ciphertext)
+    
+    def handle_key_exchange_response(self, message_data: bytes) -> bytes:
+        """Handle key exchange response from peer and return completion message."""
+        if not hasattr(self, 'private_key'):
+            raise ValueError("No private key available for key exchange response")
+        
+        # Process the response to get shared secret
+        shared_secret = self.process_key_exchange_response(message_data, self.private_key)
+        
+        # Create completion message
+        complete_message = {
+            "version": PROTOCOL_VERSION,
+            "type": "key_exchange_complete"
+        }
+        return json.dumps(complete_message).encode('utf-8')
+    
+    def start_key_verification(self) -> bytes:
+        """Start key verification process and return verification request."""
+        if not self.shared_key:
+            raise ValueError("No shared key established for verification")
+        
+        # Generate session fingerprint words
+        session_fingerprint = self.generate_session_fingerprint()
+        words = session_fingerprint.split()
+        
+        # Create verification request message
+        verification_request = {
+            "version": PROTOCOL_VERSION,
+            "type": MSG_TYPE_KEY_VERIFICATION,
+            "verification_type": "verification_request",
+            "words": words
+        }
+        return json.dumps(verification_request).encode('utf-8')
+    
+    def handle_key_verification_message(self, message_data: bytes) -> dict:
+        """Handle key verification message and return verification info."""
+        try:
+            message = json.loads(message_data.decode('utf-8'))
+            
+            if message["type"] != MSG_TYPE_KEY_VERIFICATION:
+                raise ValueError("Invalid message type for key verification")
+            
+            verification_type = message.get("verification_type")
+            
+            if verification_type == "verification_request":
+                # Return the words for user confirmation
+                return {
+                    "type": "verification_request",
+                    "words": message["words"]
+                }
+            elif verification_type == "verification_response":
+                # Process peer's verification response
+                peer_verified = message["verified"]
+                return {
+                    "type": "verification_response",
+                    "verified": peer_verified
+                }
+            else:
+                raise ValueError(f"Unknown verification type: {verification_type}")
+                
+        except Exception as e:
+            raise ValueError(f"Failed to handle key verification message: {e}")
+    
+    def confirm_key_verification(self, verified: bool) -> bytes:
+        """Confirm key verification result and return response message."""
+        # Update local verification status
+        self.verify_peer_key(verified)
+        
+        # Create verification response message
+        verification_response = {
+            "version": PROTOCOL_VERSION,
+            "type": MSG_TYPE_KEY_VERIFICATION,
+            "verification_type": "verification_response",
+            "verified": verified
+        }
+        return json.dumps(verification_response).encode('utf-8')
 
 def create_error_message(error_text: str) -> bytes:
     """Create an error message."""

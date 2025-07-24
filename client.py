@@ -17,6 +17,7 @@ class SecureChatClient:
         self.key_exchange_complete = False
         self.verification_complete = False
         self.username = ""
+        self.receive_thread = None
         
     def connect(self):
         """Connect to the chat server."""
@@ -29,9 +30,9 @@ class SecureChatClient:
             print("Waiting for another user to connect...")
             
             # Start receiving thread
-            receive_thread = threading.Thread(target=self.receive_messages)
-            receive_thread.daemon = True
-            receive_thread.start()
+            self.receive_thread = threading.Thread(target=self.receive_messages)
+            self.receive_thread.daemon = False  # Non-daemon thread for proper cleanup
+            self.receive_thread.start()
             
             return True
             
@@ -295,6 +296,14 @@ class SecureChatClient:
                     self.socket.close()
             except:
                 pass
+            
+            # Wait for receive thread to finish cleanly
+            if self.receive_thread and self.receive_thread.is_alive():
+                try:
+                    self.receive_thread.join(timeout=2.0)  # Wait up to 2 seconds
+                except:
+                    pass
+            
             print("\nDisconnected from server.")
 
 def main():

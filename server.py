@@ -110,6 +110,7 @@ class SecureChatServer:
             if client_id != sender_id and client_handler.is_connected():
                 try:
                     send_message(client_handler.socket, message_data)
+                    print("Message routed from {} to {}".format(sender_id, client_id))
                 except Exception as e:
                     print(f"Failed to route message to {client_id}: {e}")
                     client_handler.disconnect()
