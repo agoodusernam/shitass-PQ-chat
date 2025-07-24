@@ -1,9 +1,14 @@
-# client.py - Secure chat client
+"""
+Secure Chat Client with End-to-End Encryption
+It uses KRYSTALS KYBER protocol for secure key exchange and message encryption.
+"""
+# pylint: disable=trailing-whitespace
 import socket
 import threading
 import json
 import sys
-from shared import SecureChatProtocol, send_message, receive_message
+from shared import SecureChatProtocol, send_message, receive_message, MSG_TYPE_FILE_METADATA, \
+    MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT, MSG_TYPE_FILE_CHUNK, MSG_TYPE_FILE_COMPLETE
 
 class SecureChatClient:
     """Secure chat client with end-to-end encryption."""
@@ -18,6 +23,10 @@ class SecureChatClient:
         self.verification_complete = False
         self.username = ""
         self.receive_thread = None
+        
+        # File transfer state
+        self.pending_file_transfers = {}  # Track outgoing file transfers
+        self.active_file_metadata = {}    # Track incoming file metadata
         
     def connect(self):
         """Connect to the chat server."""
@@ -81,6 +90,16 @@ class SecureChatClient:
                     print(f"\nServer error: {message.get('error', 'Unknown error')}")
                 elif message_type == 5:  # MSG_TYPE_KEY_VERIFICATION
                     self.handle_key_verification_message(message_data)
+                elif message_type == MSG_TYPE_FILE_METADATA:
+                    self.handle_file_metadata(message_data)
+                elif message_type == MSG_TYPE_FILE_ACCEPT:
+                    self.handle_file_accept(message_data)
+                elif message_type == MSG_TYPE_FILE_REJECT:
+                    self.handle_file_reject(message_data)
+                elif message_type == MSG_TYPE_FILE_CHUNK:
+                    self.handle_file_chunk(message_data)
+                elif message_type == MSG_TYPE_FILE_COMPLETE:
+                    self.handle_file_complete(message_data)
                 elif message.get("type") == "key_exchange_complete":
                     self.handle_key_exchange_complete(message)
                 elif message.get("type") == "initiate_key_exchange":
@@ -113,7 +132,7 @@ class SecureChatClient:
     def handle_key_exchange_init(self, message_data: bytes):
         """Handle key exchange initiation from another client."""
         try:
-            shared_secret, ciphertext = self.protocol.process_key_exchange_init(message_data)
+            _, ciphertext = self.protocol.process_key_exchange_init(message_data)
             response = self.protocol.create_key_exchange_response(ciphertext)
             
             # Send response back through server
@@ -126,7 +145,7 @@ class SecureChatClient:
         """Handle key exchange response from another client."""
         try:
             if hasattr(self, 'private_key'):
-                shared_secret = self.protocol.process_key_exchange_response(message_data, self.private_key)
+                self.protocol.process_key_exchange_response(message_data, self.private_key)
                 print("Key exchange completed successfully.")
             else:
                 print("Received key exchange response but no private key found")
@@ -163,9 +182,9 @@ class SecureChatClient:
                     if response in ['yes', 'y']:
                         self.confirm_key_verification(True)
                         break
-                    elif response in ['no', 'n']:
+                    if response in ['no', 'n']:
                         self.confirm_key_verification(False)
-                        break
+                        
                     else:
                         print("Please enter 'yes', 'y' or 'no', 'n'")
                 except (EOFError, KeyboardInterrupt):
@@ -247,7 +266,198 @@ class SecureChatClient:
             
         except Exception as e:
             print(f"Failed to send message: {e}")
-            return False
+    
+    def send_file(self, file_path: str):
+        """Send a file to the other client."""
+        try:
+            if not self.verification_complete:
+                print("Cannot send file: Key verification not complete")
+                return
+            
+            # Create file metadata message
+            metadata_msg = self.protocol.create_file_metadata_message(file_path)
+            
+            # Store file path for later sending
+            metadata = self.protocol.process_file_metadata(metadata_msg)
+            transfer_id = metadata["transfer_id"]
+            self.pending_file_transfers[transfer_id] = {
+                "file_path": file_path,
+                "metadata": metadata
+            }
+            
+            # Send metadata to peer
+            send_message(self.socket, metadata_msg)
+            print(f"File transfer request sent: {metadata['filename']} ({metadata['file_size']} bytes)")
+            
+        except Exception as e:
+            print(f"Failed to send file: {e}")
+    
+    def handle_file_metadata(self, message_data: bytes):
+        """Handle incoming file metadata."""
+        try:
+            metadata = self.protocol.process_file_metadata(message_data)
+            transfer_id = metadata["transfer_id"]
+            
+            # Store metadata for potential acceptance
+            self.active_file_metadata[transfer_id] = metadata
+            
+            # Prompt user for acceptance
+            print(f"\nIncoming file transfer:")
+            print(f"  Filename: {metadata['filename']}")
+            print(f"  Size: {metadata['file_size']} bytes")
+            print(f"  Chunks: {metadata['total_chunks']}")
+            
+            while True:
+                try:
+                    response = input("Accept file? (yes/no): ").lower().strip()
+                    if response in ['yes', 'y']:
+                        # Send acceptance
+                        accept_msg = self.protocol.create_file_accept_message(transfer_id)
+                        send_message(self.socket, accept_msg)
+                        print("File transfer accepted. Waiting for file...")
+                        break
+                    elif response in ['no', 'n']:
+                        # Send rejection
+                        reject_msg = self.protocol.create_file_reject_message(transfer_id)
+                        send_message(self.socket, reject_msg)
+                        print("File transfer rejected.")
+                        del self.active_file_metadata[transfer_id]
+                        break
+                    else:
+                        print("Please enter 'yes' or 'no'")
+                except (EOFError, KeyboardInterrupt):
+                    # Send rejection on interrupt
+                    reject_msg = self.protocol.create_file_reject_message(transfer_id)
+                    send_message(self.socket, reject_msg)
+                    print("File transfer rejected.")
+                    del self.active_file_metadata[transfer_id]
+                    break
+                    
+        except Exception as e:
+            print(f"Error handling file metadata: {e}")
+    
+    def handle_file_accept(self, message_data: bytes):
+        """Handle file acceptance from peer."""
+        try:
+            message = json.loads(message_data.decode('utf-8'))
+            transfer_id = message["transfer_id"]
+            
+            if transfer_id not in self.pending_file_transfers:
+                print("Received acceptance for unknown file transfer")
+                return
+            
+            transfer_info = self.pending_file_transfers[transfer_id]
+            file_path = transfer_info["file_path"]
+            
+            print(f"File transfer accepted. Sending {transfer_info['metadata']['filename']}...")
+            
+            # Start sending file chunks
+            self._send_file_chunks(transfer_id, file_path)
+            
+        except Exception as e:
+            print(f"Error handling file acceptance: {e}")
+    
+    def handle_file_reject(self, message_data: bytes):
+        """Handle file rejection from peer."""
+        try:
+            message = json.loads(message_data.decode('utf-8'))
+            transfer_id = message["transfer_id"]
+            reason = message.get("reason", "Unknown reason")
+            
+            if transfer_id in self.pending_file_transfers:
+                filename = self.pending_file_transfers[transfer_id]["metadata"]["filename"]
+                print(f"File transfer rejected: {filename} - {reason}")
+                del self.pending_file_transfers[transfer_id]
+            
+        except Exception as e:
+            print(f"Error handling file rejection: {e}")
+    
+    def handle_file_chunk(self, message_data: bytes):
+        """Handle incoming file chunk."""
+        try:
+            chunk_info = self.protocol.process_file_chunk(message_data)
+            transfer_id = chunk_info["transfer_id"]
+            
+            if transfer_id not in self.active_file_metadata:
+                print("Received chunk for unknown file transfer")
+                return
+            
+            metadata = self.active_file_metadata[transfer_id]
+            
+            # Add chunk to protocol buffer
+            is_complete = self.protocol.add_file_chunk(
+                transfer_id,
+                chunk_info["chunk_index"],
+                chunk_info["chunk_data"],
+                metadata["total_chunks"]
+            )
+            
+            # Show progress
+            received_chunks = len(self.protocol.received_chunks.get(transfer_id, {}))
+            progress = (received_chunks / metadata["total_chunks"]) * 100
+            print(f"Receiving {metadata['filename']}: {progress:.1f}% ({received_chunks}/{metadata['total_chunks']} chunks)")
+            
+            if is_complete:
+                # Reassemble file
+                import os
+                output_path = os.path.join(os.getcwd(), metadata["filename"])
+                
+                # Handle filename conflicts
+                counter = 1
+                base_name, ext = os.path.splitext(metadata["filename"])
+                while os.path.exists(output_path):
+                    output_path = os.path.join(os.getcwd(), f"{base_name}_{counter}{ext}")
+                    counter += 1
+                
+                try:
+                    self.protocol.reassemble_file(transfer_id, output_path, metadata["file_hash"])
+                    print(f"File received successfully: {output_path}")
+                    
+                    # Send completion message
+                    complete_msg = self.protocol.create_file_complete_message(transfer_id)
+                    send_message(self.socket, complete_msg)
+                    
+                except Exception as e:
+                    print(f"File reassembly failed: {e}")
+                
+                # Clean up
+                del self.active_file_metadata[transfer_id]
+            
+        except Exception as e:
+            print(f"Error handling file chunk: {e}")
+    
+    def handle_file_complete(self, message_data: bytes):
+        """Handle file transfer completion notification."""
+        try:
+            message = json.loads(message_data.decode('utf-8'))
+            transfer_id = message["transfer_id"]
+            
+            if transfer_id in self.pending_file_transfers:
+                filename = self.pending_file_transfers[transfer_id]["metadata"]["filename"]
+                print(f"File transfer completed: {filename}")
+                del self.pending_file_transfers[transfer_id]
+            
+        except Exception as e:
+            print(f"Error handling file completion: {e}")
+    
+    def _send_file_chunks(self, transfer_id: str, file_path: str):
+        """Send file chunks to peer."""
+        try:
+            chunks = self.protocol.chunk_file(file_path)
+            total_chunks = len(chunks)
+            
+            for i, chunk in enumerate(chunks):
+                chunk_msg = self.protocol.create_file_chunk_message(transfer_id, i, chunk)
+                send_message(self.socket, chunk_msg)
+                
+                # Show progress
+                progress = ((i + 1) / total_chunks) * 100
+                print(f"Sending: {progress:.1f}% ({i + 1}/{total_chunks} chunks)")
+            
+            print("File chunks sent successfully.")
+            
+        except Exception as e:
+            print(f"Error sending file chunks: {e}")
     
     def start_chat(self):
         """Start the interactive chat interface."""
@@ -257,6 +467,12 @@ class SecureChatClient:
             
         print("Secure Chat Client")
         print("==================")
+        print("Commands:")
+        print("  /quit - Exit the chat")
+        print("  /verify - Start key verification")
+        print("  /file <path> - Send a file")
+        print("  /help - Show this help message")
+        print()
         
         try:
             while self.connected:
@@ -267,6 +483,18 @@ class SecureChatClient:
                             break
                         elif message.lower() == '/verify':
                             self.start_key_verification()
+                        elif message.lower() == '/help':
+                            print("Commands:")
+                            print("  /quit - Exit the chat")
+                            print("  /verify - Start key verification")
+                            print("  /file <path> - Send a file")
+                            print("  /help - Show this help message")
+                        elif message.lower().startswith('/file '):
+                            file_path = message[6:].strip()
+                            if file_path:
+                                self.send_file(file_path)
+                            else:
+                                print("Usage: /file <path>")
                         elif message.strip():
                             if self.send_message(message):
                                 if self.protocol.is_peer_key_verified():
@@ -352,3 +580,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    

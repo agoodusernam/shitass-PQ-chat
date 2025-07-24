@@ -4,6 +4,7 @@ import os
 import json
 import struct
 import hashlib
+
 from kyber_py.ml_kem import ML_KEM_1024
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -16,20 +17,45 @@ MSG_TYPE_KEY_EXCHANGE_RESPONSE = 2
 MSG_TYPE_ENCRYPTED_MESSAGE = 3
 MSG_TYPE_ERROR = 4
 MSG_TYPE_KEY_VERIFICATION = 5
+MSG_TYPE_FILE_METADATA = 6
+MSG_TYPE_FILE_ACCEPT = 7
+MSG_TYPE_FILE_REJECT = 8
+MSG_TYPE_FILE_CHUNK = 9
+MSG_TYPE_FILE_COMPLETE = 10
+
+# File transfer constants
+FILE_CHUNK_SIZE = 64 * 1024  # 32KB chunks
+
+def bytes_to_human_readable(size: int) -> str:
+    """Convert bytes to a human-readable format."""
+    if size < 1024:
+        return f"{size} B"
+    elif size < 1024**2:
+        return f"{size / 1024:.1f} KB"
+    elif size < 1024**3:
+        return f"{size / 1024**2:.1f} MB"
+    else:
+        return f"{size / 1024**3:.1f} GB"
 
 class SecureChatProtocol:
-    """Handles the secure chat protocol including key exchange and message encryption."""
+    """
+    SecureChatProtocol - Implements the cryptographic protocol for secure chat using ML-KEM and AES-GCM.
+    """
     
     def __init__(self):
         self.shared_key: bytes | None = None
-        self.message_counter = 0
-        self.peer_counter = 0
+        self.message_counter: int = 0
+        self.peer_counter: int = 0
         self.peer_public_key: bytes | None = None
         self.peer_key_verified = False
         self.own_public_key: bytes | None = None
         # Perfect Forward Secrecy - Key Ratcheting
         self.chain_key: bytes | None = None
         self.seen_counters: set = set()  # Track seen counters for replay protection
+        
+        # File transfer state
+        self.file_transfers: dict = {}  # Track ongoing file transfers
+        self.received_chunks: dict = {}  # Buffer for received file chunks
         
     def generate_keypair(self) -> tuple[bytes, bytes]:
         """Generate ML-KEM keypair for key exchange."""
@@ -288,9 +314,9 @@ class SecureChatProtocol:
         self.chain_key = self._ratchet_chain_key(self.chain_key, self.message_counter)
         
         # Encrypt with AES-GCM using the unique message key
-        aesgcm = AESGCM(message_key)
-        nonce = os.urandom(12)
-        ciphertext = aesgcm.encrypt(nonce, plaintext.encode('utf-8'), None)
+        aesgcm: AESGCM = AESGCM(message_key)
+        nonce: bytes = os.urandom(12)
+        ciphertext: bytes = aesgcm.encrypt(nonce, plaintext.encode('utf-8'), None)
         
         # Securely delete the message key
         message_key = b'\x00' * len(message_key)
@@ -448,6 +474,156 @@ class SecureChatProtocol:
             "verified": verified
         }
         return json.dumps(verification_response).encode('utf-8')
+    
+    # File transfer methods
+    def create_file_metadata_message(self, file_path: str) -> bytes:
+        """Create a file metadata message for file transfer initiation."""
+        import os
+        
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"File not found: {file_path}")
+        
+        file_size = os.path.getsize(file_path)
+        file_name = os.path.basename(file_path)
+        
+        # Calculate file hash for integrity verification
+        file_hash = hashlib.sha256()
+        with open(file_path, 'rb') as f:
+            while chunk := f.read(8192):
+                file_hash.update(chunk)
+        
+        # Generate unique transfer ID
+        transfer_id = hashlib.sha256(f"{file_name}{file_size}{file_hash.hexdigest()}".encode()).hexdigest()[:16]
+        
+        metadata = {
+            "version": PROTOCOL_VERSION,
+            "type": MSG_TYPE_FILE_METADATA,
+            "transfer_id": transfer_id,
+            "filename": file_name,
+            "file_size": file_size,
+            "file_hash": file_hash.hexdigest(),
+            "total_chunks": (file_size + FILE_CHUNK_SIZE - 1) // FILE_CHUNK_SIZE
+        }
+        
+        return json.dumps(metadata).encode('utf-8')
+    
+    def create_file_accept_message(self, transfer_id: str) -> bytes:
+        """Create a file acceptance message."""
+        message = {
+            "version": PROTOCOL_VERSION,
+            "type": MSG_TYPE_FILE_ACCEPT,
+            "transfer_id": transfer_id
+        }
+        return json.dumps(message).encode('utf-8')
+    
+    def create_file_reject_message(self, transfer_id: str, reason: str = "User declined") -> bytes:
+        """Create a file rejection message."""
+        message = {
+            "version": PROTOCOL_VERSION,
+            "type": MSG_TYPE_FILE_REJECT,
+            "transfer_id": transfer_id,
+            "reason": reason
+        }
+        return json.dumps(message).encode('utf-8')
+    
+    def create_file_chunk_message(self, transfer_id: str, chunk_index: int, chunk_data: bytes) -> bytes:
+        """Create a file chunk message."""
+        message = {
+            "version": PROTOCOL_VERSION,
+            "type": MSG_TYPE_FILE_CHUNK,
+            "transfer_id": transfer_id,
+            "chunk_index": chunk_index,
+            "chunk_data": base64.b64encode(chunk_data).decode('utf-8')
+        }
+        return json.dumps(message).encode('utf-8')
+    
+    def create_file_complete_message(self, transfer_id: str) -> bytes:
+        """Create a file transfer completion message."""
+        message = {
+            "version": PROTOCOL_VERSION,
+            "type": MSG_TYPE_FILE_COMPLETE,
+            "transfer_id": transfer_id
+        }
+        return json.dumps(message).encode('utf-8')
+    
+    def chunk_file(self, file_path: str) -> list[bytes]:
+        """Split a file into chunks for transmission."""
+        chunks = []
+        with open(file_path, 'rb') as f:
+            while chunk := f.read(FILE_CHUNK_SIZE):
+                chunks.append(chunk)
+        return chunks
+    
+    def process_file_metadata(self, data: bytes) -> dict:
+        """Process a file metadata message."""
+        try:
+            message = json.loads(data.decode('utf-8'))
+            if message["type"] != MSG_TYPE_FILE_METADATA:
+                raise ValueError("Invalid message type")
+            
+            return {
+                "transfer_id": message["transfer_id"],
+                "filename": message["filename"],
+                "file_size": message["file_size"],
+                "file_hash": message["file_hash"],
+                "total_chunks": message["total_chunks"]
+            }
+        except Exception as e:
+            raise ValueError(f"File metadata processing failed: {e}")
+    
+    def process_file_chunk(self, data: bytes) -> dict:
+        """Process a file chunk message."""
+        try:
+            message = json.loads(data.decode('utf-8'))
+            if message["type"] != MSG_TYPE_FILE_CHUNK:
+                raise ValueError("Invalid message type")
+            
+            chunk_data = base64.b64decode(message["chunk_data"])
+            
+            return {
+                "transfer_id": message["transfer_id"],
+                "chunk_index": message["chunk_index"],
+                "chunk_data": chunk_data
+            }
+        except Exception as e:
+            raise ValueError(f"File chunk processing failed: {e}")
+    
+    def add_file_chunk(self, transfer_id: str, chunk_index: int, chunk_data: bytes, total_chunks: int) -> bool:
+        """Add a received file chunk and return True if file is complete."""
+        if transfer_id not in self.received_chunks:
+            self.received_chunks[transfer_id] = {}
+        
+        self.received_chunks[transfer_id][chunk_index] = chunk_data
+        
+        # Check if all chunks are received
+        return len(self.received_chunks[transfer_id]) == total_chunks
+    
+    def reassemble_file(self, transfer_id: str, output_path: str, expected_hash: str) -> bool:
+        """Reassemble file chunks and verify integrity."""
+        if transfer_id not in self.received_chunks:
+            raise ValueError(f"No chunks found for transfer {transfer_id}")
+        
+        chunks = self.received_chunks[transfer_id]
+        
+        # Sort chunks by index and reassemble
+        sorted_chunks = [chunks[i] for i in sorted(chunks.keys())]
+        
+        # Write file and calculate hash
+        file_hash = hashlib.sha256()
+        with open(output_path, 'wb') as f:
+            for chunk in sorted_chunks:
+                f.write(chunk)
+                file_hash.update(chunk)
+        
+        # Verify file integrity
+        if file_hash.hexdigest() != expected_hash:
+            os.remove(output_path)  # Remove corrupted file
+            raise ValueError("File integrity check failed")
+        
+        # Clean up chunks from memory
+        del self.received_chunks[transfer_id]
+        
+        return True
 
 def create_error_message(error_text: str) -> bytes:
     """Create an error message."""
