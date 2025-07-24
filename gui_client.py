@@ -28,6 +28,11 @@ class ChatGUI:
         self.client = None
         self.connected = False
 
+        # Ephemeral mode state
+        self.ephemeral_mode = False
+        self.ephemeral_messages = {}  # Track messages with timestamps for removal
+        self.message_counter = 0  # Counter for unique message IDs
+
         # Create GUI elements
         self.create_widgets()
 
@@ -106,6 +111,15 @@ class ChatGUI:
         self.message_entry.bind("<Return>", self.send_message)
         self.message_entry.bind("<KeyPress>", self.on_key_press)
 
+        # Ephemeral mode button (with gap before Send File)
+        self.ephemeral_btn = tk.Button(
+            input_frame, text="⏱️ Ephemeral", command=self.toggle_ephemeral_mode,
+            bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT, # type: ignore
+            activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
+            font=("Consolas", 9)
+        )
+        self.ephemeral_btn.pack(side=tk.RIGHT, padx=(0, 15)) # type: ignore
+
         # Send File button
         self.send_file_btn = tk.Button(
             input_frame, text="Send File", command=self.send_file,
@@ -126,15 +140,30 @@ class ChatGUI:
         self.message_entry.config(state=tk.DISABLED) # type: ignore
         self.send_btn.config(state=tk.DISABLED) # type: ignore
         self.send_file_btn.config(state=tk.DISABLED) # type: ignore
+        self.ephemeral_btn.config(state=tk.DISABLED) # type: ignore
+        
+        # Start ephemeral message cleanup thread
+        self.start_ephemeral_cleanup()
 
     def setup_output_redirection(self):
         """Setup output redirection to capture print statements."""
         self.output_buffer = io.StringIO()
 
-    def append_to_chat(self, text):
+    def append_to_chat(self, text, is_message=False):
         """Append text to the chat display."""
         self.chat_display.config(state=tk.NORMAL) # type: ignore
-        self.chat_display.insert(tk.END, text + "\n")
+        
+        # If ephemeral mode is enabled and this is a message, track it
+        if self.ephemeral_mode and is_message:
+            self.message_counter += 1
+            message_id = f"msg_{self.message_counter}"
+            import time
+            self.ephemeral_messages[message_id] = time.time()
+            # Add invisible marker for tracking
+            self.chat_display.insert(tk.END, f"{text} <!-- {message_id} -->\n")
+        else:
+            self.chat_display.insert(tk.END, text + "\n")
+        
         self.chat_display.see(tk.END)
         self.chat_display.config(state=tk.DISABLED) # type: ignore
 
@@ -192,6 +221,7 @@ class ChatGUI:
         self.message_entry.config(state=tk.NORMAL) # type: ignore
         self.send_btn.config(state=tk.NORMAL) # type: ignore
         self.send_file_btn.config(state=tk.NORMAL) # type: ignore
+        self.ephemeral_btn.config(state=tk.NORMAL) # type: ignore
         self.message_entry.focus()
         self.update_status("Connected, waiting for other client", "#ffff00")  # Yellow for waiting
 
@@ -300,11 +330,11 @@ Do the fingerprints match?"""
         # Send the message
         try:
             if self.client.send_message(message):
-                # Display the sent message
+                # Display the sent message with ephemeral tracking
                 if hasattr(self.client, 'protocol') and self.client.protocol.is_peer_key_verified():
-                    self.append_to_chat(f"You: {message}")
+                    self.append_to_chat(f"You: {message}", is_message=True)
                 else:
-                    self.append_to_chat(f"You (unverified): {message}")
+                    self.append_to_chat(f"You (unverified): {message}", is_message=True)
             else:
                 self.append_to_chat("Failed to send message")
 
@@ -359,7 +389,81 @@ Do the fingerprints match?"""
             self.disconnect_from_server()
         self.root.destroy()
 
+    def start_ephemeral_cleanup(self):
+        """Start the background thread to clean up ephemeral messages."""
+        def cleanup_thread():
+            import time
+            while True:
+                try:
+                    if self.ephemeral_mode and self.ephemeral_messages:
+                        current_time = time.time()
+                        # Find messages older than 30 seconds
+                        expired_message_ids = []
+                        for message_id, timestamp in self.ephemeral_messages.items():
+                            if current_time - timestamp >= 30.0:
+                                expired_message_ids.append(message_id)
+                        
+                        # Remove expired messages
+                        if expired_message_ids:
+                            self.root.after(0, lambda: self.remove_ephemeral_messages(expired_message_ids))
+                    
+                    time.sleep(1.0)  # Check every second
+                except Exception as e:
+                    # Silently continue on errors to avoid breaking the cleanup thread
+                    pass
+        
+        threading.Thread(target=cleanup_thread, daemon=True).start()
 
+    def toggle_ephemeral_mode(self):
+        """Toggle ephemeral mode on/off."""
+        self.ephemeral_mode = not self.ephemeral_mode
+        
+        if self.ephemeral_mode:
+            # Enable ephemeral mode
+            self.ephemeral_btn.config(bg="#ff6b6b", fg="#ffffff", text="⏱️ Ephemeral ON") # type: ignore
+            self.append_to_chat("🔥 Ephemeral mode enabled - messages will disappear after 30 seconds", is_message=True)
+        else:
+            # Disable ephemeral mode
+            self.ephemeral_btn.config(bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, text="⏱️ Ephemeral") # type: ignore
+            # Clear all ephemeral messages
+            self.ephemeral_messages.clear()
+
+    def remove_ephemeral_messages(self, message_ids):
+        """Remove ephemeral messages from the chat display."""
+        try:
+            # Get all chat content
+            self.chat_display.config(state=tk.NORMAL) # type: ignore
+            content = self.chat_display.get("1.0", tk.END)
+            lines = content.split('\n')
+            
+            # Remove expired messages (they're tagged with message IDs in comments)
+            filtered_lines = []
+            for line in lines:
+                should_keep = True
+                for message_id in message_ids:
+                    if f"<!-- {message_id} -->" in line:
+                        should_keep = False
+                        break
+                # Only keep non-empty lines to eliminate gaps
+                if should_keep and line.strip():
+                    filtered_lines.append(line)
+            
+            # Update chat display with no gaps
+            self.chat_display.delete("1.0", tk.END)
+            if filtered_lines:
+                self.chat_display.insert("1.0", '\n'.join(filtered_lines) + '\n')
+            self.chat_display.see(tk.END)
+            self.chat_display.config(state=tk.DISABLED) # type: ignore
+            
+            # Remove from tracking dict
+            for message_id in message_ids:
+                self.ephemeral_messages.pop(message_id, None)
+                
+        except Exception as e:
+            # If removal fails, just clean up the tracking dict
+            for message_id in message_ids:
+                self.ephemeral_messages.pop(message_id, None)
+    
 class GUISecureChatClient(SecureChatClient):
     """Extended SecureChatClient that works with GUI."""
 
@@ -374,7 +478,7 @@ class GUISecureChatClient(SecureChatClient):
         try:
             decrypted_text = self.protocol.decrypt_message(message_data)
             if self.gui:
-                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Other user: {decrypted_text}"))
+                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Other user: {decrypted_text}", is_message=True))
             else:
                 print(f"\nOther user: {decrypted_text}")
 
@@ -424,6 +528,44 @@ class GUISecureChatClient(SecureChatClient):
         # the receive thread with console input. The GUI handles verification
         # through the monitoring thread and verification dialogue.
         pass
+    
+    def handle_key_exchange_reset(self, message_data: bytes):
+        """Handle key exchange reset message - override to provide GUI feedback."""
+        try:
+            import json
+            message = json.loads(message_data.decode('utf-8'))
+            reset_message = message.get("message", "Key exchange reset")
+            
+            # Reset client state
+            self.key_exchange_complete = False
+            self.verification_complete = False
+            self.protocol.reset_key_exchange()
+            
+            # Reset GUI-specific verification flags
+            if hasattr(self, 'verification_started'):
+                delattr(self, 'verification_started')
+            
+            # Clear any pending file transfers
+            self.pending_file_transfers.clear()
+            self.active_file_metadata.clear()
+            
+            # Update GUI
+            if self.gui:
+                self.gui.root.after(0, lambda: self.gui.update_status("Key exchange reset - waiting for new client", "#ff6b6b"))
+                self.gui.root.after(0, lambda: self.gui.append_to_chat("⚠️ KEY EXCHANGE RESET"))
+                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Reason: {reset_message}"))
+                self.gui.root.after(0, lambda: self.gui.append_to_chat("The secure session has been terminated."))
+                self.gui.root.after(0, lambda: self.gui.append_to_chat("Waiting for a new client to connect..."))
+                self.gui.root.after(0, lambda: self.gui.append_to_chat("A new key exchange will start automatically."))
+            else:
+                # Fallback to console behavior
+                super().handle_key_exchange_reset(message_data)
+                
+        except Exception as e:
+            if self.gui:
+                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Error handling key exchange reset: {e}"))
+            else:
+                print(f"Error handling key exchange reset: {e}")
     
     def handle_file_metadata(self, message_data: bytes):
         """Handle incoming file metadata with GUI dialog."""

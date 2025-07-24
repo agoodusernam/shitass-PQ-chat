@@ -22,6 +22,7 @@ MSG_TYPE_FILE_ACCEPT = 7
 MSG_TYPE_FILE_REJECT = 8
 MSG_TYPE_FILE_CHUNK = 9
 MSG_TYPE_FILE_COMPLETE = 10
+MSG_TYPE_KEY_EXCHANGE_RESET = 11
 
 # File transfer constants
 FILE_CHUNK_SIZE = 64 * 1024  # 32KB chunks
@@ -56,6 +57,20 @@ class SecureChatProtocol:
         # File transfer state
         self.file_transfers: dict = {}  # Track ongoing file transfers
         self.received_chunks: dict = {}  # Buffer for received file chunks
+        
+    def reset_key_exchange(self):
+        """Reset all cryptographic state to initial values for key exchange restart."""
+        self.shared_key = None
+        self.message_counter = 0
+        self.peer_counter = 0
+        self.peer_public_key = None
+        self.peer_key_verified = False
+        self.own_public_key = None
+        self.chain_key = None
+        self.seen_counters = set()
+        # Clear file transfer state as well
+        self.file_transfers = {}
+        self.received_chunks = {}
         
     def generate_keypair(self) -> tuple[bytes, bytes]:
         """Generate ML-KEM keypair for key exchange."""
@@ -631,6 +646,15 @@ def create_error_message(error_text: str) -> bytes:
         "version": PROTOCOL_VERSION,
         "type": MSG_TYPE_ERROR,
         "error": error_text
+    }
+    return json.dumps(message).encode('utf-8')
+
+def create_reset_message() -> bytes:
+    """Create a key exchange reset message."""
+    message = {
+        "version": PROTOCOL_VERSION,
+        "type": MSG_TYPE_KEY_EXCHANGE_RESET,
+        "message": "Key exchange reset - other client disconnected"
     }
     return json.dumps(message).encode('utf-8')
 

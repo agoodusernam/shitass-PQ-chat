@@ -8,7 +8,7 @@ import threading
 import json
 import sys
 from shared import SecureChatProtocol, send_message, receive_message, MSG_TYPE_FILE_METADATA, \
-    MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT, MSG_TYPE_FILE_CHUNK, MSG_TYPE_FILE_COMPLETE
+    MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT, MSG_TYPE_FILE_CHUNK, MSG_TYPE_FILE_COMPLETE, MSG_TYPE_KEY_EXCHANGE_RESET
 
 class SecureChatClient:
     """Secure chat client with end-to-end encryption."""
@@ -100,6 +100,8 @@ class SecureChatClient:
                     self.handle_file_chunk(message_data)
                 elif message_type == MSG_TYPE_FILE_COMPLETE:
                     self.handle_file_complete(message_data)
+                elif message_type == MSG_TYPE_KEY_EXCHANGE_RESET:
+                    self.handle_key_exchange_reset(message_data)
                 elif message.get("type") == "key_exchange_complete":
                     self.handle_key_exchange_complete(message)
                 elif message.get("type") == "initiate_key_exchange":
@@ -243,6 +245,33 @@ class SecureChatClient:
             
         except Exception as e:
             print(f"\nFailed to decrypt message: {e}")
+    
+    def handle_key_exchange_reset(self, message_data: bytes):
+        """Handle key exchange reset message when other client disconnects."""
+        try:
+            message = json.loads(message_data.decode('utf-8'))
+            reset_message = message.get("message", "Key exchange reset")
+            
+            # Reset client state
+            self.key_exchange_complete = False
+            self.verification_complete = False
+            self.protocol.reset_key_exchange()
+            
+            # Clear any pending file transfers
+            self.pending_file_transfers.clear()
+            self.active_file_metadata.clear()
+            
+            # Notify user
+            print(f"\n{'='*50}")
+            print("⚠️  KEY EXCHANGE RESET")
+            print(f"Reason: {reset_message}")
+            print("The secure session has been terminated.")
+            print("Waiting for a new client to connect...")
+            print("A new key exchange will start automatically.")
+            print(f"{'='*50}")
+            
+        except Exception as e:
+            print(f"Error handling key exchange reset: {e}")
     
     def send_message(self, text: str):
         """Encrypt and send a chat message."""

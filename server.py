@@ -10,9 +10,8 @@ import json
 from typing import Optional
 import time
 
-from shared import SecureChatProtocol, send_message, receive_message, create_error_message, MSG_TYPE_KEY_VERIFICATION, \
-    MSG_TYPE_KEY_EXCHANGE_RESPONSE, MSG_TYPE_FILE_METADATA, MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT, \
-    MSG_TYPE_FILE_CHUNK, MSG_TYPE_FILE_COMPLETE
+from shared import SecureChatProtocol, send_message, receive_message, create_error_message, create_reset_message, \
+    MSG_TYPE_KEY_EXCHANGE_RESPONSE, MSG_TYPE_KEY_VERIFICATION
 
 
 class SecureChatServer:
@@ -29,6 +28,7 @@ class SecureChatServer:
         """Start the server and listen for connections."""
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.server_socket.settimeout(1.0)  # Set timeout for non-blocking accept
         
         try:
             self.server_socket.bind((self.host, self.port))
@@ -38,41 +38,38 @@ class SecureChatServer:
             print(f"Secure chat server started on {self.host}:{self.port}")
             print("Waiting for clients to connect...")
             
-            # Accept up to 2 clients
-            while self.running and len(self.clients) < 2:
+            # Main server loop - continuously accept new connections and monitor clients
+            while self.running:
                 try:
-                    client_socket, address = self.server_socket.accept()
-                    client_id = f"client_{len(self.clients) + 1}"
+                    # Try to accept new connections if we have less than 2 clients
+                    if len(self.clients) < 2:
+                        try:
+                            client_socket, address = self.server_socket.accept()
+                            client_id = f"client_{len(self.clients) + 1}"
+                            
+                            print(f"Client {client_id} connected from {address}")
+                            
+                            # Create client handler
+                            client_handler = ClientHandler(client_socket, client_id, self)
+                            self.clients[client_id] = client_handler
+                            
+                            # Start client thread
+                            client_thread = threading.Thread(target=client_handler.handle)
+                            client_thread.daemon = True
+                            client_thread.start()
+                            
+                            # If we now have exactly 2 clients, start key exchange
+                            if len(self.clients) == 2:
+                                print("Two clients connected. Starting key exchange...")
+                                self.initiate_key_exchange()
+                                
+                        except socket.timeout:
+                            # Timeout is expected, continue to client monitoring
+                            pass
+                        except socket.error as e:
+                            if self.running:
+                                print(f"Error accepting connection: {e}")
                     
-                    print(f"Client {client_id} connected from {address}")
-                    
-                    # Create client handler
-                    client_handler = ClientHandler(client_socket, client_id, self)
-                    self.clients[client_id] = client_handler
-                    
-                    # Start client thread
-                    client_thread = threading.Thread(target=client_handler.handle)
-                    client_thread.daemon = True
-                    client_thread.start()
-                    
-                    if len(self.clients) == 2:
-                        print("Two clients connected. Starting key exchange...")
-                        self.initiate_key_exchange()
-                        break  # Stop accepting new connections but keep server running
-                        
-                except socket.error as e:
-                    if self.running:
-                        print(f"Error accepting connection: {e}")
-            
-            # Keep server running to handle client communication
-            print("Server is now handling client communication...")
-            while self.running and self.clients:
-                try:
-                    # Check if any clients are still connected
-                    connected_clients = [c for c in self.clients.values() if c.is_connected()]
-                    if not connected_clients:
-                        print("No clients connected. Shutting down server.")
-                        break
                     
                     # Sleep briefly to avoid busy waiting
                     time.sleep(0.1)
@@ -128,12 +125,19 @@ class SecureChatServer:
             del self.clients[client_id]
             print(f"Client {client_id} removed")
             
-            # Notify remaining client
+            # Notify remaining client to reset key exchange
             if self.clients:
                 remaining_client = list(self.clients.values())[0]
                 try:
-                    error_msg = create_error_message("Other client disconnected")
-                    send_message(remaining_client.socket, error_msg)
+                    # Send key exchange reset message
+                    reset_msg = create_reset_message()
+                    send_message(remaining_client.socket, reset_msg)
+                    
+                    # Reset the remaining client's key exchange state
+                    remaining_client.key_exchange_complete = False
+                    remaining_client.protocol.reset_key_exchange()
+                    
+                    print(f"Key exchange reset sent to remaining client {remaining_client.client_id}")
                 except: # pylint: disable=bare-except
                     pass
     
