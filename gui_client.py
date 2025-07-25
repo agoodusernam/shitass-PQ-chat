@@ -51,6 +51,7 @@ class FileTransferWindow:
         self.FG_COLOR = "#d4d4d4"
         self.ENTRY_BG_COLOR = "#3c3c3c"
         self.BUTTON_BG_COLOR = "#555555"
+        self.TEXT_BG_COLOR = "#1e1e1e"
         
     def create_window(self):
         """Create the file transfer window if it doesn't exist."""
@@ -98,7 +99,7 @@ class FileTransferWindow:
                 wrap=tk.WORD,
                 height=20,
                 font=("Consolas", 9),
-                bg="#1e1e1e",
+                bg=self.TEXT_BG_COLOR,
                 fg=self.FG_COLOR,
                 insertbackground=self.FG_COLOR,
                 relief=tk.FLAT
@@ -173,17 +174,31 @@ class FileTransferWindow:
 
 
 class ChatGUI:
-    def __init__(self, root):
+    def __init__(self, root, theme_colors=None):
         self.root = root
         self.root.title("Secure Chat Client")
         self.root.geometry("600x500")
 
-        # Dark theme colours
-        self.BG_COLOR = "#2b2b2b"
-        self.FG_COLOR = "#d4d4d4"
-        self.ENTRY_BG_COLOR = "#3c3c3c"
-        self.BUTTON_BG_COLOR = "#555555"
-        self.BUTTON_ACTIVE_BG = "#6a6a6a"
+        # Store the theme colors dictionary
+        self.theme_colors = theme_colors or {}
+
+        # Apply theme colors or use defaults
+        if theme_colors is None:
+            # Default dark theme colours
+            self.BG_COLOR = "#2b2b2b"
+            self.FG_COLOR = "#d4d4d4"
+            self.ENTRY_BG_COLOR = "#3c3c3c"
+            self.BUTTON_BG_COLOR = "#555555"
+            self.BUTTON_ACTIVE_BG = "#6a6a6a"
+            self.TEXT_BG_COLOR = "#1e1e1e"
+        else:
+            # Use provided theme colors
+            self.BG_COLOR = theme_colors.get("BG_COLOR", "#2b2b2b")
+            self.FG_COLOR = theme_colors.get("FG_COLOR", "#d4d4d4")
+            self.ENTRY_BG_COLOR = theme_colors.get("ENTRY_BG_COLOR", "#3c3c3c")
+            self.BUTTON_BG_COLOR = theme_colors.get("BUTTON_BG_COLOR", "#555555")
+            self.BUTTON_ACTIVE_BG = theme_colors.get("BUTTON_ACTIVE_BG", "#6a6a6a")
+            self.TEXT_BG_COLOR = theme_colors.get("TEXT_BG_COLOR", "#1e1e1e")
 
         self.root.configure(bg=self.BG_COLOR)
 
@@ -196,8 +211,14 @@ class ChatGUI:
         self.ephemeral_messages = {}  # Track messages with timestamps for removal
         self.message_counter = 0  # Counter for unique message IDs
 
-        # File transfer window
+        # File transfer window with theme colors
         self.file_transfer_window = FileTransferWindow(self.root)
+        # Pass theme colors to file transfer window
+        self.file_transfer_window.BG_COLOR = self.BG_COLOR
+        self.file_transfer_window.FG_COLOR = self.FG_COLOR
+        self.file_transfer_window.ENTRY_BG_COLOR = self.ENTRY_BG_COLOR
+        self.file_transfer_window.BUTTON_BG_COLOR = self.BUTTON_BG_COLOR
+        self.file_transfer_window.TEXT_BG_COLOR = self.TEXT_BG_COLOR
 
         # Create GUI elements
         self.create_widgets()
@@ -257,7 +278,7 @@ class ChatGUI:
             wrap=tk.WORD,
             height=20,
             font=("Consolas", 10),
-            bg="#1e1e1e",
+            bg=self.TEXT_BG_COLOR,
             fg=self.FG_COLOR,
             insertbackground=self.FG_COLOR,
             relief=tk.FLAT
@@ -343,8 +364,33 @@ class ChatGUI:
         self.chat_display.see(tk.END)
         self.chat_display.config(state=tk.DISABLED) # type: ignore
 
-    def update_status(self, status_text, color="#ff6b6b"):
-        """Update the status indicator with new text and color."""
+    def update_status(self, status_text, color=None):
+        """Update the status indicator with new text and color.
+        
+        If color is provided, it will be used directly.
+        Otherwise, the color will be determined based on the status text.
+        """
+        # Map status text to theme color variables
+        status_map = {
+            "Not Connected": "STATUS_NOT_CONNECTED",
+            "Connecting...": "STATUS_CONNECTING",
+            "Connected, waiting for other client": "STATUS_WAITING",
+            "Verifying fingerprint": "STATUS_VERIFYING",
+            "Verified, Secure": "STATUS_VERIFIED_SECURE",
+            "Not Verified, Secure": "STATUS_NOT_VERIFIED_SECURE",
+            "Processing key exchange": "STATUS_PROCESSING_KEY_EXCHANGE",
+            "Key exchange reset - waiting for new client": "STATUS_KEY_EXCHANGE_RESET"
+        }
+        
+        # If color is not provided, look up in theme colors
+        if color is None:
+            status_key = status_map.get(status_text)
+            if status_key and status_key in self.theme_colors:
+                color = self.theme_colors[status_key]
+            else:
+                # Default color if status not recognized
+                color = self.theme_colors.get("STATUS_NOT_CONNECTED", "#ff6b6b")
+                
         self.status_label.config(text=status_text, fg=color) # type: ignore
 
     def show_file_transfer_window(self):
@@ -364,7 +410,7 @@ class ChatGUI:
             host = self.host_entry.get().strip() or "localhost"
             port = int(self.port_entry.get().strip() or "16384")
 
-            self.update_status("Connecting...", "#ffa500")  # Orange for connecting
+            self.update_status("Connecting...")
 
             # Create client instance
             self.client = GUISecureChatClient(host, port, gui=self)
@@ -378,19 +424,19 @@ class ChatGUI:
                         self.start_chat_monitoring()
                     else:
                         self.root.after(0, lambda: self.append_to_chat("Failed to connect to server"))
-                        self.root.after(0, lambda: self.update_status("Not Connected", "#ff6b6b"))
+                        self.root.after(0, lambda: self.update_status("Not Connected"))
                 except Exception as e:
                     self.root.after(0, lambda e=e: self.append_to_chat(f"Connection error: {e}"))
-                    self.root.after(0, lambda: self.update_status("Not Connected", "#ff6b6b"))
+                    self.root.after(0, lambda: self.update_status("Not Connected"))
 
             threading.Thread(target=connect_thread, daemon=True).start()
 
         except ValueError:
             messagebox.showerror("Error", "Invalid port number")
-            self.update_status("Not Connected", "#ff6b6b")
+            self.update_status("Not Connected")
         except Exception as e:
             self.append_to_chat(f"Connection error: {e}")
-            self.update_status("Not Connected", "#ff6b6b")
+            self.update_status("Not Connected")
 
     def on_connected(self):
         """Called when successfully connected."""
@@ -404,7 +450,7 @@ class ChatGUI:
         self.ephemeral_btn.config(state=tk.NORMAL) # type: ignore
         self.file_transfer_btn.config(state=tk.NORMAL) # type: ignore
         self.message_entry.focus()
-        self.update_status("Connected, waiting for other client", "#ffff00")  # Yellow for waiting
+        self.update_status("Connected, waiting for other client")
 
     def disconnect_from_server(self):
         """Disconnect from the server."""
@@ -420,7 +466,7 @@ class ChatGUI:
         self.ephemeral_btn.config(state=tk.DISABLED) # type: ignore
         self.file_transfer_btn.config(state=tk.DISABLED) # type: ignore
         self.append_to_chat("Disconnected from server.")
-        self.update_status("Not Connected", "#ff6b6b")
+        self.update_status("Not Connected")
         sys.exit(0)  # Exit the application
 
     def start_chat_monitoring(self):
@@ -453,7 +499,7 @@ class ChatGUI:
             return
 
         # Update status to show we're now verifying the fingerprint
-        self.update_status("Verifying fingerprint", "#ffa500")  # Orange for verifying
+        self.update_status("Verifying fingerprint")
 
         try:
             fingerprint = self.client.protocol.get_own_key_fingerprint()
@@ -477,10 +523,10 @@ Do the fingerprints match?"""
 
             if result:
                 self.append_to_chat("You verified the peer's key.")
-                self.update_status("Verified, Secure", "#00ff00")  # Green for verified
+                self.update_status("Verified, Secure")
             else:
                 self.append_to_chat("You did not verify the peer's key.")
-                self.update_status("Not Verified, Secure", "#ffff00")  # Yellow for not verified but secure
+                self.update_status("Not Verified, Secure")
 
             self.append_to_chat("You can now send messages!")
 
@@ -699,7 +745,7 @@ class GUISecureChatClient(SecureChatClient):
         try:
             if hasattr(self, 'private_key'):
                 if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.update_status("Processing key exchange", "#ffa500"))
+                    self.gui.root.after(0, lambda: self.gui.update_status("Processing key exchange"))
                 else:
                     print("Key exchange completed successfully.")
                 
@@ -725,7 +771,7 @@ class GUISecureChatClient(SecureChatClient):
     def initiate_key_exchange(self):
         """Initiate key exchange as the first client - override to add GUI status update."""
         if self.gui:
-            self.gui.root.after(0, lambda: self.gui.update_status("Processing key exchange", "#ffa500"))
+            self.gui.root.after(0, lambda: self.gui.update_status("Processing key exchange"))
         super().initiate_key_exchange()
 
     def start_key_verification(self):
@@ -757,7 +803,7 @@ class GUISecureChatClient(SecureChatClient):
             
             # Update GUI
             if self.gui:
-                self.gui.root.after(0, lambda: self.gui.update_status("Key exchange reset - waiting for new client", "#ff6b6b"))
+                self.gui.root.after(0, lambda: self.gui.update_status("Key exchange reset - waiting for new client"))
                 self.gui.root.after(0, lambda: self.gui.append_to_chat("⚠️ KEY EXCHANGE RESET"))
                 self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Reason: {reset_message}"))
                 self.gui.root.after(0, lambda: self.gui.append_to_chat("The secure session has been terminated."))
@@ -991,12 +1037,73 @@ class GUISecureChatClient(SecureChatClient):
                 print(f"Error sending file chunks: {e}")
 
 
+def load_theme_colors():
+    """
+    Load theme colors from themes.json file.
+    If the file doesn't exist, ask the user if they want to create it with default colors.
+    Returns a dictionary of color values.
+    """
+    # Default dark theme colors
+    default_colors = {
+        "BG_COLOR":                       "#2b2b2b",
+        "FG_COLOR":                       "#d4d4d4",
+        "ENTRY_BG_COLOR":                 "#3c3c3c",
+        "BUTTON_BG_COLOR":                "#555555",
+        "BUTTON_ACTIVE_BG":               "#6a6a6a",
+        "TEXT_BG_COLOR":                  "#1e1e1e",
+        
+        "STATUS_NOT_CONNECTED":           "#ff6b6b",
+        "STATUS_CONNECTING":              "#ffa500",
+        "STATUS_WAITING":                 "#ffff00",
+        "STATUS_VERIFYING":               "#ffa500",
+        "STATUS_VERIFIED_SECURE":         "#00ff00",
+        "STATUS_NOT_VERIFIED_SECURE":     "#ffff00",
+        "STATUS_PROCESSING_KEY_EXCHANGE": "#ffa500",
+        "STATUS_KEY_EXCHANGE_RESET":      "#ffff00"
+    }
+    
+    # Check if themes.json exists
+    if not os.path.exists("themes.json"):
+        # Ask user if they want to generate one with current defaults
+        if messagebox.askyesno("Theme Configuration", 
+                              "No themes.json file found. Would you like to create one with the default colors?"):
+            try:
+                with open("themes.json", "w") as f:
+                    json.dump(default_colors, f, indent=4)
+                messagebox.showinfo("Theme Created", "themes.json has been created with default colors.")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to create themes.json: {e}")
+        return default_colors
+    
+    # Load colors from themes.json
+    try:
+        with open("themes.json", "r") as f:
+            theme_colors = json.load(f)
+            
+        # Validate theme format
+        required_colors = ["BG_COLOR", "FG_COLOR", "ENTRY_BG_COLOR", "BUTTON_BG_COLOR", "BUTTON_ACTIVE_BG"]
+        missing_colors = [color for color in required_colors if color not in theme_colors]
+        
+        if missing_colors:
+            messagebox.showwarning("Theme Warning", 
+                                  f"Missing colors in themes.json: {', '.join(missing_colors)}. Using defaults for these.")
+            for color in missing_colors:
+                theme_colors[color] = default_colors[color]
+                
+        return theme_colors
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to load themes.json: {e}")
+        return default_colors
+
 def main():
     """Main function to run the GUI chat client."""
     root = tk.Tk()
-
+    
+    # Load theme colors
+    theme_colors = load_theme_colors()
+    
     # Create GUI
-    gui = ChatGUI(root)
+    gui = ChatGUI(root, theme_colors)
 
     # Override the client creation to use our GUI-aware version
     original_connect = gui.connect_to_server
