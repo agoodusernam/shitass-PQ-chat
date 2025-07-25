@@ -18,6 +18,21 @@ class SecureChatServer:
     """Secure chat server that handles two-client connections with end-to-end encryption."""
     
     def __init__(self, host='localhost', port=16384):
+        """Initialize the secure chat server.
+        
+        Args:
+            host (str, optional): The hostname or IP address to bind the server to.
+                Defaults to 'localhost'.
+            port (int, optional): The port number to listen on. Defaults to 16384.
+                
+        Attributes:
+            host (str): Server hostname or IP address.
+            port (int): Server port number.
+            clients (dict[str, ClientHandler]): Dictionary mapping client IDs to 
+                their handler instances.
+            server_socket (socket.socket): The main server socket for accepting connections.
+            running (bool): Flag indicating whether the server is currently running.
+        """
         self.host = host
         self.port = port
         self.clients: dict[str, 'ClientHandler'] = {}
@@ -25,7 +40,21 @@ class SecureChatServer:
         self.running = False
         
     def start(self):
-        """Start the server and listen for connections."""
+        """Start the server and listen for client connections.
+        
+        Creates a server socket, binds it to the configured host and port, and enters
+        the main server loop to accept up to 2 client connections. When exactly 2
+        clients are connected, automatically initiates the key exchange process.
+        
+        The server uses a timeout-based accept loop to allow for graceful shutdown
+        and client monitoring. The method blocks until the server is stopped or
+        an error occurs.
+        
+        Note:
+            This method will print status messages to stdout and handles KeyboardInterrupt
+            for graceful shutdown. The server socket is configured with SO_REUSEADDR
+            to allow quick restart after shutdown.
+        """
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server_socket.settimeout(1.0)  # Set timeout for non-blocking accept
@@ -87,7 +116,20 @@ class SecureChatServer:
             self.stop()
     
     def initiate_key_exchange(self):
-        """Initiate key exchange between the two connected clients."""
+        """Initiate the key exchange process between two connected clients.
+        
+        This method is called automatically when exactly 2 clients are connected.
+        It sends a key exchange initiation message to the first client, which
+        will then start the ML-KEM-1024 key exchange protocol.
+        
+        The method ensures that exactly 2 clients are connected before proceeding.
+        If the initiation fails, an error is broadcast to all clients.
+        
+        Note:
+            This method only sends the initiation signal. The actual key exchange
+            protocol is handled by the SecureChatProtocol class in the clients.
+            The server acts as a message router and cannot decrypt the exchanged keys.
+        """
         if len(self.clients) != 2:
             return
             
@@ -114,7 +156,6 @@ class SecureChatServer:
             if client_id != sender_id and client_handler.is_connected():
                 try:
                     send_message(client_handler.socket, message_data)
-                    print(f"Message routed from {sender_id} to {client_id}")
                 except Exception as e:
                     print(f"Failed to route message to {client_id}: {e}")
                     client_handler.disconnect()

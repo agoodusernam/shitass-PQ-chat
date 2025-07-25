@@ -1,5 +1,5 @@
-import tkinter as tk # type: ignore
-from tkinter import scrolledtext, messagebox, filedialog, ttk # type: ignore
+import tkinter as tk  # type: ignore
+from tkinter import scrolledtext, messagebox, filedialog, ttk  # type: ignore
 import threading
 import sys
 import io
@@ -16,11 +16,11 @@ class FileTransferWindow:
     
     def __init__(self, parent_root):
         """Initialize the file transfer window manager.
-        
+
         Args:
             parent_root (tk.Tk): The parent root window that this transfer window
                 will be associated with.
-                
+
         Attributes:
             parent_root (tk.Tk): Reference to the parent window.
             window (tk.Toplevel): The actual transfer window (created on demand).
@@ -51,7 +51,7 @@ class FileTransferWindow:
         self.FG_COLOR = "#d4d4d4"
         self.ENTRY_BG_COLOR = "#3c3c3c"
         self.BUTTON_BG_COLOR = "#555555"
-        
+    
     def create_window(self):
         """Create the file transfer window if it doesn't exist."""
         if self.window is None or not self.window.winfo_exists():
@@ -69,21 +69,21 @@ class FileTransferWindow:
             
             # Speed label in top right
             self.speed_label = tk.Label(
-                top_frame, 
-                text="Speed: 0.0 MiB/s", 
-                bg=self.BG_COLOR, 
-                fg="#4CAF50", 
-                font=("Consolas", 10, "bold")
+                    top_frame,
+                    text="Speed: 0.0 MiB/s",
+                    bg=self.BG_COLOR,
+                    fg="#4CAF50",
+                    font=("Consolas", 10, "bold")
             )
             self.speed_label.pack(side=tk.RIGHT)
             
             # Title label
             title_label = tk.Label(
-                top_frame,
-                text="File Transfers",
-                bg=self.BG_COLOR,
-                fg=self.FG_COLOR,
-                font=("Consolas", 12, "bold")
+                    top_frame,
+                    text="File Transfers",
+                    bg=self.BG_COLOR,
+                    fg=self.FG_COLOR,
+                    font=("Consolas", 12, "bold")
             )
             title_label.pack(side=tk.LEFT)
             
@@ -93,32 +93,32 @@ class FileTransferWindow:
             
             # Scrollable text area for transfer updates
             self.transfer_list = scrolledtext.ScrolledText(
-                main_frame,
-                state=tk.DISABLED,
-                wrap=tk.WORD,
-                height=20,
-                font=("Consolas", 9),
-                bg="#1e1e1e",
-                fg=self.FG_COLOR,
-                insertbackground=self.FG_COLOR,
-                relief=tk.FLAT
+                    main_frame,
+                    state=tk.DISABLED,
+                    wrap=tk.WORD,
+                    height=20,
+                    font=("Consolas", 9),
+                    bg="#1e1e1e",
+                    fg=self.FG_COLOR,
+                    insertbackground=self.FG_COLOR,
+                    relief=tk.FLAT
             )
             self.transfer_list.pack(fill=tk.BOTH, expand=True)
             
             # Handle window closing
             self.window.protocol("WM_DELETE_WINDOW", self.hide_window)
-            
+    
     def show_window(self):
         """Show the file transfer window."""
         self.create_window()
         self.window.deiconify()
         self.window.lift()
-        
+    
     def hide_window(self):
         """Hide the file transfer window."""
         if self.window:
             self.window.withdraw()
-            
+    
     def add_transfer_message(self, message, transfer_id=None):
         """Add a message to the transfer window."""
         self.create_window()
@@ -129,11 +129,11 @@ class FileTransferWindow:
             self.transfer_list.insert(tk.END, f"[{timestamp}] {message}\n")
             self.transfer_list.see(tk.END)
             self.transfer_list.config(state=tk.DISABLED)
-            
+        
         # Show window if not visible
         if self.window.state() == 'withdrawn':
             self.show_window()
-            
+    
     def update_transfer_progress(self, transfer_id, filename, current, total, bytes_transferred=None):
         """Update progress for a specific transfer."""
         progress = (current / total) * 100 if total > 0 else 0
@@ -141,10 +141,10 @@ class FileTransferWindow:
         # Calculate speed if bytes_transferred is provided
         if bytes_transferred is not None:
             self.update_speed(bytes_transferred)
-            
+        
         message = f"{filename}: {progress:.1f}% ({current}/{total} chunks)"
         self.add_transfer_message(message, transfer_id)
-        
+    
     def update_speed(self, total_bytes_transferred):
         """Update the transfer speed display."""
         current_time = time.time()
@@ -159,10 +159,10 @@ class FileTransferWindow:
             
             if self.speed_label:
                 self.speed_label.config(text=f"Speed: {speed_mib_per_sec:.2f} MiB/s")
-                
+            
             self.last_update_time = current_time
             self.last_bytes_transferred = total_bytes_transferred
-            
+    
     def clear_speed(self):
         """Clear the speed display when no transfers are active."""
         self.current_speed = 0.0
@@ -177,163 +177,203 @@ class ChatGUI:
         self.root = root
         self.root.title("Secure Chat Client")
         self.root.geometry("600x500")
-
+        
         # Dark theme colours
         self.BG_COLOR = "#2b2b2b"
         self.FG_COLOR = "#d4d4d4"
         self.ENTRY_BG_COLOR = "#3c3c3c"
         self.BUTTON_BG_COLOR = "#555555"
         self.BUTTON_ACTIVE_BG = "#6a6a6a"
-
+        
         self.root.configure(bg=self.BG_COLOR)
-
+        
         # Chat client instance
         self.client = None
         self.connected = False
-
+        
         # Ephemeral mode state
         self.ephemeral_mode = False
         self.ephemeral_messages = {}  # Track messages with timestamps for removal
         self.message_counter = 0  # Counter for unique message IDs
-
+        
         # File transfer window
         self.file_transfer_window = FileTransferWindow(self.root)
-
+        
         # Create GUI elements
         self.create_widgets()
-
+        
         # Redirect stdout to capture print statements
         self.setup_output_redirection()
-
+        
         # Handle window closing
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
-
+    
     def create_widgets(self):
         """Create the GUI widgets."""
         # Main frame
         main_frame = tk.Frame(self.root, bg=self.BG_COLOR)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10) # type: ignore
-
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)  # type: ignore
+        
         # Connection frame
         conn_frame = tk.Frame(main_frame, bg=self.BG_COLOR)
-        conn_frame.pack(fill=tk.X, pady=(0, 10)) # type: ignore
-
+        conn_frame.pack(fill=tk.X, pady=(0, 10))  # type: ignore
+        
         # Host and port inputs
-        tk.Label(conn_frame, text="Host:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=tk.LEFT) # type: ignore
+        tk.Label(conn_frame, text="Host:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=tk.LEFT)  # type: ignore
         self.host_entry = tk.Entry(
-            conn_frame, width=15, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR,
-            insertbackground=self.FG_COLOR, relief=tk.FLAT # type: ignore
+                conn_frame, width=15, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR,
+                insertbackground=self.FG_COLOR, relief=tk.FLAT  # type: ignore
         )
-        self.host_entry.pack(side=tk.LEFT, padx=(5, 10)) # type: ignore
+        self.host_entry.pack(side=tk.LEFT, padx=(5, 10))  # type: ignore
         self.host_entry.insert(0, "localhost")
-
-        tk.Label(conn_frame, text="Port:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=tk.LEFT) # type: ignore
+        
+        tk.Label(conn_frame, text="Port:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=tk.LEFT)  # type: ignore
         self.port_entry = tk.Entry(
-            conn_frame, width=8, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR,
-            insertbackground=self.FG_COLOR, relief=tk.FLAT # type: ignore
+                conn_frame, width=8, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR,
+                insertbackground=self.FG_COLOR, relief=tk.FLAT  # type: ignore
         )
-        self.port_entry.pack(side=tk.LEFT, padx=(5, 10)) # type: ignore
+        self.port_entry.pack(side=tk.LEFT, padx=(5, 10))  # type: ignore
         self.port_entry.insert(0, "16384")
-
+        
         # Connect/Disconnect button
         self.connect_btn = tk.Button(
-            conn_frame, text="Connect", command=self.toggle_connection,
-            bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT, # type: ignore
-            activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR
+                conn_frame, text="Connect", command=self.toggle_connection,
+                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,  # type: ignore
+                activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR
         )
-        self.connect_btn.pack(side=tk.LEFT, padx=(10, 0)) # type: ignore
-
+        self.connect_btn.pack(side=tk.LEFT, padx=(10, 0))  # type: ignore
+        
         # Status indicator (top right)
         self.status_label = tk.Label(
-            conn_frame, text="Not Connected", 
-            bg=self.BG_COLOR, fg="#ff6b6b", font=("Consolas", 9, "bold")
+                conn_frame, text="Not Connected",
+                bg=self.BG_COLOR, fg="#ff6b6b", font=("Consolas", 9, "bold")
         )
-        self.status_label.pack(side=tk.RIGHT, padx=(10, 0)) # type: ignore
-
+        self.status_label.pack(side=tk.RIGHT, padx=(10, 0))  # type: ignore
+        
+        # Content frame to hold chat and debug side by side
+        content_frame = tk.Frame(main_frame, bg=self.BG_COLOR)
+        content_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))  # type: ignore
+        
+        # Chat frame (left side)
+        chat_frame = tk.Frame(content_frame, bg=self.BG_COLOR)
+        chat_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))  # type: ignore
+        
         # Chat display area
         self.chat_display = scrolledtext.ScrolledText(
-            main_frame,
-            state=tk.DISABLED,
-            wrap=tk.WORD,
-            height=20,
-            font=("Consolas", 10),
-            bg="#1e1e1e",
-            fg=self.FG_COLOR,
-            insertbackground=self.FG_COLOR,
-            relief=tk.FLAT
+                chat_frame,
+                state=tk.DISABLED,
+                wrap=tk.WORD,
+                height=20,
+                font=("Consolas", 10),
+                bg="#1e1e1e",
+                fg=self.FG_COLOR,
+                insertbackground=self.FG_COLOR,
+                relief=tk.FLAT
         )
-        self.chat_display.pack(fill=tk.BOTH, expand=True, pady=(0, 10)) # type: ignore
-
+        self.chat_display.pack(fill=tk.BOTH, expand=True)  # type: ignore
+        
+        # Debug frame (right side, initially hidden)
+        self.debug_frame = tk.Frame(content_frame, bg=self.BG_COLOR, width=400)
+        self.debug_frame.pack_propagate(False)  # Maintain fixed width
+        self.debug_visible = False
+        
+        # Debug toggle button frame
+        debug_toggle_frame = tk.Frame(main_frame, bg=self.BG_COLOR)
+        debug_toggle_frame.pack(fill=tk.X, pady=(0, 5))  # type: ignore
+        
+        self.debug_toggle_btn = tk.Button(
+                debug_toggle_frame, text="🔍 Show Debug Info", command=self.toggle_debug_box,
+                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,  # type: ignore
+                activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
+                font=("Consolas", 9)
+        )
+        self.debug_toggle_btn.pack(side=tk.LEFT)  # type: ignore
+        
+        # Debug display area
+        self.debug_display = scrolledtext.ScrolledText(
+                self.debug_frame,
+                state=tk.DISABLED,
+                wrap=tk.WORD,
+                height=20,
+                font=("Consolas", 8),
+                bg="#2d2d2d",
+                fg="#00ff00",
+                insertbackground="#00ff00",
+                relief=tk.FLAT
+        )
+        self.debug_display.pack(fill=tk.BOTH, expand=True, padx=5)  # type: ignore
+        
         # Input frame
         input_frame = tk.Frame(main_frame, bg=self.BG_COLOR)
-        input_frame.pack(fill=tk.X) # type: ignore
-
+        input_frame.pack(fill=tk.X)  # type: ignore
+        
         # Message input
         self.message_entry = tk.Entry(
-            input_frame, font=("Consolas", 10), bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR,
-            insertbackground=self.FG_COLOR, relief=tk.FLAT # type: ignore
+                input_frame, font=("Consolas", 10), bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR,
+                insertbackground=self.FG_COLOR, relief=tk.FLAT  # type: ignore
         )
-        self.message_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10)) # type: ignore
+        self.message_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))  # type: ignore
         self.message_entry.bind("<Return>", self.send_message)
         self.message_entry.bind("<KeyPress>", self.on_key_press)
-
+        
         # Ephemeral mode button (with gap before Send File)
         self.ephemeral_btn = tk.Button(
-            input_frame, text="⏱️ Ephemeral", command=self.toggle_ephemeral_mode,
-            bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT, # type: ignore
-            activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
-            font=("Consolas", 9)
+                input_frame, text="⏱️ Ephemeral", command=self.toggle_ephemeral_mode,
+                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,  # type: ignore
+                activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
+                font=("Consolas", 9)
         )
-        self.ephemeral_btn.pack(side=tk.RIGHT, padx=(0, 5)) # type: ignore
-
+        self.ephemeral_btn.pack(side=tk.RIGHT, padx=(0, 5))  # type: ignore
+        
         # File Transfer window button
         self.file_transfer_btn = tk.Button(
-            input_frame, text="📁 Transfers", command=self.show_file_transfer_window,
-            bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT, # type: ignore
-            activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
-            font=("Consolas", 9)
+                input_frame, text="📁 Transfers", command=self.show_file_transfer_window,
+                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,  # type: ignore
+                activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
+                font=("Consolas", 9)
         )
-        self.file_transfer_btn.pack(side=tk.RIGHT, padx=(0, 10)) # type: ignore
-
+        self.file_transfer_btn.pack(side=tk.RIGHT, padx=(0, 10))  # type: ignore
+        
         # Send File button
         self.send_file_btn = tk.Button(
-            input_frame, text="Send File", command=self.send_file,
-            bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT, # type: ignore
-            activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR
+                input_frame, text="Send File", command=self.send_file,
+                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,  # type: ignore
+                activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR
         )
-        self.send_file_btn.pack(side=tk.RIGHT, padx=(0, 5)) # type: ignore
-
+        self.send_file_btn.pack(side=tk.RIGHT, padx=(0, 5))  # type: ignore
+        
         # Send button
         self.send_btn = tk.Button(
-            input_frame, text="Send", command=self.send_message,
-            bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT, # type: ignore
-            activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR
+                input_frame, text="Send", command=self.send_message,
+                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,  # type: ignore
+                activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR
         )
-        self.send_btn.pack(side=tk.RIGHT) # type: ignore
-
+        self.send_btn.pack(side=tk.RIGHT)  # type: ignore
+        
         # Initially disable input until connected
-        self.message_entry.config(state=tk.DISABLED) # type: ignore
-        self.send_btn.config(state=tk.DISABLED) # type: ignore
-        self.send_file_btn.config(state=tk.DISABLED) # type: ignore
-        self.ephemeral_btn.config(state=tk.DISABLED) # type: ignore
-        self.file_transfer_btn.config(state=tk.DISABLED) # type: ignore
+        self.message_entry.config(state=tk.DISABLED)  # type: ignore
+        self.send_btn.config(state=tk.DISABLED)  # type: ignore
+        self.send_file_btn.config(state=tk.DISABLED)  # type: ignore
+        self.ephemeral_btn.config(state=tk.DISABLED)  # type: ignore
+        self.file_transfer_btn.config(state=tk.DISABLED)  # type: ignore
         
         # Start ephemeral message cleanup thread
         self.start_ephemeral_cleanup()
-
+    
     def setup_output_redirection(self):
         """Setup output redirection to capture print statements."""
         self.output_buffer = io.StringIO()
-
+    
     def append_to_chat(self, text, is_message=False):
         """Append text to the chat display."""
-        self.chat_display.config(state=tk.NORMAL) # type: ignore
+        self.chat_display.config(state=tk.NORMAL)  # type: ignore
         
         # If ephemeral mode is enabled and this is a message, track it
         if self.ephemeral_mode and is_message:
             self.message_counter += 1
             message_id = f"msg_{self.message_counter}"
             import time
+            
             self.ephemeral_messages[message_id] = time.time()
             # Add invisible marker for tracking
             self.chat_display.insert(tk.END, f"{text} <!-- {message_id} -->\n")
@@ -341,34 +381,154 @@ class ChatGUI:
             self.chat_display.insert(tk.END, text + "\n")
         
         self.chat_display.see(tk.END)
-        self.chat_display.config(state=tk.DISABLED) # type: ignore
-
+        self.chat_display.config(state=tk.DISABLED)  # type: ignore
+    
     def update_status(self, status_text, color="#ff6b6b"):
         """Update the status indicator with new text and color."""
-        self.status_label.config(text=status_text, fg=color) # type: ignore
-
+        self.status_label.config(text=status_text, fg=color)  # type: ignore
+    
     def show_file_transfer_window(self):
         """Show the file transfer progress window."""
         self.file_transfer_window.show_window()
-
+    
+    def toggle_debug_box(self):
+        """Toggle the visibility of the debug information box."""
+        if self.debug_visible:
+            self.debug_frame.pack_forget()
+            self.debug_toggle_btn.config(text="🔍 Show Debug Info")  # type: ignore
+            self.debug_visible = False
+        else:
+            self.debug_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=False, padx=(5, 0))  # type: ignore
+            self.debug_toggle_btn.config(text="🔍 Hide Debug Info")  # type: ignore
+            self.debug_visible = True
+            # Update debug info when showing
+            if hasattr(self, 'client') and self.client:
+                self.update_debug_info()
+    
+    def update_debug_info(self):
+        """Update the debug information display with current cryptographic state."""
+        if not self.debug_visible or not hasattr(self, 'client') or not self.client:
+            return
+            
+        try:
+            debug_text = "=== CRYPTOGRAPHIC DEBUG INFO ===\n"
+            debug_text += f"Timestamp: {time.strftime('%H:%M:%S')}\n\n"
+            
+            # Key Exchange Status
+            debug_text += "KEY EXCHANGE STATUS:\n"
+            
+            # Check overall key exchange completion
+            if hasattr(self.client, 'key_exchange_complete') and self.client.key_exchange_complete:
+                debug_text += "  ✅ KEY EXCHANGE COMPLETE\n"
+            else:
+                debug_text += "  ⏳ Key Exchange In Progress\n"
+            
+            # Check verification status
+            if hasattr(self.client, 'verification_complete') and self.client.verification_complete:
+                debug_text += "  ✅ VERIFICATION COMPLETE\n"
+            else:
+                debug_text += "  ⏳ Verification Pending\n"
+            
+            if hasattr(self.client, 'protocol') and hasattr(self.client.protocol, 'shared_key') and self.client.protocol.shared_key:
+                debug_text += f"  ✓ Shared Key: {self.client.protocol.shared_key[:16].hex()}...\n"
+            else:
+                debug_text += "  ✗ No Shared Key\n"
+                
+            if hasattr(self.client, 'protocol') and hasattr(self.client.protocol, 'encryption_key') and self.client.protocol.encryption_key:
+                debug_text += f"  ✓ Encryption Key: {self.client.protocol.encryption_key[:16].hex()}...\n"
+            else:
+                debug_text += "  ✗ No Encryption Key\n"
+                
+            if hasattr(self.client, 'protocol') and hasattr(self.client.protocol, 'mac_key') and self.client.protocol.mac_key:
+                debug_text += f"  ✓ MAC Key: {self.client.protocol.mac_key[:16].hex()}...\n"
+            else:
+                debug_text += "  ✗ No MAC Key\n"
+            
+            # Chain Keys and Counters
+            debug_text += "\nCHAIN KEYS & COUNTERS:\n"
+            if hasattr(self.client, 'protocol') and hasattr(self.client.protocol, 'chain_key') and self.client.protocol.chain_key:
+                debug_text += f"  Chain Key: {self.client.protocol.chain_key[:16].hex()}...\n"
+            else:
+                debug_text += "  Chain Key: Not initialized\n"
+                
+            if hasattr(self.client, 'protocol') and hasattr(self.client.protocol, 'message_counter'):
+                debug_text += f"  Message Counter (Out): {self.client.protocol.message_counter}\n"
+            else:
+                debug_text += "  Message Counter (Out): 0\n"
+                
+            if hasattr(self.client, 'protocol') and hasattr(self.client.protocol, 'peer_counter'):
+                debug_text += f"  Peer Counter (In): {self.client.protocol.peer_counter}\n"
+            else:
+                debug_text += "  Peer Counter (In): 0\n"
+            
+            # Public Keys
+            debug_text += "\nPUBLIC KEYS:\n"
+            if hasattr(self.client, 'protocol') and hasattr(self.client.protocol, 'own_public_key') and self.client.protocol.own_public_key:
+                debug_text += f"  Own Public Key: {self.client.protocol.own_public_key[:16].hex()}...\n"
+            else:
+                debug_text += "  Own Public Key: Not generated\n"
+                
+            if hasattr(self.client, 'protocol') and hasattr(self.client.protocol, 'peer_public_key') and self.client.protocol.peer_public_key:
+                debug_text += f"  Peer Public Key: {self.client.protocol.peer_public_key[:16].hex()}...\n"
+            else:
+                debug_text += "  Peer Public Key: Not received\n"
+            
+            # Key Verification
+            debug_text += "\nKEY VERIFICATION:\n"
+            if hasattr(self.client, 'protocol') and hasattr(self.client.protocol, 'peer_key_verified'):
+                if self.client.protocol.peer_key_verified:
+                    debug_text += "  ✓ Peer Key Verified\n"
+                else:
+                    debug_text += "  ⚠ Peer Key Not Verified\n"
+            else:
+                debug_text += "  ⚠ Verification Status Unknown\n"
+            
+            # Connection Status
+            debug_text += "\nCONNECTION STATUS:\n"
+            debug_text += f"  Connected: {'Yes' if self.connected else 'No'}\n"
+            if hasattr(self.client, 'socket') and self.client.socket:
+                debug_text += "  Socket: Active\n"
+            else:
+                debug_text += "  Socket: Inactive\n"
+            
+            debug_text += "\n" + "="*50 + "\n"
+            
+            # Update the debug display
+            self.debug_display.config(state=tk.NORMAL)  # type: ignore
+            self.debug_display.delete(1.0, tk.END)
+            self.debug_display.insert(tk.END, debug_text)
+            self.debug_display.see(tk.END)
+            self.debug_display.config(state=tk.DISABLED)  # type: ignore
+            
+        except Exception as e:
+            # Fallback debug info if there's an error
+            error_text = f"Debug Info Error: {e}\n"
+            error_text += f"Client exists: {hasattr(self, 'client')}\n"
+            error_text += f"Connected: {self.connected}\n"
+            
+            self.debug_display.config(state=tk.NORMAL)  # type: ignore
+            self.debug_display.delete(1.0, tk.END)
+            self.debug_display.insert(tk.END, error_text)
+            self.debug_display.config(state=tk.DISABLED)  # type: ignore
+    
     def toggle_connection(self):
         """Toggle connection to the server."""
         if not self.connected:
             self.connect_to_server()
         else:
             self.disconnect_from_server()
-
+    
     def connect_to_server(self):
         """Connect to the chat server."""
         try:
             host = self.host_entry.get().strip() or "localhost"
             port = int(self.port_entry.get().strip() or "16384")
-
+            
             self.update_status("Connecting...", "#ffa500")  # Orange for connecting
-
+            
             # Create client instance
             self.client = GUISecureChatClient(host, port, gui=self)
-
+            
             # Start connection in a separate thread
             def connect_thread():
                 try:
@@ -382,82 +542,94 @@ class ChatGUI:
                 except Exception as e:
                     self.root.after(0, lambda e=e: self.append_to_chat(f"Connection error: {e}"))
                     self.root.after(0, lambda: self.update_status("Not Connected", "#ff6b6b"))
-
+            
             threading.Thread(target=connect_thread, daemon=True).start()
-
+        
         except ValueError:
             messagebox.showerror("Error", "Invalid port number")
             self.update_status("Not Connected", "#ff6b6b")
         except Exception as e:
             self.append_to_chat(f"Connection error: {e}")
             self.update_status("Not Connected", "#ff6b6b")
-
+    
     def on_connected(self):
         """Called when successfully connected."""
         self.connected = True
         self.connect_btn.config(text="Disconnect")
-        self.host_entry.config(state=tk.DISABLED) # type: ignore
-        self.port_entry.config(state=tk.DISABLED) # type: ignore
-        self.message_entry.config(state=tk.NORMAL) # type: ignore
-        self.send_btn.config(state=tk.NORMAL) # type: ignore
-        self.send_file_btn.config(state=tk.NORMAL) # type: ignore
-        self.ephemeral_btn.config(state=tk.NORMAL) # type: ignore
-        self.file_transfer_btn.config(state=tk.NORMAL) # type: ignore
+        self.host_entry.config(state=tk.DISABLED)  # type: ignore
+        self.port_entry.config(state=tk.DISABLED)  # type: ignore
+        self.message_entry.config(state=tk.NORMAL)  # type: ignore
+        self.send_btn.config(state=tk.NORMAL)  # type: ignore
+        self.send_file_btn.config(state=tk.NORMAL)  # type: ignore
+        self.ephemeral_btn.config(state=tk.NORMAL)  # type: ignore
+        self.file_transfer_btn.config(state=tk.NORMAL)  # type: ignore
         self.message_entry.focus()
         self.update_status("Connected, waiting for other client", "#ffff00")  # Yellow for waiting
-
+        
+        # Update debug info after connection
+        self.update_debug_info()
+    
     def disconnect_from_server(self):
         """Disconnect from the server."""
         if self.client:
             self.client.disconnect()
         self.connected = False
         self.connect_btn.config(text="Connect")
-        self.host_entry.config(state=tk.NORMAL) # type: ignore
-        self.port_entry.config(state=tk.NORMAL) # type: ignore
-        self.message_entry.config(state=tk.DISABLED) # type: ignore
-        self.send_btn.config(state=tk.DISABLED) # type: ignore
-        self.send_file_btn.config(state=tk.DISABLED) # type: ignore
-        self.ephemeral_btn.config(state=tk.DISABLED) # type: ignore
-        self.file_transfer_btn.config(state=tk.DISABLED) # type: ignore
+        self.host_entry.config(state=tk.NORMAL)  # type: ignore
+        self.port_entry.config(state=tk.NORMAL)  # type: ignore
+        self.message_entry.config(state=tk.DISABLED)  # type: ignore
+        self.send_btn.config(state=tk.DISABLED)  # type: ignore
+        self.send_file_btn.config(state=tk.DISABLED)  # type: ignore
+        self.ephemeral_btn.config(state=tk.DISABLED)  # type: ignore
+        self.file_transfer_btn.config(state=tk.DISABLED)  # type: ignore
         self.append_to_chat("Disconnected from server.")
         self.update_status("Not Connected", "#ff6b6b")
+        
+        # Update debug info after disconnection
+        self.update_debug_info()
+        
         sys.exit(0)  # Exit the application
-
+    
     def start_chat_monitoring(self):
         """Start monitoring the chat client for messages and status updates."""
+        
         def monitor_thread():
             try:
                 while self.connected and self.client and self.client.connected:
                     # Check if key exchange is complete and verification is needed
                     if (hasattr(self.client, 'key_exchange_complete') and
-                        self.client.key_exchange_complete and
-                        not hasattr(self.client, 'verification_started')):
-
+                            self.client.key_exchange_complete and
+                            not hasattr(self.client, 'verification_started')):
                         # Mark that we've started verification to avoid repeated prompts
                         self.client.verification_started = True
-
+                        
                         # Show verification dialogue
                         self.root.after(0, self.show_verification_dialog)
-
+                    
+                    # Update debug info regularly if debug box is visible
+                    if self.debug_visible:
+                        self.root.after(0, self.update_debug_info)
+                    
                     import time
-                    time.sleep(0.1)
-
+                    
+                    time.sleep(0.5)  # Update every 500ms for better responsiveness
+            
             except Exception as e:
                 self.root.after(0, lambda: self.append_to_chat(f"Monitor error: {e}"))
-
+        
         threading.Thread(target=monitor_thread, daemon=True).start()
-
+    
     def show_verification_dialog(self):
         """Show the key verification dialogue."""
         if not self.client or not hasattr(self.client, 'protocol'):
             return
-
+        
         # Update status to show we're now verifying the fingerprint
         self.update_status("Verifying fingerprint", "#ffa500")  # Orange for verifying
-
+        
         try:
             fingerprint = self.client.protocol.get_own_key_fingerprint()
-
+            
             dialog_text = f"""Key Exchange Complete!
 
 {fingerprint}
@@ -469,38 +641,38 @@ INSTRUCTIONS:
 3. If they don't match or you're unsure, click 'Don't Verify'
 
 Do the fingerprints match?"""
-
+            
             result = messagebox.askyesno("Key Verification", dialog_text)
-
+            
             # Send verification result
             self.client.confirm_key_verification(result)
-
+            
             if result:
                 self.append_to_chat("You verified the peer's key.")
                 self.update_status("Verified, Secure", "#00ff00")  # Green for verified
             else:
                 self.append_to_chat("You did not verify the peer's key.")
                 self.update_status("Not Verified, Secure", "#ffff00")  # Yellow for not verified but secure
-
+            
             self.append_to_chat("You can now send messages!")
-
+        
         except Exception as e:
             self.append_to_chat(f"Verification error: {e}")
-
+    
     def send_message(self, event=None):
         """Send a message."""
         if not self.connected or not self.client:
             return
-
+        
         # Check if verification is complete (like console client does)
         if not hasattr(self.client, 'verification_complete') or not self.client.verification_complete:
             self.append_to_chat("Cannot send messages - verification not complete")
             return
-
+        
         message = self.message_entry.get().strip()
         if not message:
             return
-
+        
         # Handle special commands
         if message.lower() == '/quit':
             self.disconnect_from_server()
@@ -509,7 +681,7 @@ Do the fingerprints match?"""
             self.show_verification_dialog()
             self.message_entry.delete(0, tk.END)
             return
-
+        
         # Send the message
         try:
             if self.client.send_message(message):
@@ -518,29 +690,32 @@ Do the fingerprints match?"""
                     self.append_to_chat(f"You: {message}", is_message=True)
                 else:
                     self.append_to_chat(f"You (unverified): {message}", is_message=True)
+                
+                # Update debug info after message encryption
+                self.update_debug_info()
             else:
                 self.append_to_chat("Failed to send message")
-
+        
         except Exception as e:
             self.append_to_chat(f"Send error: {e}")
-
+        
         self.message_entry.delete(0, tk.END)
-
+    
     def send_file(self):
         """Send a file using file dialog."""
         if not self.connected or not self.client:
             return
-
+        
         # Check if verification is complete
         if not hasattr(self.client, 'verification_complete') or not self.client.verification_complete:
             self.append_to_chat("Cannot send files - verification not complete")
             return
-
+        
         try:
             # Open file dialog
             file_path = filedialog.askopenfilename(
-                title="Select file to send",
-                filetypes=[("All files", "*.*")]
+                    title="Select file to send",
+                    filetypes=[("All files", "*.*")]
             )
             
             if file_path:
@@ -550,32 +725,34 @@ Do the fingerprints match?"""
                 
                 # Confirm file sending
                 result = messagebox.askyesno(
-                    "Send File",
-                    f"Send file '{file_name}' ({bytes_to_human_readable(file_size)})?"
+                        "Send File",
+                        f"Send file '{file_name}' ({bytes_to_human_readable(file_size)})?"
                 )
                 
                 if result:
                     self.append_to_chat(f"Sending file: {file_name}")
                     self.client.send_file(file_path)
-                    
+        
         except Exception as e:
             self.append_to_chat(f"File send error: {e}")
-
+    
     def on_key_press(self, event):
         """Handle key press events in message entry."""
         # Allow normal typing when connected
         pass
-
+    
     def on_closing(self):
         """Handle window closing."""
         if self.connected:
             self.disconnect_from_server()
         self.root.destroy()
-
+    
     def start_ephemeral_cleanup(self):
         """Start the background thread to clean up ephemeral messages."""
+        
         def cleanup_thread():
             import time
+            
             while True:
                 try:
                     if self.ephemeral_mode and self.ephemeral_messages:
@@ -596,26 +773,26 @@ Do the fingerprints match?"""
                     pass
         
         threading.Thread(target=cleanup_thread, daemon=True).start()
-
+    
     def toggle_ephemeral_mode(self):
         """Toggle ephemeral mode on/off."""
         self.ephemeral_mode = not self.ephemeral_mode
         
         if self.ephemeral_mode:
             # Enable ephemeral mode
-            self.ephemeral_btn.config(bg="#ff6b6b", fg="#ffffff", text="⏱️ Ephemeral ON") # type: ignore
+            self.ephemeral_btn.config(bg="#ff6b6b", fg="#ffffff", text="⏱️ Ephemeral ON")  # type: ignore
             self.append_to_chat("🔥 Ephemeral mode enabled - messages will disappear after 30 seconds", is_message=True)
         else:
             # Disable ephemeral mode
-            self.ephemeral_btn.config(bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, text="⏱️ Ephemeral") # type: ignore
+            self.ephemeral_btn.config(bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, text="⏱️ Ephemeral")  # type: ignore
             # Clear all ephemeral messages
             self.ephemeral_messages.clear()
-
+    
     def remove_ephemeral_messages(self, message_ids):
         """Remove ephemeral messages from the chat display."""
         try:
             # Get all chat content
-            self.chat_display.config(state=tk.NORMAL) # type: ignore
+            self.chat_display.config(state=tk.NORMAL)  # type: ignore
             content = self.chat_display.get("1.0", tk.END)
             lines = content.split('\n')
             
@@ -636,38 +813,44 @@ Do the fingerprints match?"""
             if filtered_lines:
                 self.chat_display.insert("1.0", '\n'.join(filtered_lines) + '\n')
             self.chat_display.see(tk.END)
-            self.chat_display.config(state=tk.DISABLED) # type: ignore
+            self.chat_display.config(state=tk.DISABLED)  # type: ignore
             
             # Remove from tracking dict
             for message_id in message_ids:
                 self.ephemeral_messages.pop(message_id, None)
-                
+        
         except Exception as e:
             # If removal fails, just clean up the tracking dict
             for message_id in message_ids:
                 self.ephemeral_messages.pop(message_id, None)
-    
+
+
 class GUISecureChatClient(SecureChatClient):
     """Extended SecureChatClient that works with GUI."""
-
+    
     def __init__(self, host='localhost', port=16384, gui=None):
         super().__init__(host, port)
         self.gui = gui
         # Initialize verification_complete flag like console client
         self.verification_complete = False
-
+    
     def handle_encrypted_message(self, message_data: bytes):
         """Handle encrypted chat messages - override to send to GUI."""
         try:
             decrypted_text = self.protocol.decrypt_message(message_data)
             
+            # Update debug info after decryption
+            if self.gui:
+                self.gui.root.after(0, lambda: self.gui.update_debug_info())
+            
             # Attempt to parse the decrypted text as a JSON message
             try:
-                from shared import MSG_TYPE_FILE_METADATA, MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT, MSG_TYPE_FILE_CHUNK, MSG_TYPE_FILE_COMPLETE
+                from shared import MSG_TYPE_FILE_METADATA, MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT, \
+                    MSG_TYPE_FILE_CHUNK, MSG_TYPE_FILE_COMPLETE
                 
                 message = json.loads(decrypted_text)
                 message_type = message.get("type")
-
+                
                 if message_type == MSG_TYPE_FILE_METADATA:
                     self.handle_file_metadata(decrypted_text)
                 elif message_type == MSG_TYPE_FILE_ACCEPT:
@@ -681,19 +864,21 @@ class GUISecureChatClient(SecureChatClient):
                 else:
                     # It's a regular chat message
                     if self.gui:
-                        self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Other user: {decrypted_text}", is_message=True))
+                        self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Other user: {decrypted_text}",
+                                                                               is_message=True))
             
             except (json.JSONDecodeError, TypeError):
                 # If it's not JSON, it's a regular chat message
                 if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Other user: {decrypted_text}", is_message=True))
-
+                    self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Other user: {decrypted_text}",
+                                                                           is_message=True))
+        
         except Exception as e:
             if self.gui:
                 self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Failed to decrypt message: {e}"))
             else:
                 print(f"\nFailed to decrypt message: {e}")
-
+    
     def handle_key_exchange_response(self, message_data: bytes):
         """Handle key exchange response - override to send to GUI."""
         try:
@@ -704,30 +889,43 @@ class GUISecureChatClient(SecureChatClient):
                     print("Key exchange completed successfully.")
                 
                 self.protocol.process_key_exchange_response(message_data, self.private_key)
+                
+                # Update debug info after key exchange processing
+                if self.gui:
+                    self.gui.root.after(0, lambda: self.gui.update_debug_info())
             else:
                 if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.append_to_chat("Received key exchange response but no private key found"))
+                    self.gui.root.after(0, lambda: self.gui.append_to_chat(
+                        "Received key exchange response but no private key found"))
                 else:
                     print("Received key exchange response but no private key found")
-
+        
         except Exception as e:
             if self.gui:
                 self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Key exchange response error: {e}"))
             else:
                 print(f"Key exchange response error: {e}")
-
+    
     def handle_key_exchange_complete(self, message: dict):
         """Handle key exchange completion notification - override to use GUI."""
         self.key_exchange_complete = True
         # Don't call start_key_verification() here as it would block the receive thread
         # The GUI monitoring thread will detect key_exchange_complete and show the dialogue
-
+        
+        # Update debug info after key exchange completion
+        if self.gui:
+            self.gui.root.after(0, lambda: self.gui.update_debug_info())
+    
     def initiate_key_exchange(self):
         """Initiate key exchange as the first client - override to add GUI status update."""
         if self.gui:
             self.gui.root.after(0, lambda: self.gui.update_status("Processing key exchange", "#ffa500"))
         super().initiate_key_exchange()
-
+        
+        # Update debug info after initiating key exchange
+        if self.gui:
+            self.gui.root.after(0, lambda: self.gui.update_debug_info())
+    
     def start_key_verification(self):
         """Start the key verification process - override to prevent blocking."""
         # This method is overridden to prevent the base class from blocking
@@ -739,6 +937,7 @@ class GUISecureChatClient(SecureChatClient):
         """Handle key exchange reset message - override to provide GUI feedback."""
         try:
             import json
+            
             message = json.loads(message_data.decode('utf-8'))
             reset_message = message.get("message", "Key exchange reset")
             
@@ -757,16 +956,19 @@ class GUISecureChatClient(SecureChatClient):
             
             # Update GUI
             if self.gui:
-                self.gui.root.after(0, lambda: self.gui.update_status("Key exchange reset - waiting for new client", "#ff6b6b"))
+                self.gui.root.after(0, lambda: self.gui.update_status("Key exchange reset - waiting for new client",
+                                                                      "#ff6b6b"))
                 self.gui.root.after(0, lambda: self.gui.append_to_chat("⚠️ KEY EXCHANGE RESET"))
                 self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Reason: {reset_message}"))
+                # Update debug info after key exchange reset
+                self.gui.root.after(0, lambda: self.gui.update_debug_info())
                 self.gui.root.after(0, lambda: self.gui.append_to_chat("The secure session has been terminated."))
                 self.gui.root.after(0, lambda: self.gui.append_to_chat("Waiting for a new client to connect..."))
                 self.gui.root.after(0, lambda: self.gui.append_to_chat("A new key exchange will start automatically."))
             else:
                 # Fallback to console behavior
                 super().handle_key_exchange_reset(message_data)
-                
+        
         except Exception as e:
             if self.gui:
                 self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error handling key exchange reset: {e}"))
@@ -786,22 +988,25 @@ class GUISecureChatClient(SecureChatClient):
             if self.gui:
                 def show_file_dialog():
                     result = messagebox.askyesno(
-                        "Incoming File Transfer",
-                        f"Accept file transfer?\n\n"
-                        f"Filename: {metadata['filename']}\n"
-                        f"Size: {bytes_to_human_readable(metadata['file_size'])}\n"
-                        f"Chunks: {metadata['total_chunks']}"
+                            "Incoming File Transfer",
+                            f"Accept file transfer?\n\n"
+                            f"Filename: {metadata['filename']}\n"
+                            f"Size: {bytes_to_human_readable(metadata['file_size'])}\n"
+                            f"Chunks: {metadata['total_chunks']}"
                     )
                     
                     if result:
                         # Send acceptance
                         from shared import send_message
+                        
                         accept_msg = self.protocol.create_file_accept_message(transfer_id)
                         send_message(self.socket, accept_msg)
-                        self.gui.file_transfer_window.add_transfer_message(f"File transfer accepted: {metadata['filename']}", transfer_id)
+                        self.gui.file_transfer_window.add_transfer_message(
+                            f"File transfer accepted: {metadata['filename']}", transfer_id)
                     else:
                         # Send rejection
                         from shared import send_message
+                        
                         reject_msg = self.protocol.create_file_reject_message(transfer_id)
                         send_message(self.socket, reject_msg)
                         self.gui.file_transfer_window.add_transfer_message("File transfer rejected.")
@@ -811,7 +1016,7 @@ class GUISecureChatClient(SecureChatClient):
             else:
                 # Fallback to console behavior
                 super().handle_file_metadata(decrypted_message)
-                
+        
         except Exception as e:
             if self.gui:
                 self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error handling file metadata: {e}"))
@@ -822,28 +1027,26 @@ class GUISecureChatClient(SecureChatClient):
         """Handle file acceptance from peer with GUI updates."""
         try:
             import json
+            
             message = json.loads(decrypted_message)
             transfer_id = message["transfer_id"]
             
             if transfer_id not in self.pending_file_transfers:
                 if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message("Received acceptance for unknown file transfer"))
+                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
+                        "Received acceptance for unknown file transfer"))
                 return
             
             transfer_info = self.pending_file_transfers[transfer_id]
             filename = transfer_info["metadata"]["filename"]
             
             if self.gui:
-                self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(f"File transfer accepted. Sending {filename}...", transfer_id))
+                self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
+                    f"File transfer accepted. Sending {filename}...", transfer_id))
             
-            # Start sending file chunks in a separate thread to avoid blocking message processing
-            chunk_thread = threading.Thread(
-                target=self._send_file_chunks,
-                args=(transfer_id, transfer_info["file_path"]),
-                daemon=True
-            )
-            chunk_thread.start()
-            
+            # Start sending file chunks
+            self._send_file_chunks(transfer_id, transfer_info["file_path"])
+        
         except Exception as e:
             if self.gui:
                 self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error handling file acceptance: {e}"))
@@ -854,6 +1057,7 @@ class GUISecureChatClient(SecureChatClient):
         """Handle file rejection from peer with GUI updates."""
         try:
             import json
+            
             message = json.loads(decrypted_message)
             transfer_id = message["transfer_id"]
             reason = message.get("reason", "Unknown reason")
@@ -861,9 +1065,10 @@ class GUISecureChatClient(SecureChatClient):
             if transfer_id in self.pending_file_transfers:
                 filename = self.pending_file_transfers[transfer_id]["metadata"]["filename"]
                 if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(f"File transfer rejected: {filename} - {reason}", transfer_id))
+                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
+                        f"File transfer rejected: {filename} - {reason}", transfer_id))
                 del self.pending_file_transfers[transfer_id]
-            
+        
         except Exception as e:
             if self.gui:
                 self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error handling file rejection: {e}"))
@@ -878,27 +1083,29 @@ class GUISecureChatClient(SecureChatClient):
             
             if transfer_id not in self.active_file_metadata:
                 if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message("Received chunk for unknown file transfer"))
+                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
+                        "Received chunk for unknown file transfer"))
                 return
             
             metadata = self.active_file_metadata[transfer_id]
             
             # Add chunk to protocol buffer
             is_complete = self.protocol.add_file_chunk(
-                transfer_id,
-                chunk_info["chunk_index"],
-                chunk_info["chunk_data"],
-                metadata["total_chunks"]
+                    transfer_id,
+                    chunk_info["chunk_index"],
+                    chunk_info["chunk_data"],
+                    metadata["total_chunks"]
             )
             
             # Show progress in GUI
             if self.gui:
                 received_chunks = len(self.protocol.received_chunks.get(transfer_id, {}))
-                if received_chunks % 50 == 0: # Update every 50 chunks
+                if received_chunks % 50 == 0:  # Update every 50 chunks
                     # Calculate bytes transferred for speed tracking
                     bytes_transferred = received_chunks * len(chunk_info["chunk_data"])
                     self.gui.root.after(0, lambda: self.gui.file_transfer_window.update_transfer_progress(
-                        transfer_id, metadata['filename'], received_chunks, metadata['total_chunks'], bytes_transferred
+                            transfer_id, metadata['filename'], received_chunks, metadata['total_chunks'],
+                            bytes_transferred
                     ))
             
             if is_complete:
@@ -915,25 +1122,29 @@ class GUISecureChatClient(SecureChatClient):
                 try:
                     self.protocol.reassemble_file(transfer_id, output_path, metadata["file_hash"])
                     if self.gui:
-                        self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(f"File received successfully: {output_path}", transfer_id))
+                        self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
+                            f"File received successfully: {output_path}", transfer_id))
                         # Clear speed when transfer completes
                         self.gui.root.after(0, lambda: self.gui.file_transfer_window.clear_speed())
                     
                     # Send completion message
                     from shared import send_message
+                    
                     complete_msg = self.protocol.create_file_complete_message(transfer_id)
                     send_message(self.socket, complete_msg)
-                    
+                
                 except Exception as e:
                     if self.gui:
-                        self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(f"File reassembly failed: {e}", transfer_id))
+                        self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
+                            f"File reassembly failed: {e}", transfer_id))
                 
                 # Clean up
                 del self.active_file_metadata[transfer_id]
-            
+        
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.file_transfer_window.add_transfer_message(f"Error handling file chunk: {e}"))
+                self.gui.root.after(0, lambda e=e: self.gui.file_transfer_window.add_transfer_message(
+                    f"Error handling file chunk: {e}"))
             else:
                 print(f"Error handling file chunk: {e}")
     
@@ -941,20 +1152,23 @@ class GUISecureChatClient(SecureChatClient):
         """Handle file transfer completion notification with GUI updates."""
         try:
             import json
+            
             message = json.loads(decrypted_message)
             transfer_id = message["transfer_id"]
             
             if transfer_id in self.pending_file_transfers:
                 filename = self.pending_file_transfers[transfer_id]["metadata"]["filename"]
                 if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(f"File transfer completed: {filename}", transfer_id))
+                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
+                        f"File transfer completed: {filename}", transfer_id))
                     # Clear speed when transfer completes
                     self.gui.root.after(0, lambda: self.gui.file_transfer_window.clear_speed())
                 del self.pending_file_transfers[transfer_id]
-            
+        
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.file_transfer_window.add_transfer_message(f"Error handling file completion: {e}"))
+                self.gui.root.after(0, lambda e=e: self.gui.file_transfer_window.add_transfer_message(
+                    f"Error handling file completion: {e}"))
             else:
                 print(f"Error handling file completion: {e}")
     
@@ -967,6 +1181,7 @@ class GUISecureChatClient(SecureChatClient):
             for i, chunk in enumerate(chunks):
                 chunk_msg = self.protocol.create_file_chunk_message(transfer_id, i, chunk)
                 from shared import send_message
+                
                 send_message(self.socket, chunk_msg)
                 
                 # Show progress in GUI every 50 chunks
@@ -975,18 +1190,22 @@ class GUISecureChatClient(SecureChatClient):
                         # Calculate bytes transferred for speed tracking
                         bytes_transferred = (i + 1) * len(chunk)
                         filename = os.path.basename(file_path)
-                        self.gui.root.after(0, lambda curr=i+1, total=total_chunks, bytes_sent=bytes_transferred, fname=filename:
-                            self.gui.file_transfer_window.update_transfer_progress(transfer_id, fname, curr, total, bytes_sent)
-                        )
+                        self.gui.root.after(0, lambda curr=i + 1, total=total_chunks, bytes_sent=bytes_transferred,
+                                                      fname=filename:
+                        self.gui.file_transfer_window.update_transfer_progress(transfer_id, fname, curr, total,
+                                                                               bytes_sent)
+                                            )
             
             if self.gui:
-                self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message("File chunks sent successfully.", transfer_id))
+                self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
+                    "File chunks sent successfully.", transfer_id))
                 # Clear speed when transfer completes
                 self.gui.root.after(0, lambda: self.gui.file_transfer_window.clear_speed())
-            
+        
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.file_transfer_window.add_transfer_message(f"Error sending file chunks: {e}", transfer_id))
+                self.gui.root.after(0, lambda e=e: self.gui.file_transfer_window.add_transfer_message(
+                    f"Error sending file chunks: {e}", transfer_id))
             else:
                 print(f"Error sending file chunks: {e}")
 
@@ -994,22 +1213,23 @@ class GUISecureChatClient(SecureChatClient):
 def main():
     """Main function to run the GUI chat client."""
     root = tk.Tk()
-
+    
     # Create GUI
     gui = ChatGUI(root)
-
+    
     # Override the client creation to use our GUI-aware version
     original_connect = gui.connect_to_server
+    
     def gui_connect():
         try:
             host = gui.host_entry.get().strip() or "localhost"
             port = int(gui.port_entry.get().strip() or "16384")
-
+            
             gui.append_to_chat(f"Connecting to {host}:{port}...")
-
+            
             # Create GUI-aware client instance
             gui.client = GUISecureChatClient(host, port, gui)
-
+            
             # Start connection in a separate thread
             def connect_thread():
                 try:
@@ -1021,16 +1241,16 @@ def main():
                         gui.root.after(0, lambda: gui.append_to_chat("Failed to connect to server"))
                 except Exception as e:
                     gui.root.after(0, lambda e=e: gui.append_to_chat(f"Connection error: {e}"))
-
+            
             threading.Thread(target=connect_thread, daemon=True).start()
-
+        
         except ValueError:
             messagebox.showerror("Error", "Invalid port number")
         except Exception as e:
             gui.append_to_chat(f"Connection error: {e}")
-
+    
     gui.connect_to_server = gui_connect
-
+    
     # Start the GUI
     root.mainloop()
 

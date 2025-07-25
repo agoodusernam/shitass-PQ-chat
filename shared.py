@@ -28,7 +28,22 @@ MSG_TYPE_KEY_EXCHANGE_RESET = 11
 FILE_CHUNK_SIZE = 64 * 1024  # 32KB chunks
 
 def bytes_to_human_readable(size: int) -> str:
-    """Convert bytes to a human-readable format."""
+    """Convert a byte count to a human-readable format with appropriate units.
+    
+    Args:
+        size (int): The number of bytes to convert.
+        
+    Returns:
+        str: A formatted string with the size and appropriate unit (B, KB, MB, or GB).
+        
+    Examples:
+        >>> bytes_to_human_readable(512)
+        '512 B'
+        >>> bytes_to_human_readable(1536)
+        '1.5 KB'
+        >>> bytes_to_human_readable(2097152)
+        '2.0 MB'
+    """
     if size < 1024:
         return f"{size} B"
     elif size < 1024**2:
@@ -44,6 +59,24 @@ class SecureChatProtocol:
     """
     
     def __init__(self):
+        """Initialize the secure chat protocol with default cryptographic state.
+        
+        Sets up all necessary state variables for the ML-KEM-1024 key exchange,
+        AES-GCM encryption, perfect forward secrecy, replay protection, and
+        file transfer functionality.
+        
+        Attributes:
+            shared_key (bytes | None): The derived shared secret from key exchange.
+            message_counter (int): Counter for outgoing messages (for PFS).
+            peer_counter (int): Expected counter for incoming messages (for PFS).
+            peer_public_key (bytes | None): The peer's public key from key exchange.
+            peer_key_verified (bool): Whether the peer's key has been verified.
+            own_public_key (bytes | None): This client's public key.
+            chain_key (bytes | None): Root key for perfect forward secrecy ratcheting.
+            seen_counters (set): Set of seen message counters for replay protection.
+            file_transfers (dict): Dictionary tracking ongoing file transfers.
+            received_chunks (dict): Buffer for received file chunks during transfer.
+        """
         self.shared_key: bytes | None = None
         self.message_counter: int = 0
         self.peer_counter: int = 0
@@ -51,7 +84,8 @@ class SecureChatProtocol:
         self.peer_key_verified = False
         self.own_public_key: bytes | None = None
         # Perfect Forward Secrecy - Key Ratcheting
-        self.chain_key: bytes | None = None
+        self.send_chain_key: bytes | None = None    # For encrypting outgoing messages
+        self.receive_chain_key: bytes | None = None # For decrypting incoming messages
         self.seen_counters: set = set()  # Track seen counters for replay protection
         
         # File transfer state
@@ -66,7 +100,8 @@ class SecureChatProtocol:
         self.peer_public_key = None
         self.peer_key_verified = False
         self.own_public_key = None
-        self.chain_key = None
+        self.send_chain_key = None
+        self.receive_chain_key = None
         self.seen_counters = set()
         # Clear file transfer state as well
         self.file_transfers = {}
@@ -95,8 +130,8 @@ class SecureChatProtocol:
         return derived[:32], derived[32:]  # encryption_key, mac_key
     
     def _initialize_chain_keys(self, shared_secret: bytes):
-        """Initialize chain key for perfect forward secrecy."""
-        # Derive a single chain key that both parties will use
+        """Initialize separate chain keys for sending and receiving."""
+        # Derive a root chain key that both parties will use as the starting point
         chain_hkdf = HKDF(
             algorithm=hashes.SHA256(),
             length=32,
@@ -104,7 +139,12 @@ class SecureChatProtocol:
             info=b"chain_key_root"
         )
         
-        self.chain_key = chain_hkdf.derive(shared_secret)
+        root_chain_key = chain_hkdf.derive(shared_secret)
+        
+        # Both send and receive chain keys start with the same value
+        # They will diverge as messages are sent and received
+        self.send_chain_key = root_chain_key
+        self.receive_chain_key = root_chain_key
     
     def _derive_message_key(self, chain_key: bytes, counter: int) -> bytes:
         """Derive a message key from the chain key and counter."""
@@ -317,16 +357,16 @@ class SecureChatProtocol:
     
     def encrypt_message(self, plaintext: str) -> bytes:
         """Encrypt a message with authentication and replay protection using perfect forward secrecy."""
-        if not self.shared_key or not self.chain_key:
-            raise ValueError("No shared key or chain key established")
+        if not self.shared_key or not self.send_chain_key:
+            raise ValueError("No shared key or send chain key established")
         
         self.message_counter += 1
         
         # Derive unique message key for this message
-        message_key = self._derive_message_key(self.chain_key, self.message_counter)
+        message_key = self._derive_message_key(self.send_chain_key, self.message_counter)
         
-        # Ratchet the chain key forward for the next message
-        self.chain_key = self._ratchet_chain_key(self.chain_key, self.message_counter)
+        # Ratchet the send chain key forward for the next message
+        self.send_chain_key = self._ratchet_chain_key(self.send_chain_key, self.message_counter)
         
         # Encrypt with AES-GCM using the unique message key
         aesgcm: AESGCM = AESGCM(message_key)
@@ -350,8 +390,8 @@ class SecureChatProtocol:
     
     def decrypt_message(self, data: bytes) -> str:
         """Decrypt and authenticate a message using perfect forward secrecy."""
-        if not self.shared_key or not self.chain_key:
-            raise ValueError("No shared key or chain key established")
+        if not self.shared_key or not self.receive_chain_key:
+            raise ValueError("No shared key or receive chain key established")
 
         try:
             message = json.loads(data.decode('utf-8'))
@@ -366,9 +406,9 @@ class SecureChatProtocol:
             if counter <= self.peer_counter:
                 raise ValueError("Replay attack or out-of-order message detected")
 
-            # To handle message loss, ratchet the chain key forward until we "catch up"
+            # To handle message loss, ratchet the receive chain key forward until we "catch up"
             # to the counter of the received message.
-            temp_chain_key = self.chain_key
+            temp_chain_key = self.receive_chain_key
             skipped_counter = self.peer_counter
             
             # Find the correct chain key to derive the message key from
@@ -390,7 +430,7 @@ class SecureChatProtocol:
             decrypted_data = aesgcm.decrypt(nonce, ciphertext, None)
 
             # If decryption is successful, commit the new state
-            self.chain_key = temp_chain_key
+            self.receive_chain_key = temp_chain_key
             self.peer_counter = counter
 
             # Securely delete the message key

@@ -7,13 +7,35 @@ import socket
 import threading
 import json
 import sys
+import os
+import time
 from shared import SecureChatProtocol, send_message, receive_message, MSG_TYPE_FILE_METADATA, \
     MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT, MSG_TYPE_FILE_CHUNK, MSG_TYPE_FILE_COMPLETE, MSG_TYPE_KEY_EXCHANGE_RESET
 
 class SecureChatClient:
-    """Secure chat client with end-to-end encryption."""
     
     def __init__(self, host='localhost', port=16384):
+        """The secure chat client.
+        
+        Args:
+            host (str, optional): The server hostname or IP address to connect to. 
+                Defaults to 'localhost'.
+            port (int, optional): The server port number to connect to. 
+                Defaults to 16384.
+        
+        Attributes:
+            host (str): Server hostname or IP address.
+            port (int): Server port number.
+            socket (socket.socket): The client socket connection.
+            protocol (SecureChatProtocol): The encryption protocol handler.
+            connected (bool): Whether the client is connected to the server.
+            key_exchange_complete (bool): Whether key exchange has been completed.
+            verification_complete (bool): Whether key verification has been completed.
+            username (str): The client's username (currently unused).
+            receive_thread (threading.Thread): Thread for receiving messages.
+            pending_file_transfers (dict): Tracks outgoing file transfers by transfer ID.
+            active_file_metadata (dict): Tracks incoming file metadata by transfer ID.
+        """
         self.host = host
         self.port = port
         self.socket = None
@@ -28,8 +50,19 @@ class SecureChatClient:
         self.pending_file_transfers = {}  # Track outgoing file transfers
         self.active_file_metadata = {}    # Track incoming file metadata
         
-    def connect(self):
-        """Connect to the chat server."""
+    def connect(self) -> bool:
+        """Connect to the chat server and start the message receiving thread.
+        
+        Establishes a TCP socket connection to the server, sets the connected state,
+        and starts a background thread to handle incoming messages.
+        
+        Returns:
+            bool: True if connection was successful, False otherwise.
+            
+        Note:
+            This method will print connection status messages to stdout.
+            The receiving thread is started as a non-daemon thread for proper cleanup.
+        """
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.socket.connect((self.host, self.port))
@@ -49,8 +82,18 @@ class SecureChatClient:
             print(f"Failed to connect to server: {e}")
             return False
     
-    def receive_messages(self):
-        """Receive and handle messages from the server."""
+    def receive_messages(self) -> None:
+        """Continuously receive and handle messages from the server.
+        
+        This method runs in a separate thread and continuously listens for incoming
+        messages from the server. It handles connection errors gracefully and ensures
+        proper cleanup by calling disconnect() when the loop exits.
+        
+        Note:
+            This method is designed to run in a background thread. It will continue
+            running until the connection is lost or an error occurs. All exceptions
+            are caught and logged to prevent the thread from crashing.
+        """
         try:
             while self.connected:
                 try:
@@ -69,8 +112,26 @@ class SecureChatClient:
         finally:
             self.disconnect()
     
-    def handle_message(self, message_data: bytes):
-        """Handle different types of messages from the server."""
+    def handle_message(self, message_data: bytes) -> None:
+        """Handle different types of messages received from the server.
+        
+        This method acts as a message dispatcher, parsing incoming messages and
+        routing them to appropriate handler methods based on the message type.
+        
+        Args:
+            message_data (bytes): Raw message data received from the server.
+            
+        Note:
+            Messages are expected to be JSON-encoded with a 'type' field indicating
+            the message type. The method handles various message types including:
+            - Key exchange initialization and responses
+            - Encrypted chat messages
+            - Key verification messages
+            - Error messages
+            - Key exchange reset messages
+            
+            All exceptions are caught and logged to prevent crashes.
+        """
         try:
             # Try to parse as JSON first (for control messages)
             try:
@@ -106,8 +167,21 @@ class SecureChatClient:
         except Exception as e:
             print(f"\nError handling message: {e}")
     
-    def initiate_key_exchange(self):
-        """Initiate key exchange as the first client."""
+    def initiate_key_exchange(self) -> None:
+        """Initiate the key exchange process as the first client.
+        
+        Generates a new keypair using the ML-KEM-1024 algorithm, creates a key
+        exchange initialization message, and sends it to the server to be routed
+        to the other client.
+        
+        Note:
+            This method is called when this client is designated as the initiator
+            of the key exchange process. The generated private key is stored in
+            self.private_key for later use in processing the response.
+            
+        Raises:
+            Exception: If key generation or message sending fails.
+        """
         try:
             # Generate keypair
             public_key, self.private_key = self.protocol.generate_keypair()
@@ -121,8 +195,23 @@ class SecureChatClient:
         except Exception as e:
             print(f"Failed to initiate key exchange: {e}")
 
-    def handle_key_exchange_init(self, message_data: bytes):
-        """Handle key exchange initiation from another client."""
+    def handle_key_exchange_init(self, message_data: bytes) -> None:
+        """Handle key exchange initiation from another client.
+        
+        This method processes the key exchange initialization message received
+        from the server, extracts the ciphertext, and creates a response message
+        to send back to the server.
+        
+        Args:
+            message_data (bytes): The raw key exchange initialization message data.
+            
+        Note:
+            This method is called when this client receives a key exchange init
+            message from the server, indicating that another client has initiated
+            the key exchange process.
+            It expects the message to contain the ciphertext that needs to be processed.
+            The response will be sent back to the server to continue the key exchange.
+        """
         try:
             _, ciphertext = self.protocol.process_key_exchange_init(message_data)
             response = self.protocol.create_key_exchange_response(ciphertext)
@@ -133,7 +222,7 @@ class SecureChatClient:
         except Exception as e:
             print(f"Key exchange init error: {e}")
     
-    def handle_key_exchange_response(self, message_data: bytes):
+    def handle_key_exchange_response(self, message_data: bytes) -> None:
         """Handle key exchange response from another client."""
         try:
             if hasattr(self, 'private_key'):
@@ -145,12 +234,12 @@ class SecureChatClient:
         except Exception as e:
             print(f"Key exchange response error: {e}")
     
-    def handle_key_exchange_complete(self, message: dict):
+    def handle_key_exchange_complete(self, message: dict) -> None:
         """Handle key exchange completion notification."""
         self.key_exchange_complete = True
         self.start_key_verification()
     
-    def start_key_verification(self):
+    def start_key_verification(self) -> None:
         """Start the key verification process."""
         try:
             
@@ -188,7 +277,7 @@ class SecureChatClient:
             print(f"Error during key verification: {e}")
             self.confirm_key_verification(False)
     
-    def confirm_key_verification(self, verified: bool):
+    def confirm_key_verification(self, verified: bool) -> None:
         """Confirm the key verification result."""
         try:
             # Update local verification status
@@ -213,7 +302,7 @@ class SecureChatClient:
         except Exception as e:
             print(f"Error confirming verification: {e}")
     
-    def handle_key_verification_message(self, message_data: bytes):
+    def handle_key_verification_message(self, message_data: bytes) -> None:
         """Handle key verification message from peer."""
         try:
             verification_info = self.protocol.process_key_verification_message(message_data)
@@ -227,7 +316,7 @@ class SecureChatClient:
         except Exception as e:
             print(f"Error handling verification message: {e}")
     
-    def handle_encrypted_message(self, message_data: bytes):
+    def handle_encrypted_message(self, message_data: bytes) -> None:
         """Handle encrypted chat messages."""
         try:
             decrypted_text = self.protocol.decrypt_message(message_data)
@@ -258,7 +347,7 @@ class SecureChatClient:
         except Exception as e:
             print(f"\nFailed to decrypt message: {e}")
     
-    def handle_key_exchange_reset(self, message_data: bytes):
+    def handle_key_exchange_reset(self, message_data: bytes) -> None:
         """Handle key exchange reset message when other client disconnects."""
         try:
             message = json.loads(message_data.decode('utf-8'))
@@ -285,7 +374,7 @@ class SecureChatClient:
         except Exception as e:
             print(f"Error handling key exchange reset: {e}")
     
-    def send_message(self, text: str):
+    def send_message(self, text: str) -> bool | None:
         """Encrypt and send a chat message."""
         if not self.key_exchange_complete:
             print("Cannot send messages - key exchange not complete")
@@ -308,7 +397,7 @@ class SecureChatClient:
         except Exception as e:
             print(f"Failed to send message: {e}")
     
-    def send_file(self, file_path: str):
+    def send_file(self, file_path: str) -> None:
         """Send a file to the other client."""
         try:
             if not self.verification_complete:
@@ -332,7 +421,7 @@ class SecureChatClient:
         except Exception as e:
             print(f"Failed to send file: {e}")
     
-    def handle_file_metadata(self, decrypted_message: str):
+    def handle_file_metadata(self, decrypted_message: str) -> None:
         """Handle incoming file metadata."""
         try:
             metadata = self.protocol.process_file_metadata(decrypted_message)
@@ -376,7 +465,7 @@ class SecureChatClient:
         except Exception as e:
             print(f"Error handling file metadata: {e}")
     
-    def handle_file_accept(self, decrypted_message: str):
+    def handle_file_accept(self, decrypted_message: str) -> None:
         """Handle file acceptance from peer."""
         try:
             message = json.loads(decrypted_message)
@@ -391,13 +480,18 @@ class SecureChatClient:
             
             print(f"File transfer accepted. Sending {transfer_info['metadata']['filename']}...")
             
-            # Start sending file chunks
-            self._send_file_chunks(transfer_id, file_path)
+            # Start sending file chunks in a separate thread to avoid blocking message processing
+            chunk_thread = threading.Thread(
+                target=self._send_file_chunks,
+                args=(transfer_id, file_path),
+                daemon=True
+            )
+            chunk_thread.start()
             
         except Exception as e:
             print(f"Error handling file acceptance: {e}")
     
-    def handle_file_reject(self, decrypted_message: str):
+    def handle_file_reject(self, decrypted_message: str) -> None:
         """Handle file rejection from peer."""
         try:
             message = json.loads(decrypted_message)
@@ -412,7 +506,7 @@ class SecureChatClient:
         except Exception as e:
             print(f"Error handling file rejection: {e}")
     
-    def handle_file_chunk(self, decrypted_message: str):
+    def handle_file_chunk(self, decrypted_message: str) -> None:
         """Handle incoming file chunk."""
         try:
             chunk_info = self.protocol.process_file_chunk(decrypted_message)
@@ -432,14 +526,25 @@ class SecureChatClient:
                 metadata["total_chunks"]
             )
             
-            # Show progress
+            # Show progress - but only at significant intervals to avoid console spam
             received_chunks = len(self.protocol.received_chunks.get(transfer_id, {}))
             progress = (received_chunks / metadata["total_chunks"]) * 100
-            print(f"Receiving {metadata['filename']}: {progress:.1f}% ({received_chunks}/{metadata['total_chunks']} chunks)")
+            
+            # Initialize progress tracking for this transfer if not exists
+            if not hasattr(self, '_last_progress_shown'):
+                self._last_progress_shown = {}
+            if transfer_id not in self._last_progress_shown:
+                self._last_progress_shown[transfer_id] = -1
+            
+            # Only show progress every 10% or on completion to reduce console interference
+            if (progress - self._last_progress_shown[transfer_id] >= 10 or 
+                is_complete or 
+                received_chunks == 1):  # Always show first chunk
+                print(f"Receiving {metadata['filename']}: {progress:.1f}% ({received_chunks}/{metadata['total_chunks']} chunks)")
+                self._last_progress_shown[transfer_id] = progress
             
             if is_complete:
                 # Reassemble file
-                import os
                 output_path = os.path.join(os.getcwd(), metadata["filename"])
                 
                 # Handle filename conflicts
@@ -462,11 +567,15 @@ class SecureChatClient:
                 
                 # Clean up
                 del self.active_file_metadata[transfer_id]
+                
+                # Clean up progress tracking
+                if hasattr(self, '_last_progress_shown') and transfer_id in self._last_progress_shown:
+                    del self._last_progress_shown[transfer_id]
             
         except Exception as e:
             print(f"Error handling file chunk: {e}")
     
-    def handle_file_complete(self, decrypted_message: str):
+    def handle_file_complete(self, decrypted_message: str) -> None:
         """Handle file transfer completion notification."""
         try:
             message = json.loads(decrypted_message)
@@ -480,7 +589,7 @@ class SecureChatClient:
         except Exception as e:
             print(f"Error handling file completion: {e}")
     
-    def _send_file_chunks(self, transfer_id: str, file_path: str):
+    def _send_file_chunks(self, transfer_id: str, file_path: str) -> None:
         """Send file chunks to peer."""
         try:
             chunks = self.protocol.chunk_file(file_path)
@@ -547,7 +656,6 @@ class SecureChatClient:
                         break
                 else:
                     # Wait for key exchange and verification to complete
-                    import time
                     time.sleep(0.1)
                     
         except Exception as e:
@@ -555,7 +663,7 @@ class SecureChatClient:
         finally:
             self.disconnect()
     
-    def disconnect(self):
+    def disconnect(self) -> None:
         """Disconnect from the server."""
         if self.connected:
             self.connected = False
@@ -574,7 +682,7 @@ class SecureChatClient:
             
             print("\nDisconnected from server.")
 
-def main():
+def main() -> None:
     """Main function to run the secure chat client."""
     print("Secure Chat Client")
     print("==================")

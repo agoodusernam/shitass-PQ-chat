@@ -10,7 +10,17 @@ class TestSecureChatProtocol(unittest.TestCase):
     """Test the secure chat protocol functionality."""
     
     def setUp(self):
-        """Set up test fixtures."""
+        """Set up test fixtures for each test method.
+        
+        Creates two separate SecureChatProtocol instances to simulate
+        two clients in a secure chat session. These instances are used
+        to test key exchange, encryption, decryption, and other protocol
+        functionality.
+        
+        Attributes:
+            protocol1 (SecureChatProtocol): First client's protocol instance.
+            protocol2 (SecureChatProtocol): Second client's protocol instance.
+        """
         self.protocol1 = SecureChatProtocol()
         self.protocol2 = SecureChatProtocol()
     
@@ -26,7 +36,22 @@ class TestSecureChatProtocol(unittest.TestCase):
         print("✓ Key generation test passed")
     
     def test_key_exchange(self):
-        """Test the complete key exchange process."""
+        """Test the complete ML-KEM-1024 key exchange process between two clients.
+        
+        This test simulates the full key exchange protocol:
+        1. Client 1 generates a keypair and creates an initialization message
+        2. Client 2 processes the init message and creates a response
+        3. Client 1 processes the response to complete the exchange
+        4. Both clients should derive the same shared secret
+        
+        The test verifies that:
+        - Both clients derive identical shared secrets
+        - The protocol's shared_key attribute is properly set
+        - The key exchange completes without errors
+        
+        This is a critical test as secure communication depends on successful
+        key exchange using the post-quantum ML-KEM-1024 algorithm.
+        """
         # Client 1 generates keypair and creates init message
         public_key1, private_key1 = self.protocol1.generate_keypair()
         init_message_bytes = self.protocol1.create_key_exchange_init(public_key1)
@@ -109,8 +134,10 @@ class TestSecureChatProtocol(unittest.TestCase):
         self.test_key_exchange()
         
         # Store initial chain keys
-        initial_chain_key1 = self.protocol1.chain_key
-        initial_chain_key2 = self.protocol2.chain_key
+        initial_send_key1 = self.protocol1.send_chain_key
+        initial_receive_key1 = self.protocol1.receive_chain_key
+        initial_send_key2 = self.protocol2.send_chain_key
+        initial_receive_key2 = self.protocol2.receive_chain_key
         
         # Send first message
         message1 = "First message"
@@ -119,12 +146,14 @@ class TestSecureChatProtocol(unittest.TestCase):
         self.assertEqual(message1, decrypted1)
         
         # Chain keys should have changed after message
-        self.assertNotEqual(initial_chain_key1, self.protocol1.chain_key)
-        self.assertNotEqual(initial_chain_key2, self.protocol2.chain_key)
+        # Protocol1's send key should change (it sent a message)
+        self.assertNotEqual(initial_send_key1, self.protocol1.send_chain_key)
+        # Protocol2's receive key should change (it received a message)
+        self.assertNotEqual(initial_receive_key2, self.protocol2.receive_chain_key)
         
         # Store chain keys after first message
-        chain_key1_after_msg1 = self.protocol1.chain_key
-        chain_key2_after_msg1 = self.protocol2.chain_key
+        send_key1_after_msg1 = self.protocol1.send_chain_key
+        receive_key2_after_msg1 = self.protocol2.receive_chain_key
         
         # Send second message
         message2 = "Second message"
@@ -133,8 +162,8 @@ class TestSecureChatProtocol(unittest.TestCase):
         self.assertEqual(message2, decrypted2)
         
         # Chain keys should have changed again
-        self.assertNotEqual(chain_key1_after_msg1, self.protocol1.chain_key)
-        self.assertNotEqual(chain_key2_after_msg1, self.protocol2.chain_key)
+        self.assertNotEqual(send_key1_after_msg1, self.protocol1.send_chain_key)
+        self.assertNotEqual(receive_key2_after_msg1, self.protocol2.receive_chain_key)
         
         print("✓ Perfect Forward Secrecy key ratcheting test passed")
 
@@ -191,8 +220,10 @@ class TestSecureChatProtocol(unittest.TestCase):
         
         # Sessions should have different shared secrets and chain keys
         self.assertNotEqual(secret1_1, secret2_1)
-        self.assertNotEqual(session1_proto1.chain_key, session2_proto1.chain_key)
-        self.assertNotEqual(session1_proto2.chain_key, session2_proto2.chain_key)
+        self.assertNotEqual(session1_proto1.send_chain_key, session2_proto1.send_chain_key)
+        self.assertNotEqual(session1_proto1.receive_chain_key, session2_proto1.receive_chain_key)
+        self.assertNotEqual(session1_proto2.send_chain_key, session2_proto2.send_chain_key)
+        self.assertNotEqual(session1_proto2.receive_chain_key, session2_proto2.receive_chain_key)
         
         # Messages encrypted in one session should not decrypt in another
         message = "Cross-session test"
@@ -246,7 +277,7 @@ class TestSecureChatProtocol(unittest.TestCase):
         self.assertEqual(message1, decrypted1)
         
         # Store the current chain key (simulating compromise)
-        compromised_chain_key = self.protocol1.chain_key
+        compromised_chain_key = self.protocol1.send_chain_key
         
         # Send more messages to advance the chain
         for i in range(3):
@@ -260,7 +291,7 @@ class TestSecureChatProtocol(unittest.TestCase):
         # chain key state and then the chain key was ratcheted forward
         
         # The compromised chain key should be different from what was used for message1
-        self.assertNotEqual(compromised_chain_key, self.protocol1.chain_key)
+        self.assertNotEqual(compromised_chain_key, self.protocol1.send_chain_key)
         
         # This test demonstrates that forward secrecy is maintained:
         # - Past message keys cannot be derived from current chain key
