@@ -90,16 +90,6 @@ class SecureChatClient:
                     print(f"\nServer error: {message.get('error', 'Unknown error')}")
                 elif message_type == 5:  # MSG_TYPE_KEY_VERIFICATION
                     self.handle_key_verification_message(message_data)
-                elif message_type == MSG_TYPE_FILE_METADATA:
-                    self.handle_file_metadata(message_data)
-                elif message_type == MSG_TYPE_FILE_ACCEPT:
-                    self.handle_file_accept(message_data)
-                elif message_type == MSG_TYPE_FILE_REJECT:
-                    self.handle_file_reject(message_data)
-                elif message_type == MSG_TYPE_FILE_CHUNK:
-                    self.handle_file_chunk(message_data)
-                elif message_type == MSG_TYPE_FILE_COMPLETE:
-                    self.handle_file_complete(message_data)
                 elif message_type == MSG_TYPE_KEY_EXCHANGE_RESET:
                     self.handle_key_exchange_reset(message_data)
                 elif message.get("type") == "key_exchange_complete":
@@ -241,7 +231,29 @@ class SecureChatClient:
         """Handle encrypted chat messages."""
         try:
             decrypted_text = self.protocol.decrypt_message(message_data)
-            print(f"\nOther user: {decrypted_text}")
+            
+            # Attempt to parse the decrypted text as a JSON message
+            try:
+                message = json.loads(decrypted_text)
+                message_type = message.get("type")
+
+                if message_type == MSG_TYPE_FILE_METADATA:
+                    self.handle_file_metadata(decrypted_text)
+                elif message_type == MSG_TYPE_FILE_ACCEPT:
+                    self.handle_file_accept(decrypted_text)
+                elif message_type == MSG_TYPE_FILE_REJECT:
+                    self.handle_file_reject(decrypted_text)
+                elif message_type == MSG_TYPE_FILE_CHUNK:
+                    self.handle_file_chunk(decrypted_text)
+                elif message_type == MSG_TYPE_FILE_COMPLETE:
+                    self.handle_file_complete(decrypted_text)
+                else:
+                    # It's a regular chat message if it's not a file-related type
+                    print(f"\nOther user: {decrypted_text}")
+            
+            except (json.JSONDecodeError, TypeError):
+                # If it's not JSON, it's a regular chat message
+                print(f"\nOther user: {decrypted_text}")
             
         except Exception as e:
             print(f"\nFailed to decrypt message: {e}")
@@ -302,12 +314,11 @@ class SecureChatClient:
             if not self.verification_complete:
                 print("Cannot send file: Key verification not complete")
                 return
-            
+
             # Create file metadata message
-            metadata_msg = self.protocol.create_file_metadata_message(file_path)
+            metadata_msg, metadata = self.protocol.create_file_metadata_message(file_path, return_metadata=True)
             
             # Store file path for later sending
-            metadata = self.protocol.process_file_metadata(metadata_msg)
             transfer_id = metadata["transfer_id"]
             self.pending_file_transfers[transfer_id] = {
                 "file_path": file_path,
@@ -321,10 +332,10 @@ class SecureChatClient:
         except Exception as e:
             print(f"Failed to send file: {e}")
     
-    def handle_file_metadata(self, message_data: bytes):
+    def handle_file_metadata(self, decrypted_message: str):
         """Handle incoming file metadata."""
         try:
-            metadata = self.protocol.process_file_metadata(message_data)
+            metadata = self.protocol.process_file_metadata(decrypted_message)
             transfer_id = metadata["transfer_id"]
             
             # Store metadata for potential acceptance
@@ -365,10 +376,10 @@ class SecureChatClient:
         except Exception as e:
             print(f"Error handling file metadata: {e}")
     
-    def handle_file_accept(self, message_data: bytes):
+    def handle_file_accept(self, decrypted_message: str):
         """Handle file acceptance from peer."""
         try:
-            message = json.loads(message_data.decode('utf-8'))
+            message = json.loads(decrypted_message)
             transfer_id = message["transfer_id"]
             
             if transfer_id not in self.pending_file_transfers:
@@ -386,10 +397,10 @@ class SecureChatClient:
         except Exception as e:
             print(f"Error handling file acceptance: {e}")
     
-    def handle_file_reject(self, message_data: bytes):
+    def handle_file_reject(self, decrypted_message: str):
         """Handle file rejection from peer."""
         try:
-            message = json.loads(message_data.decode('utf-8'))
+            message = json.loads(decrypted_message)
             transfer_id = message["transfer_id"]
             reason = message.get("reason", "Unknown reason")
             
@@ -401,10 +412,10 @@ class SecureChatClient:
         except Exception as e:
             print(f"Error handling file rejection: {e}")
     
-    def handle_file_chunk(self, message_data: bytes):
+    def handle_file_chunk(self, decrypted_message: str):
         """Handle incoming file chunk."""
         try:
-            chunk_info = self.protocol.process_file_chunk(message_data)
+            chunk_info = self.protocol.process_file_chunk(decrypted_message)
             transfer_id = chunk_info["transfer_id"]
             
             if transfer_id not in self.active_file_metadata:
@@ -455,10 +466,10 @@ class SecureChatClient:
         except Exception as e:
             print(f"Error handling file chunk: {e}")
     
-    def handle_file_complete(self, message_data: bytes):
+    def handle_file_complete(self, decrypted_message: str):
         """Handle file transfer completion notification."""
         try:
-            message = json.loads(message_data.decode('utf-8'))
+            message = json.loads(decrypted_message)
             transfer_id = message["transfer_id"]
             
             if transfer_id in self.pending_file_transfers:
@@ -609,4 +620,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    

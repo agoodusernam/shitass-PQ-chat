@@ -1,12 +1,155 @@
 import tkinter as tk # type: ignore
-from tkinter import scrolledtext, messagebox, filedialog # type: ignore
+from tkinter import scrolledtext, messagebox, filedialog, ttk # type: ignore
 import threading
 import sys
 import io
 import os
+import time
 from client import SecureChatClient
+import json
 
 from shared import bytes_to_human_readable
+
+
+class FileTransferWindow:
+    """Separate window for file transfer progress and status updates."""
+    
+    def __init__(self, parent_root):
+        self.parent_root = parent_root
+        self.window = None
+        self.transfers = {}  # transfer_id -> transfer_info
+        self.speed_label = None
+        self.transfer_list = None
+        
+        # Speed calculation variables
+        self.last_update_time = time.time()
+        self.last_bytes_transferred = 0
+        self.current_speed = 0.0
+        
+        # Dark theme colors (matching main window)
+        self.BG_COLOR = "#2b2b2b"
+        self.FG_COLOR = "#d4d4d4"
+        self.ENTRY_BG_COLOR = "#3c3c3c"
+        self.BUTTON_BG_COLOR = "#555555"
+        
+    def create_window(self):
+        """Create the file transfer window if it doesn't exist."""
+        if self.window is None or not self.window.winfo_exists():
+            self.window = tk.Toplevel(self.parent_root)
+            self.window.title("File Transfer Progress")
+            self.window.geometry("500x400")
+            self.window.configure(bg=self.BG_COLOR)
+            
+            # Make window stay on top but not always
+            self.window.transient(self.parent_root)
+            
+            # Top frame for speed display
+            top_frame = tk.Frame(self.window, bg=self.BG_COLOR)
+            top_frame.pack(fill=tk.X, padx=10, pady=5)
+            
+            # Speed label in top right
+            self.speed_label = tk.Label(
+                top_frame, 
+                text="Speed: 0.0 MiB/s", 
+                bg=self.BG_COLOR, 
+                fg="#4CAF50", 
+                font=("Consolas", 10, "bold")
+            )
+            self.speed_label.pack(side=tk.RIGHT)
+            
+            # Title label
+            title_label = tk.Label(
+                top_frame,
+                text="File Transfers",
+                bg=self.BG_COLOR,
+                fg=self.FG_COLOR,
+                font=("Consolas", 12, "bold")
+            )
+            title_label.pack(side=tk.LEFT)
+            
+            # Main frame for transfer list
+            main_frame = tk.Frame(self.window, bg=self.BG_COLOR)
+            main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+            
+            # Scrollable text area for transfer updates
+            self.transfer_list = scrolledtext.ScrolledText(
+                main_frame,
+                state=tk.DISABLED,
+                wrap=tk.WORD,
+                height=20,
+                font=("Consolas", 9),
+                bg="#1e1e1e",
+                fg=self.FG_COLOR,
+                insertbackground=self.FG_COLOR,
+                relief=tk.FLAT
+            )
+            self.transfer_list.pack(fill=tk.BOTH, expand=True)
+            
+            # Handle window closing
+            self.window.protocol("WM_DELETE_WINDOW", self.hide_window)
+            
+    def show_window(self):
+        """Show the file transfer window."""
+        self.create_window()
+        self.window.deiconify()
+        self.window.lift()
+        
+    def hide_window(self):
+        """Hide the file transfer window."""
+        if self.window:
+            self.window.withdraw()
+            
+    def add_transfer_message(self, message, transfer_id=None):
+        """Add a message to the transfer window."""
+        self.create_window()
+        
+        if self.transfer_list:
+            self.transfer_list.config(state=tk.NORMAL)
+            timestamp = time.strftime("%H:%M:%S")
+            self.transfer_list.insert(tk.END, f"[{timestamp}] {message}\n")
+            self.transfer_list.see(tk.END)
+            self.transfer_list.config(state=tk.DISABLED)
+            
+        # Show window if not visible
+        if self.window.state() == 'withdrawn':
+            self.show_window()
+            
+    def update_transfer_progress(self, transfer_id, filename, current, total, bytes_transferred=None):
+        """Update progress for a specific transfer."""
+        progress = (current / total) * 100 if total > 0 else 0
+        
+        # Calculate speed if bytes_transferred is provided
+        if bytes_transferred is not None:
+            self.update_speed(bytes_transferred)
+            
+        message = f"{filename}: {progress:.1f}% ({current}/{total} chunks)"
+        self.add_transfer_message(message, transfer_id)
+        
+    def update_speed(self, total_bytes_transferred):
+        """Update the transfer speed display."""
+        current_time = time.time()
+        time_diff = current_time - self.last_update_time
+        
+        if time_diff >= 1.0:  # Update speed every second
+            bytes_diff = total_bytes_transferred - self.last_bytes_transferred
+            speed_bytes_per_sec = bytes_diff / time_diff
+            speed_mib_per_sec = speed_bytes_per_sec / (1024 * 1024)  # Convert to MiB/s
+            
+            self.current_speed = speed_mib_per_sec
+            
+            if self.speed_label:
+                self.speed_label.config(text=f"Speed: {speed_mib_per_sec:.2f} MiB/s")
+                
+            self.last_update_time = current_time
+            self.last_bytes_transferred = total_bytes_transferred
+            
+    def clear_speed(self):
+        """Clear the speed display when no transfers are active."""
+        self.current_speed = 0.0
+        if self.speed_label:
+            self.speed_label.config(text="Speed: 0.0 MiB/s")
+        self.last_bytes_transferred = 0
+        self.last_update_time = time.time()
 
 
 class ChatGUI:
@@ -32,6 +175,9 @@ class ChatGUI:
         self.ephemeral_mode = False
         self.ephemeral_messages = {}  # Track messages with timestamps for removal
         self.message_counter = 0  # Counter for unique message IDs
+
+        # File transfer window
+        self.file_transfer_window = FileTransferWindow(self.root)
 
         # Create GUI elements
         self.create_widgets()
@@ -118,7 +264,16 @@ class ChatGUI:
             activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
             font=("Consolas", 9)
         )
-        self.ephemeral_btn.pack(side=tk.RIGHT, padx=(0, 15)) # type: ignore
+        self.ephemeral_btn.pack(side=tk.RIGHT, padx=(0, 5)) # type: ignore
+
+        # File Transfer window button
+        self.file_transfer_btn = tk.Button(
+            input_frame, text="📁 Transfers", command=self.show_file_transfer_window,
+            bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT, # type: ignore
+            activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
+            font=("Consolas", 9)
+        )
+        self.file_transfer_btn.pack(side=tk.RIGHT, padx=(0, 10)) # type: ignore
 
         # Send File button
         self.send_file_btn = tk.Button(
@@ -141,6 +296,7 @@ class ChatGUI:
         self.send_btn.config(state=tk.DISABLED) # type: ignore
         self.send_file_btn.config(state=tk.DISABLED) # type: ignore
         self.ephemeral_btn.config(state=tk.DISABLED) # type: ignore
+        self.file_transfer_btn.config(state=tk.DISABLED) # type: ignore
         
         # Start ephemeral message cleanup thread
         self.start_ephemeral_cleanup()
@@ -170,6 +326,10 @@ class ChatGUI:
     def update_status(self, status_text, color="#ff6b6b"):
         """Update the status indicator with new text and color."""
         self.status_label.config(text=status_text, fg=color) # type: ignore
+
+    def show_file_transfer_window(self):
+        """Show the file transfer progress window."""
+        self.file_transfer_window.show_window()
 
     def toggle_connection(self):
         """Toggle connection to the server."""
@@ -222,6 +382,7 @@ class ChatGUI:
         self.send_btn.config(state=tk.NORMAL) # type: ignore
         self.send_file_btn.config(state=tk.NORMAL) # type: ignore
         self.ephemeral_btn.config(state=tk.NORMAL) # type: ignore
+        self.file_transfer_btn.config(state=tk.NORMAL) # type: ignore
         self.message_entry.focus()
         self.update_status("Connected, waiting for other client", "#ffff00")  # Yellow for waiting
 
@@ -236,6 +397,8 @@ class ChatGUI:
         self.message_entry.config(state=tk.DISABLED) # type: ignore
         self.send_btn.config(state=tk.DISABLED) # type: ignore
         self.send_file_btn.config(state=tk.DISABLED) # type: ignore
+        self.ephemeral_btn.config(state=tk.DISABLED) # type: ignore
+        self.file_transfer_btn.config(state=tk.DISABLED) # type: ignore
         self.append_to_chat("Disconnected from server.")
         self.update_status("Not Connected", "#ff6b6b")
         sys.exit(0)  # Exit the application
@@ -477,10 +640,33 @@ class GUISecureChatClient(SecureChatClient):
         """Handle encrypted chat messages - override to send to GUI."""
         try:
             decrypted_text = self.protocol.decrypt_message(message_data)
-            if self.gui:
-                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Other user: {decrypted_text}", is_message=True))
-            else:
-                print(f"\nOther user: {decrypted_text}")
+            
+            # Attempt to parse the decrypted text as a JSON message
+            try:
+                from shared import MSG_TYPE_FILE_METADATA, MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT, MSG_TYPE_FILE_CHUNK, MSG_TYPE_FILE_COMPLETE
+                
+                message = json.loads(decrypted_text)
+                message_type = message.get("type")
+
+                if message_type == MSG_TYPE_FILE_METADATA:
+                    self.handle_file_metadata(decrypted_text)
+                elif message_type == MSG_TYPE_FILE_ACCEPT:
+                    self.handle_file_accept(decrypted_text)
+                elif message_type == MSG_TYPE_FILE_REJECT:
+                    self.handle_file_reject(decrypted_text)
+                elif message_type == MSG_TYPE_FILE_CHUNK:
+                    self.handle_file_chunk(decrypted_text)
+                elif message_type == MSG_TYPE_FILE_COMPLETE:
+                    self.handle_file_complete(decrypted_text)
+                else:
+                    # It's a regular chat message
+                    if self.gui:
+                        self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Other user: {decrypted_text}", is_message=True))
+            
+            except (json.JSONDecodeError, TypeError):
+                # If it's not JSON, it's a regular chat message
+                if self.gui:
+                    self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Other user: {decrypted_text}", is_message=True))
 
         except Exception as e:
             if self.gui:
@@ -567,10 +753,10 @@ class GUISecureChatClient(SecureChatClient):
             else:
                 print(f"Error handling key exchange reset: {e}")
     
-    def handle_file_metadata(self, message_data: bytes):
+    def handle_file_metadata(self, decrypted_message: str):
         """Handle incoming file metadata with GUI dialog."""
         try:
-            metadata = self.protocol.process_file_metadata(message_data)
+            metadata = self.protocol.process_file_metadata(decrypted_message)
             transfer_id = metadata["transfer_id"]
             
             # Store metadata for potential acceptance
@@ -592,19 +778,19 @@ class GUISecureChatClient(SecureChatClient):
                         from shared import send_message
                         accept_msg = self.protocol.create_file_accept_message(transfer_id)
                         send_message(self.socket, accept_msg)
-                        self.gui.append_to_chat(f"File transfer accepted: {metadata['filename']}")
+                        self.gui.file_transfer_window.add_transfer_message(f"File transfer accepted: {metadata['filename']}", transfer_id)
                     else:
                         # Send rejection
                         from shared import send_message
                         reject_msg = self.protocol.create_file_reject_message(transfer_id)
                         send_message(self.socket, reject_msg)
-                        self.gui.append_to_chat("File transfer rejected.")
+                        self.gui.file_transfer_window.add_transfer_message("File transfer rejected.")
                         del self.active_file_metadata[transfer_id]
                 
                 self.gui.root.after(0, show_file_dialog)
             else:
                 # Fallback to console behavior
-                super().handle_file_metadata(message_data)
+                super().handle_file_metadata(decrypted_message)
                 
         except Exception as e:
             if self.gui:
@@ -612,23 +798,23 @@ class GUISecureChatClient(SecureChatClient):
             else:
                 print(f"Error handling file metadata: {e}")
     
-    def handle_file_accept(self, message_data: bytes):
+    def handle_file_accept(self, decrypted_message: str):
         """Handle file acceptance from peer with GUI updates."""
         try:
             import json
-            message = json.loads(message_data.decode('utf-8'))
+            message = json.loads(decrypted_message)
             transfer_id = message["transfer_id"]
             
             if transfer_id not in self.pending_file_transfers:
                 if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.append_to_chat("Received acceptance for unknown file transfer"))
+                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message("Received acceptance for unknown file transfer"))
                 return
             
             transfer_info = self.pending_file_transfers[transfer_id]
             filename = transfer_info["metadata"]["filename"]
             
             if self.gui:
-                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"File transfer accepted. Sending {filename}..."))
+                self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(f"File transfer accepted. Sending {filename}...", transfer_id))
             
             # Start sending file chunks
             self._send_file_chunks(transfer_id, transfer_info["file_path"])
@@ -639,18 +825,18 @@ class GUISecureChatClient(SecureChatClient):
             else:
                 print(f"Error handling file acceptance: {e}")
     
-    def handle_file_reject(self, message_data: bytes):
+    def handle_file_reject(self, decrypted_message: str):
         """Handle file rejection from peer with GUI updates."""
         try:
             import json
-            message = json.loads(message_data.decode('utf-8'))
+            message = json.loads(decrypted_message)
             transfer_id = message["transfer_id"]
             reason = message.get("reason", "Unknown reason")
             
             if transfer_id in self.pending_file_transfers:
                 filename = self.pending_file_transfers[transfer_id]["metadata"]["filename"]
                 if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.append_to_chat(f"File transfer rejected: {filename} - {reason}"))
+                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(f"File transfer rejected: {filename} - {reason}", transfer_id))
                 del self.pending_file_transfers[transfer_id]
             
         except Exception as e:
@@ -659,15 +845,15 @@ class GUISecureChatClient(SecureChatClient):
             else:
                 print(f"Error handling file rejection: {e}")
     
-    def handle_file_chunk(self, message_data: bytes):
+    def handle_file_chunk(self, decrypted_message: str):
         """Handle incoming file chunk with GUI progress updates."""
         try:
-            chunk_info = self.protocol.process_file_chunk(message_data)
+            chunk_info = self.protocol.process_file_chunk(decrypted_message)
             transfer_id = chunk_info["transfer_id"]
             
             if transfer_id not in self.active_file_metadata:
                 if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.append_to_chat("Received chunk for unknown file transfer"))
+                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message("Received chunk for unknown file transfer"))
                 return
             
             metadata = self.active_file_metadata[transfer_id]
@@ -683,10 +869,11 @@ class GUISecureChatClient(SecureChatClient):
             # Show progress in GUI
             if self.gui:
                 received_chunks = len(self.protocol.received_chunks.get(transfer_id, {}))
-                if received_chunks % 10 == 0: # Update every 100 chunks
-                    progress = (received_chunks / metadata["total_chunks"]) * 100
-                    self.gui.root.after(0, lambda: self.gui.append_to_chat(
-                        f"Receiving {metadata['filename']}: {progress:.1f}% ({received_chunks}/{metadata['total_chunks']} chunks)"
+                if received_chunks % 10 == 0: # Update every 10 chunks
+                    # Calculate bytes transferred for speed tracking
+                    bytes_transferred = received_chunks * len(chunk_info["chunk_data"])
+                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.update_transfer_progress(
+                        transfer_id, metadata['filename'], received_chunks, metadata['total_chunks'], bytes_transferred
                     ))
             
             if is_complete:
@@ -703,7 +890,9 @@ class GUISecureChatClient(SecureChatClient):
                 try:
                     self.protocol.reassemble_file(transfer_id, output_path, metadata["file_hash"])
                     if self.gui:
-                        self.gui.root.after(0, lambda: self.gui.append_to_chat(f"File received successfully: {output_path}"))
+                        self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(f"File received successfully: {output_path}", transfer_id))
+                        # Clear speed when transfer completes
+                        self.gui.root.after(0, lambda: self.gui.file_transfer_window.clear_speed())
                     
                     # Send completion message
                     from shared import send_message
@@ -712,33 +901,35 @@ class GUISecureChatClient(SecureChatClient):
                     
                 except Exception as e:
                     if self.gui:
-                        self.gui.root.after(0, lambda: self.gui.append_to_chat(f"File reassembly failed: {e}"))
+                        self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(f"File reassembly failed: {e}", transfer_id))
                 
                 # Clean up
                 del self.active_file_metadata[transfer_id]
             
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error handling file chunk: {e}"))
+                self.gui.root.after(0, lambda e=e: self.gui.file_transfer_window.add_transfer_message(f"Error handling file chunk: {e}"))
             else:
                 print(f"Error handling file chunk: {e}")
     
-    def handle_file_complete(self, message_data: bytes):
+    def handle_file_complete(self, decrypted_message: str):
         """Handle file transfer completion notification with GUI updates."""
         try:
             import json
-            message = json.loads(message_data.decode('utf-8'))
+            message = json.loads(decrypted_message)
             transfer_id = message["transfer_id"]
             
             if transfer_id in self.pending_file_transfers:
                 filename = self.pending_file_transfers[transfer_id]["metadata"]["filename"]
                 if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.append_to_chat(f"File transfer completed: {filename}"))
+                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(f"File transfer completed: {filename}", transfer_id))
+                    # Clear speed when transfer completes
+                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.clear_speed())
                 del self.pending_file_transfers[transfer_id]
             
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error handling file completion: {e}"))
+                self.gui.root.after(0, lambda e=e: self.gui.file_transfer_window.add_transfer_message(f"Error handling file completion: {e}"))
             else:
                 print(f"Error handling file completion: {e}")
     
@@ -755,18 +946,22 @@ class GUISecureChatClient(SecureChatClient):
                 
                 # Show progress in GUI every 10 chunks
                 if self.gui:
-                    progress = ((i + 1) / total_chunks) * 100
                     if (i + 1) % 10 == 0:  # Update every 10 chunks
-                        self.gui.root.after(0, lambda p=progress, curr=i+1, total=total_chunks:
-                            self.gui.append_to_chat(f"Sending: {p:.1f}% ({curr}/{total} chunks)")
+                        # Calculate bytes transferred for speed tracking
+                        bytes_transferred = (i + 1) * len(chunk)
+                        filename = os.path.basename(file_path)
+                        self.gui.root.after(0, lambda curr=i+1, total=total_chunks, bytes_sent=bytes_transferred, fname=filename:
+                            self.gui.file_transfer_window.update_transfer_progress(transfer_id, fname, curr, total, bytes_sent)
                         )
             
             if self.gui:
-                self.gui.root.after(0, lambda: self.gui.append_to_chat("File chunks sent successfully."))
+                self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message("File chunks sent successfully.", transfer_id))
+                # Clear speed when transfer completes
+                self.gui.root.after(0, lambda: self.gui.file_transfer_window.clear_speed())
             
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error sending file chunks: {e}"))
+                self.gui.root.after(0, lambda e=e: self.gui.file_transfer_window.add_transfer_message(f"Error sending file chunks: {e}", transfer_id))
             else:
                 print(f"Error sending file chunks: {e}")
 

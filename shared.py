@@ -498,7 +498,7 @@ class SecureChatProtocol:
         return json.dumps(verification_response).encode('utf-8')
     
     # File transfer methods
-    def create_file_metadata_message(self, file_path: str) -> bytes:
+    def create_file_metadata_message(self, file_path: str, return_metadata: bool = False) -> bytes | tuple[bytes, dict]:
         """Create a file metadata message for file transfer initiation."""
         import os
         
@@ -527,7 +527,11 @@ class SecureChatProtocol:
             "total_chunks": (file_size + FILE_CHUNK_SIZE - 1) // FILE_CHUNK_SIZE
         }
         
-        return json.dumps(metadata).encode('utf-8')
+        encrypted_message = self.encrypt_message(json.dumps(metadata))
+        
+        if return_metadata:
+            return encrypted_message, metadata
+        return encrypted_message
     
     def create_file_accept_message(self, transfer_id: str) -> bytes:
         """Create a file acceptance message."""
@@ -536,7 +540,7 @@ class SecureChatProtocol:
             "type": MSG_TYPE_FILE_ACCEPT,
             "transfer_id": transfer_id
         }
-        return json.dumps(message).encode('utf-8')
+        return self.encrypt_message(json.dumps(message))
     
     def create_file_reject_message(self, transfer_id: str, reason: str = "User declined") -> bytes:
         """Create a file rejection message."""
@@ -546,7 +550,7 @@ class SecureChatProtocol:
             "transfer_id": transfer_id,
             "reason": reason
         }
-        return json.dumps(message).encode('utf-8')
+        return self.encrypt_message(json.dumps(message))
     
     def create_file_chunk_message(self, transfer_id: str, chunk_index: int, chunk_data: bytes) -> bytes:
         """Create a file chunk message."""
@@ -557,7 +561,7 @@ class SecureChatProtocol:
             "chunk_index": chunk_index,
             "chunk_data": base64.b64encode(chunk_data).decode('utf-8')
         }
-        return json.dumps(message).encode('utf-8')
+        return self.encrypt_message(json.dumps(message))
     
     def create_file_complete_message(self, transfer_id: str) -> bytes:
         """Create a file transfer completion message."""
@@ -566,7 +570,7 @@ class SecureChatProtocol:
             "type": MSG_TYPE_FILE_COMPLETE,
             "transfer_id": transfer_id
         }
-        return json.dumps(message).encode('utf-8')
+        return self.encrypt_message(json.dumps(message))
     
     def chunk_file(self, file_path: str) -> list[bytes]:
         """Split a file into chunks for transmission."""
@@ -576,10 +580,10 @@ class SecureChatProtocol:
                 chunks.append(chunk)
         return chunks
     
-    def process_file_metadata(self, data: bytes) -> dict:
+    def process_file_metadata(self, decrypted_data: str) -> dict:
         """Process a file metadata message."""
         try:
-            message = json.loads(data.decode('utf-8'))
+            message = json.loads(decrypted_data)
             if message["type"] != MSG_TYPE_FILE_METADATA:
                 raise ValueError("Invalid message type")
             
@@ -593,10 +597,10 @@ class SecureChatProtocol:
         except Exception as e:
             raise ValueError(f"File metadata processing failed: {e}")
     
-    def process_file_chunk(self, data: bytes) -> dict:
+    def process_file_chunk(self, decrypted_data: str) -> dict:
         """Process a file chunk message."""
         try:
-            message = json.loads(data.decode('utf-8'))
+            message = json.loads(decrypted_data)
             if message["type"] != MSG_TYPE_FILE_CHUNK:
                 raise ValueError("Invalid message type")
             
