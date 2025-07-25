@@ -122,18 +122,26 @@ class SecureChatClient:
             message_data (bytes): Raw message data received from the server.
             
         Note:
-            Messages are expected to be JSON-encoded with a 'type' field indicating
-            the message type. The method handles various message types including:
-            - Key exchange initialization and responses
-            - Encrypted chat messages
-            - Key verification messages
-            - Error messages
-            - Key exchange reset messages
+            Messages can be either JSON-encoded (for control messages) or binary
+            (for optimized file chunks). The method first checks for binary file
+            chunks, then falls back to JSON parsing for other message types.
             
             All exceptions are caught and logged to prevent crashes.
         """
         try:
-            # Try to parse as JSON first (for control messages)
+            # First, check if this might be a binary file chunk message
+            # Binary file chunks start with a 12-byte nonce and are not UTF-8 decodable
+            if len(message_data) >= 12 and self.key_exchange_complete:
+                try:
+                    # Try to process as binary file chunk first
+                    result = self.protocol.process_file_chunk(message_data)
+                    self.handle_file_chunk_binary(result)
+                    return
+                except Exception:
+                    # Not a binary file chunk, continue with JSON parsing
+                    pass
+            
+            # Try to parse as JSON (for control messages and regular encrypted messages)
             try:
                 message = json.loads(message_data.decode('utf-8'))
                 message_type = message.get("type")
@@ -507,73 +515,85 @@ class SecureChatClient:
             print(f"Error handling file rejection: {e}")
     
     def handle_file_chunk(self, decrypted_message: str) -> None:
-        """Handle incoming file chunk."""
+        """Handle incoming file chunk (legacy JSON format)."""
         try:
             chunk_info = self.protocol.process_file_chunk(decrypted_message)
-            transfer_id = chunk_info["transfer_id"]
-            
-            if transfer_id not in self.active_file_metadata:
-                print("Received chunk for unknown file transfer")
-                return
-            
-            metadata = self.active_file_metadata[transfer_id]
-            
-            # Add chunk to protocol buffer
-            is_complete = self.protocol.add_file_chunk(
-                transfer_id,
-                chunk_info["chunk_index"],
-                chunk_info["chunk_data"],
-                metadata["total_chunks"]
-            )
-            
-            # Show progress - but only at significant intervals to avoid console spam
-            received_chunks = len(self.protocol.received_chunks.get(transfer_id, {}))
-            progress = (received_chunks / metadata["total_chunks"]) * 100
-            
-            # Initialize progress tracking for this transfer if not exists
-            if not hasattr(self, '_last_progress_shown'):
-                self._last_progress_shown = {}
-            if transfer_id not in self._last_progress_shown:
-                self._last_progress_shown[transfer_id] = -1
-            
-            # Only show progress every 10% or on completion to reduce console interference
-            if (progress - self._last_progress_shown[transfer_id] >= 10 or 
-                is_complete or 
-                received_chunks == 1):  # Always show first chunk
-                print(f"Receiving {metadata['filename']}: {progress:.1f}% ({received_chunks}/{metadata['total_chunks']} chunks)")
-                self._last_progress_shown[transfer_id] = progress
-            
-            if is_complete:
-                # Reassemble file
-                output_path = os.path.join(os.getcwd(), metadata["filename"])
-                
-                # Handle filename conflicts
-                counter = 1
-                base_name, ext = os.path.splitext(metadata["filename"])
-                while os.path.exists(output_path):
-                    output_path = os.path.join(os.getcwd(), f"{base_name}_{counter}{ext}")
-                    counter += 1
-                
-                try:
-                    self.protocol.reassemble_file(transfer_id, output_path, metadata["file_hash"])
-                    print(f"File received successfully: {output_path}")
-                    
-                    # Send completion message
-                    complete_msg = self.protocol.create_file_complete_message(transfer_id)
-                    send_message(self.socket, complete_msg)
-                    
-                except Exception as e:
-                    print(f"File reassembly failed: {e}")
-                
-                # Clean up
-                del self.active_file_metadata[transfer_id]
-                
-                # Clean up progress tracking
-                if hasattr(self, '_last_progress_shown') and transfer_id in self._last_progress_shown:
-                    del self._last_progress_shown[transfer_id]
+            self._process_file_chunk_common(chunk_info)
             
         except Exception as e:
             print(f"Error handling file chunk: {e}")
+    
+    def handle_file_chunk_binary(self, chunk_info: dict) -> None:
+        """Handle incoming file chunk (optimized binary format)."""
+        try:
+            self._process_file_chunk_common(chunk_info)
+            
+        except Exception as e:
+            print(f"Error handling binary file chunk: {e}")
+    
+    def _process_file_chunk_common(self, chunk_info: dict) -> None:
+        """Common file chunk processing logic for both JSON and binary formats."""
+        transfer_id = chunk_info["transfer_id"]
+        
+        if transfer_id not in self.active_file_metadata:
+            print("Received chunk for unknown file transfer")
+            return
+        
+        metadata = self.active_file_metadata[transfer_id]
+        
+        # Add chunk to protocol buffer
+        is_complete = self.protocol.add_file_chunk(
+            transfer_id,
+            chunk_info["chunk_index"],
+            chunk_info["chunk_data"],
+            metadata["total_chunks"]
+        )
+        
+        # Show progress - but only at significant intervals to avoid console spam
+        received_chunks = len(self.protocol.received_chunks.get(transfer_id, {}))
+        progress = (received_chunks / metadata["total_chunks"]) * 100
+        
+        # Initialize progress tracking for this transfer if not exists
+        if not hasattr(self, '_last_progress_shown'):
+            self._last_progress_shown = {}
+        if transfer_id not in self._last_progress_shown:
+            self._last_progress_shown[transfer_id] = -1
+        
+        # Only show progress every 10% or on completion to reduce console interference
+        if (progress - self._last_progress_shown[transfer_id] >= 10 or 
+            is_complete or 
+            received_chunks == 1):  # Always show first chunk
+            print(f"Receiving {metadata['filename']}: {progress:.1f}% ({received_chunks}/{metadata['total_chunks']} chunks)")
+            self._last_progress_shown[transfer_id] = progress
+        
+        if is_complete:
+            # Reassemble file
+            output_path = os.path.join(os.getcwd(), metadata["filename"])
+            
+            # Handle filename conflicts
+            counter = 1
+            base_name, ext = os.path.splitext(metadata["filename"])
+            while os.path.exists(output_path):
+                output_path = os.path.join(os.getcwd(), f"{base_name}_{counter}{ext}")
+                counter += 1
+            
+            try:
+                self.protocol.reassemble_file(transfer_id, output_path, metadata["file_hash"])
+                print(f"File received successfully: {output_path}")
+                
+                # Send completion message
+                complete_msg = self.protocol.create_file_complete_message(transfer_id)
+                send_message(self.socket, complete_msg)
+                
+            except Exception as e:
+                print(f"File reassembly failed: {e}")
+            
+            # Clean up
+            del self.active_file_metadata[transfer_id]
+            
+            # Clean up progress tracking
+            if hasattr(self, '_last_progress_shown') and transfer_id in self._last_progress_shown:
+                del self._last_progress_shown[transfer_id]
     
     def handle_file_complete(self, decrypted_message: str) -> None:
         """Handle file transfer completion notification."""
