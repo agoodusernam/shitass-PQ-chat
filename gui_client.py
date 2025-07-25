@@ -200,7 +200,7 @@ class ChatGUI:
                         self.root.after(0, lambda: self.append_to_chat("Failed to connect to server"))
                         self.root.after(0, lambda: self.update_status("Not Connected", "#ff6b6b"))
                 except Exception as e:
-                    self.root.after(0, lambda: self.append_to_chat(f"Connection error: {e}"))
+                    self.root.after(0, lambda e=e: self.append_to_chat(f"Connection error: {e}"))
                     self.root.after(0, lambda: self.update_status("Not Connected", "#ff6b6b"))
 
             threading.Thread(target=connect_thread, daemon=True).start()
@@ -484,7 +484,7 @@ class GUISecureChatClient(SecureChatClient):
 
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Failed to decrypt message: {e}"))
+                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Failed to decrypt message: {e}"))
             else:
                 print(f"\nFailed to decrypt message: {e}")
 
@@ -506,7 +506,7 @@ class GUISecureChatClient(SecureChatClient):
 
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Key exchange response error: {e}"))
+                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Key exchange response error: {e}"))
             else:
                 print(f"Key exchange response error: {e}")
 
@@ -563,7 +563,7 @@ class GUISecureChatClient(SecureChatClient):
                 
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Error handling key exchange reset: {e}"))
+                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error handling key exchange reset: {e}"))
             else:
                 print(f"Error handling key exchange reset: {e}")
     
@@ -608,7 +608,7 @@ class GUISecureChatClient(SecureChatClient):
                 
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Error handling file metadata: {e}"))
+                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error handling file metadata: {e}"))
             else:
                 print(f"Error handling file metadata: {e}")
     
@@ -635,7 +635,7 @@ class GUISecureChatClient(SecureChatClient):
             
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Error handling file acceptance: {e}"))
+                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error handling file acceptance: {e}"))
             else:
                 print(f"Error handling file acceptance: {e}")
     
@@ -655,7 +655,7 @@ class GUISecureChatClient(SecureChatClient):
             
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Error handling file rejection: {e}"))
+                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error handling file rejection: {e}"))
             else:
                 print(f"Error handling file rejection: {e}")
     
@@ -719,7 +719,7 @@ class GUISecureChatClient(SecureChatClient):
             
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Error handling file chunk: {e}"))
+                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error handling file chunk: {e}"))
             else:
                 print(f"Error handling file chunk: {e}")
     
@@ -738,7 +738,7 @@ class GUISecureChatClient(SecureChatClient):
             
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Error handling file completion: {e}"))
+                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error handling file completion: {e}"))
             else:
                 print(f"Error handling file completion: {e}")
     
@@ -766,7 +766,7 @@ class GUISecureChatClient(SecureChatClient):
             
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Error sending file chunks: {e}"))
+                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error sending file chunks: {e}"))
             else:
                 print(f"Error sending file chunks: {e}")
 
@@ -800,7 +800,7 @@ def main():
                     else:
                         gui.root.after(0, lambda: gui.append_to_chat("Failed to connect to server"))
                 except Exception as e:
-                    gui.root.after(0, lambda: gui.append_to_chat(f"Connection error: {e}"))
+                    gui.root.after(0, lambda e=e: gui.append_to_chat(f"Connection error: {e}"))
 
             threading.Thread(target=connect_thread, daemon=True).start()
 

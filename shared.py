@@ -370,15 +370,22 @@ class SecureChatProtocol:
             # to the counter of the received message.
             temp_chain_key = self.chain_key
             skipped_counter = self.peer_counter
-            while skipped_counter < counter:
-                skipped_counter += 1
-                # Derive the message key for this counter step
-                message_key = self._derive_message_key(temp_chain_key, skipped_counter)
-                # Ratchet the chain key forward for the next step
-                temp_chain_key = self._ratchet_chain_key(temp_chain_key, skipped_counter)
+            
+            # Find the correct chain key to derive the message key from
+            # This will be the chain key state *before* ratcheting for the current counter
+            derivation_chain_key = temp_chain_key
+            for i in range(skipped_counter + 1, counter):
+                derivation_chain_key = self._ratchet_chain_key(derivation_chain_key, i)
 
-            # Now, message_key is the key for the received message (with 'counter'),
-            # and temp_chain_key is the next chain key.
+            # Derive the message key for the current message
+            message_key = self._derive_message_key(derivation_chain_key, counter)
+
+            # Now, ratchet the chain key forward to the new state
+            temp_chain_key = derivation_chain_key # Start from the key used for derivation
+            temp_chain_key = self._ratchet_chain_key(temp_chain_key, counter)
+
+
+            # Decrypt with the derived message key
             aesgcm = AESGCM(message_key)
             decrypted_data = aesgcm.decrypt(nonce, ciphertext, None)
 
