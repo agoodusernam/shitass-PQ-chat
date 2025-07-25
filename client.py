@@ -221,7 +221,12 @@ class SecureChatClient:
             The response will be sent back to the server to continue the key exchange.
         """
         try:
-            _, ciphertext = self.protocol.process_key_exchange_init(message_data)
+            _, ciphertext, version_warning = self.protocol.process_key_exchange_init(message_data)
+            
+            # Display version warning if present
+            if version_warning:
+                print(f"\n{version_warning}")
+                
             response = self.protocol.create_key_exchange_response(ciphertext)
             
             # Send response back through server
@@ -234,7 +239,12 @@ class SecureChatClient:
         """Handle key exchange response from another client."""
         try:
             if hasattr(self, 'private_key'):
-                self.protocol.process_key_exchange_response(message_data, self.private_key)
+                _, version_warning = self.protocol.process_key_exchange_response(message_data, self.private_key)
+                
+                # Display version warning if present
+                if version_warning:
+                    print(f"\n{version_warning}")
+                    
                 print("Key exchange completed successfully.")
             else:
                 print("Received key exchange response but no private key found")

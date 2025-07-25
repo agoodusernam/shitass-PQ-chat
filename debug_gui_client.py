@@ -8,7 +8,8 @@ import time
 from client import SecureChatClient
 import json
 
-from shared import bytes_to_human_readable
+from shared import bytes_to_human_readable, send_message, MSG_TYPE_FILE_METADATA, MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT,\
+    MSG_TYPE_FILE_COMPLETE, MSG_TYPE_FILE_CHUNK, PROTOCOL_VERSION
 
 
 class FileTransferWindow:
@@ -24,7 +25,7 @@ class FileTransferWindow:
         Attributes:
             parent_root (tk.Tk): Reference to the parent window.
             window (tk.Toplevel): The actual transfer window (created on demand).
-            transfers (dict): Dictionary mapping transfer IDs to transfer information.
+            transfers (dict): Dictionary mapping transfer ID to transfer information.
             speed_label (tk.Label): Label widget displaying current transfer speed.
             transfer_list (scrolledtext.ScrolledText): Text widget showing transfer messages.
             last_update_time (float): Timestamp of last speed calculation update.
@@ -176,7 +177,7 @@ class ChatGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Secure Chat Client")
-        self.root.geometry("600x500")
+        self.root.geometry("1200x600")
         
         # Dark theme colours
         self.BG_COLOR = "#2b2b2b"
@@ -195,6 +196,10 @@ class ChatGUI:
         self.ephemeral_mode = False
         self.ephemeral_messages = {}  # Track messages with timestamps for removal
         self.message_counter = 0  # Counter for unique message IDs
+        
+        # Debug update throttling
+        self.last_debug_update = 0  # Timestamp of last debug update
+        self.debug_update_interval = 1.0  # Update debug info max once per second
         
         # File transfer window
         self.file_transfer_window = FileTransferWindow(self.root)
@@ -272,17 +277,20 @@ class ChatGUI:
         )
         self.chat_display.pack(fill=tk.BOTH, expand=True)  # type: ignore
         
-        # Debug frame (right side, initially hidden)
+        # Debug frame (right side, initially visible by default)
         self.debug_frame = tk.Frame(content_frame, bg=self.BG_COLOR, width=400)
         self.debug_frame.pack_propagate(False)  # Maintain fixed width
-        self.debug_visible = False
+        self.debug_visible = True  # Show debug panel by default
+        
+        # Show debug frame by default
+        self.debug_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=False, padx=(5, 0))  # type: ignore
         
         # Debug toggle button frame
         debug_toggle_frame = tk.Frame(main_frame, bg=self.BG_COLOR)
         debug_toggle_frame.pack(fill=tk.X, pady=(0, 5))  # type: ignore
         
         self.debug_toggle_btn = tk.Button(
-                debug_toggle_frame, text="🔍 Show Debug Info", command=self.toggle_debug_box,
+                debug_toggle_frame, text="🔍 Hide Debug Info", command=self.toggle_debug_box,
                 bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,  # type: ignore
                 activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
                 font=("Consolas", 9)
@@ -372,7 +380,6 @@ class ChatGUI:
         if self.ephemeral_mode and is_message:
             self.message_counter += 1
             message_id = f"msg_{self.message_counter}"
-            import time
             
             self.ephemeral_messages[message_id] = time.time()
             # Add invisible marker for tracking
@@ -410,9 +417,44 @@ class ChatGUI:
         if not self.debug_visible or not hasattr(self, 'client') or not self.client:
             return
             
+        current_time = time.time()
+        if current_time - self.last_debug_update < self.debug_update_interval:
+            return  # Skip update if interval hasn't passed
+        
+        self.last_debug_update = current_time  # Update timestamp
+        
         try:
             debug_text = "=== CRYPTOGRAPHIC DEBUG INFO ===\n"
             debug_text += f"Timestamp: {time.strftime('%H:%M:%S')}\n\n"
+            
+            # Protocol Version Information
+            debug_text += "PROTOCOL VERSIONS:\n"
+            debug_text += f"  Client Version: {PROTOCOL_VERSION}\n"
+            
+            # Server version (if known)
+            if hasattr(self.client, 'server_version'):
+                debug_text += f"  Server Version: {self.client.server_version}\n"
+            else:
+                debug_text += "  Server Version: Unknown\n"
+            
+            # Peer version (if known)
+            if hasattr(self.client, 'peer_version'):
+                debug_text += f"  Peer Version: {self.client.peer_version}\n"
+            else:
+                debug_text += "  Peer Version: Unknown\n"
+            
+            # Version compatibility check
+            if (hasattr(self.client, 'peer_version') and
+                hasattr(self.client, 'server_version')):
+                if (self.client.peer_version == PROTOCOL_VERSION and
+                    self.client.server_version == PROTOCOL_VERSION):
+                    debug_text += "  ✅ All versions compatible\n"
+                else:
+                    debug_text += "  ⚠️ Version mismatch detected\n"
+            else:
+                debug_text += "  ❓ Version compatibility unknown\n"
+            
+            debug_text += "\n"
             
             # Key Exchange Status
             debug_text += "KEY EXCHANGE STATUS:\n"
@@ -446,10 +488,15 @@ class ChatGUI:
             
             # Chain Keys and Counters
             debug_text += "\nCHAIN KEYS & COUNTERS:\n"
-            if hasattr(self.client, 'protocol') and hasattr(self.client.protocol, 'chain_key') and self.client.protocol.chain_key:
-                debug_text += f"  Chain Key: {self.client.protocol.chain_key[:16].hex()}...\n"
+            if hasattr(self.client, 'protocol') and hasattr(self.client.protocol, 'send_chain_key') and self.client.protocol.send_chain_key:
+                debug_text += f"  Send Chain Key: {self.client.protocol.send_chain_key[:16].hex()}...\n"
             else:
-                debug_text += "  Chain Key: Not initialized\n"
+                debug_text += "  Send Chain Key: Not initialized\n"
+                
+            if hasattr(self.client, 'protocol') and hasattr(self.client.protocol, 'receive_chain_key') and self.client.protocol.receive_chain_key:
+                debug_text += f"  Receive Chain Key: {self.client.protocol.receive_chain_key[:16].hex()}...\n"
+            else:
+                debug_text += "  Receive Chain Key: Not initialized\n"
                 
             if hasattr(self.client, 'protocol') and hasattr(self.client.protocol, 'message_counter'):
                 debug_text += f"  Message Counter (Out): {self.client.protocol.message_counter}\n"
@@ -491,7 +538,7 @@ class ChatGUI:
             else:
                 debug_text += "  Socket: Inactive\n"
             
-            debug_text += "\n" + "="*50 + "\n"
+            debug_text += "\n" + "="*50 + "\n";
             
             # Update the debug display
             self.debug_display.config(state=tk.NORMAL)  # type: ignore
@@ -610,7 +657,6 @@ class ChatGUI:
                     if self.debug_visible:
                         self.root.after(0, self.update_debug_info)
                     
-                    import time
                     
                     time.sleep(0.5)  # Update every 500ms for better responsiveness
             
@@ -700,7 +746,6 @@ Do the fingerprints match?"""
             self.append_to_chat(f"Send error: {e}")
         
         self.message_entry.delete(0, tk.END)
-    
     def send_file(self):
         """Send a file using file dialog."""
         if not self.connected or not self.client:
@@ -751,7 +796,6 @@ Do the fingerprints match?"""
         """Start the background thread to clean up ephemeral messages."""
         
         def cleanup_thread():
-            import time
             
             while True:
                 try:
@@ -833,6 +877,31 @@ class GUISecureChatClient(SecureChatClient):
         self.gui = gui
         # Initialize verification_complete flag like console client
         self.verification_complete = False
+        
+        # Protocol version tracking
+        self.protocol_version = PROTOCOL_VERSION
+        self.server_version = None  # Will be set when we receive server info
+        self.peer_version = None    # Will be set during key exchange
+        
+    def handle_key_exchange_init(self, message_data: bytes):
+        """Handle key exchange init - override to extract and store protocol version."""
+        try:
+            # Extract protocol version from message
+            message = json.loads(message_data.decode('utf-8'))
+            self.peer_version = message.get("version")
+            
+            # Call parent method to handle the key exchange
+            super().handle_key_exchange_init(message_data)
+            
+            # Update debug info after key exchange init
+            if self.gui:
+                self.gui.root.after(0, lambda: self.gui.update_debug_info())
+                
+        except Exception as e:
+            if self.gui:
+                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Key exchange init error: {e}"))
+            else:
+                print(f"Key exchange init error: {e}")
     
     def handle_encrypted_message(self, message_data: bytes):
         """Handle encrypted chat messages - override to send to GUI."""
@@ -845,8 +914,6 @@ class GUISecureChatClient(SecureChatClient):
             
             # Attempt to parse the decrypted text as a JSON message
             try:
-                from shared import MSG_TYPE_FILE_METADATA, MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT, \
-                    MSG_TYPE_FILE_CHUNK, MSG_TYPE_FILE_COMPLETE
                 
                 message = json.loads(decrypted_text)
                 message_type = message.get("type")
@@ -888,6 +955,15 @@ class GUISecureChatClient(SecureChatClient):
                 else:
                     print("Key exchange completed successfully.")
                 
+                # Extract protocol version from message
+                try:
+                    message = json.loads(message_data.decode('utf-8'))
+                    self.server_version = message.get("version")
+                    # The version in the response message is actually the peer's version, not the server's
+                    self.peer_version = message.get("version")
+                except:
+                    pass
+                
                 self.protocol.process_key_exchange_response(message_data, self.private_key)
                 
                 # Update debug info after key exchange processing
@@ -909,6 +985,11 @@ class GUISecureChatClient(SecureChatClient):
     def handle_key_exchange_complete(self, message: dict):
         """Handle key exchange completion notification - override to use GUI."""
         self.key_exchange_complete = True
+        
+        # Extract server version from the message
+        if "version" in message:
+            self.server_version = message.get("version")
+        
         # Don't call start_key_verification() here as it would block the receive thread
         # The GUI monitoring thread will detect key_exchange_complete and show the dialogue
         
@@ -936,7 +1017,6 @@ class GUISecureChatClient(SecureChatClient):
     def handle_key_exchange_reset(self, message_data: bytes):
         """Handle key exchange reset message - override to provide GUI feedback."""
         try:
-            import json
             
             message = json.loads(message_data.decode('utf-8'))
             reset_message = message.get("message", "Key exchange reset")
@@ -997,7 +1077,6 @@ class GUISecureChatClient(SecureChatClient):
                     
                     if result:
                         # Send acceptance
-                        from shared import send_message
                         
                         accept_msg = self.protocol.create_file_accept_message(transfer_id)
                         send_message(self.socket, accept_msg)
@@ -1005,7 +1084,6 @@ class GUISecureChatClient(SecureChatClient):
                             f"File transfer accepted: {metadata['filename']}", transfer_id)
                     else:
                         # Send rejection
-                        from shared import send_message
                         
                         reject_msg = self.protocol.create_file_reject_message(transfer_id)
                         send_message(self.socket, reject_msg)
@@ -1026,7 +1104,6 @@ class GUISecureChatClient(SecureChatClient):
     def handle_file_accept(self, decrypted_message: str):
         """Handle file acceptance from peer with GUI updates."""
         try:
-            import json
             
             message = json.loads(decrypted_message)
             transfer_id = message["transfer_id"]
@@ -1056,7 +1133,6 @@ class GUISecureChatClient(SecureChatClient):
     def handle_file_reject(self, decrypted_message: str):
         """Handle file rejection from peer with GUI updates."""
         try:
-            import json
             
             message = json.loads(decrypted_message)
             transfer_id = message["transfer_id"]
@@ -1097,7 +1173,7 @@ class GUISecureChatClient(SecureChatClient):
                     metadata["total_chunks"]
             )
             
-            # Show progress in GUI
+            # Show progress in GUI every 50 chunks
             if self.gui:
                 received_chunks = len(self.protocol.received_chunks.get(transfer_id, {}))
                 if received_chunks % 50 == 0:  # Update every 50 chunks
@@ -1128,7 +1204,6 @@ class GUISecureChatClient(SecureChatClient):
                         self.gui.root.after(0, lambda: self.gui.file_transfer_window.clear_speed())
                     
                     # Send completion message
-                    from shared import send_message
                     
                     complete_msg = self.protocol.create_file_complete_message(transfer_id)
                     send_message(self.socket, complete_msg)
@@ -1151,7 +1226,6 @@ class GUISecureChatClient(SecureChatClient):
     def handle_file_complete(self, decrypted_message: str):
         """Handle file transfer completion notification with GUI updates."""
         try:
-            import json
             
             message = json.loads(decrypted_message)
             transfer_id = message["transfer_id"]
@@ -1180,7 +1254,6 @@ class GUISecureChatClient(SecureChatClient):
             
             for i, chunk in enumerate(chunks):
                 chunk_msg = self.protocol.create_file_chunk_message(transfer_id, i, chunk)
-                from shared import send_message
                 
                 send_message(self.socket, chunk_msg)
                 

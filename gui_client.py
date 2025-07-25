@@ -7,8 +7,8 @@ import os
 import time
 from client import SecureChatClient
 import json
-
-from shared import bytes_to_human_readable
+from shared import bytes_to_human_readable, send_message, MSG_TYPE_FILE_METADATA, MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT,\
+    MSG_TYPE_FILE_COMPLETE, MSG_TYPE_FILE_CHUNK
 
 
 class FileTransferWindow:
@@ -171,6 +171,7 @@ class FileTransferWindow:
             self.speed_label.config(text="Speed: 0.0 MiB/s")
         self.last_bytes_transferred = 0
         self.last_update_time = time.time()
+
 
 
 class ChatGUI:
@@ -354,7 +355,6 @@ class ChatGUI:
         if self.ephemeral_mode and is_message:
             self.message_counter += 1
             message_id = f"msg_{self.message_counter}"
-            import time
             self.ephemeral_messages[message_id] = time.time()
             # Add invisible marker for tracking
             self.chat_display.insert(tk.END, f"{text} <!-- {message_id} -->\n")
@@ -485,7 +485,6 @@ class ChatGUI:
                         # Show verification dialogue
                         self.root.after(0, self.show_verification_dialog)
 
-                    import time
                     time.sleep(0.1)
 
             except Exception as e:
@@ -621,7 +620,6 @@ Do the fingerprints match?"""
     def start_ephemeral_cleanup(self):
         """Start the background thread to clean up ephemeral messages."""
         def cleanup_thread():
-            import time
             while True:
                 try:
                     if self.ephemeral_mode and self.ephemeral_messages:
@@ -709,7 +707,6 @@ class GUISecureChatClient(SecureChatClient):
             
             # Attempt to parse the decrypted text as a JSON message
             try:
-                from shared import MSG_TYPE_FILE_METADATA, MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT, MSG_TYPE_FILE_CHUNK, MSG_TYPE_FILE_COMPLETE
                 
                 message = json.loads(decrypted_text)
                 message_type = message.get("type")
@@ -740,6 +737,28 @@ class GUISecureChatClient(SecureChatClient):
             else:
                 print(f"\nFailed to decrypt message: {e}")
 
+    def handle_key_exchange_init(self, message_data: bytes):
+        """Handle key exchange initiation - override to display warnings in GUI."""
+        try:
+            _, ciphertext, version_warning = self.protocol.process_key_exchange_init(message_data)
+            
+            # Display version warning in GUI if present
+            if version_warning and self.gui:
+                self.gui.root.after(0, lambda warning=version_warning: self.gui.append_to_chat(f"⚠️ {warning}"))
+            elif version_warning:
+                print(f"\n{version_warning}")
+                
+            response = self.protocol.create_key_exchange_response(ciphertext)
+            
+            # Send response back through server
+            send_message(self.socket, response)
+            
+        except Exception as e:
+            if self.gui:
+                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Key exchange init error: {e}"))
+            else:
+                print(f"Key exchange init error: {e}")
+    
     def handle_key_exchange_response(self, message_data: bytes):
         """Handle key exchange response - override to send to GUI."""
         try:
@@ -749,13 +768,22 @@ class GUISecureChatClient(SecureChatClient):
                 else:
                     print("Key exchange completed successfully.")
                 
-                self.protocol.process_key_exchange_response(message_data, self.private_key)
+                _, version_warning = self.protocol.process_key_exchange_response(message_data, self.private_key)
+                
+                # Display version warning in GUI if present
+                if version_warning and self.gui:
+                    self.gui.root.after(0, lambda warning=version_warning: self.gui.append_to_chat(f"⚠️ {warning}"))
+                elif version_warning:
+                    print(f"\n{version_warning}")
+                    
+                if self.gui:
+                    self.gui.root.after(0, lambda: self.gui.update_status("Key exchange completed"))
             else:
                 if self.gui:
                     self.gui.root.after(0, lambda: self.gui.append_to_chat("Received key exchange response but no private key found"))
                 else:
                     print("Received key exchange response but no private key found")
-
+                
         except Exception as e:
             if self.gui:
                 self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Key exchange response error: {e}"))
@@ -784,7 +812,6 @@ class GUISecureChatClient(SecureChatClient):
     def handle_key_exchange_reset(self, message_data: bytes):
         """Handle key exchange reset message - override to provide GUI feedback."""
         try:
-            import json
             message = json.loads(message_data.decode('utf-8'))
             reset_message = message.get("message", "Key exchange reset")
             
@@ -841,13 +868,11 @@ class GUISecureChatClient(SecureChatClient):
                     
                     if result:
                         # Send acceptance
-                        from shared import send_message
                         accept_msg = self.protocol.create_file_accept_message(transfer_id)
                         send_message(self.socket, accept_msg)
                         self.gui.file_transfer_window.add_transfer_message(f"File transfer accepted: {metadata['filename']}", transfer_id)
                     else:
                         # Send rejection
-                        from shared import send_message
                         reject_msg = self.protocol.create_file_reject_message(transfer_id)
                         send_message(self.socket, reject_msg)
                         self.gui.file_transfer_window.add_transfer_message("File transfer rejected.")
@@ -867,7 +892,6 @@ class GUISecureChatClient(SecureChatClient):
     def handle_file_accept(self, decrypted_message: str):
         """Handle file acceptance from peer with GUI updates."""
         try:
-            import json
             message = json.loads(decrypted_message)
             transfer_id = message["transfer_id"]
             
@@ -899,7 +923,6 @@ class GUISecureChatClient(SecureChatClient):
     def handle_file_reject(self, decrypted_message: str):
         """Handle file rejection from peer with GUI updates."""
         try:
-            import json
             message = json.loads(decrypted_message)
             transfer_id = message["transfer_id"]
             reason = message.get("reason", "Unknown reason")
@@ -966,7 +989,6 @@ class GUISecureChatClient(SecureChatClient):
                         self.gui.root.after(0, lambda: self.gui.file_transfer_window.clear_speed())
                     
                     # Send completion message
-                    from shared import send_message
                     complete_msg = self.protocol.create_file_complete_message(transfer_id)
                     send_message(self.socket, complete_msg)
                     
@@ -986,7 +1008,6 @@ class GUISecureChatClient(SecureChatClient):
     def handle_file_complete(self, decrypted_message: str):
         """Handle file transfer completion notification with GUI updates."""
         try:
-            import json
             message = json.loads(decrypted_message)
             transfer_id = message["transfer_id"]
             
@@ -1012,7 +1033,6 @@ class GUISecureChatClient(SecureChatClient):
             
             for i, chunk in enumerate(chunks):
                 chunk_msg = self.protocol.create_file_chunk_message(transfer_id, i, chunk)
-                from shared import send_message
                 send_message(self.socket, chunk_msg)
                 
                 # Show progress in GUI every 50 chunks

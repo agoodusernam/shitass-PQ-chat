@@ -11,7 +11,7 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
 
 # Protocol constants
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 MSG_TYPE_KEY_EXCHANGE_INIT = 1
 MSG_TYPE_KEY_EXCHANGE_RESPONSE = 2
 MSG_TYPE_ENCRYPTED_MESSAGE = 3
@@ -333,12 +333,23 @@ class SecureChatProtocol:
         }
         return json.dumps(message).encode('utf-8')
     
-    def process_key_exchange_init(self, data: bytes) -> tuple[bytes, bytes]:
-        """Process initial key exchange and return shared key and response ciphertext."""
+    def process_key_exchange_init(self, data: bytes) -> tuple[bytes, bytes, str | None]:
+        """Process initial key exchange and return shared key, response ciphertext, and version warning if any.
+        
+        Returns:
+            tuple: (shared_secret, ciphertext, warning_message)
+                  warning_message is None if protocol versions match
+        """
         try:
             message = json.loads(data.decode('utf-8'))
             if message["type"] != MSG_TYPE_KEY_EXCHANGE_INIT:
                 raise ValueError("Invalid message type")
+            
+            # Check protocol version
+            peer_version = message.get("version")
+            version_warning = None
+            if peer_version is not None and peer_version != PROTOCOL_VERSION:
+                version_warning = f"WARNING: Protocol version mismatch. Local: {PROTOCOL_VERSION}, Peer: {peer_version}. Communication may not work properly."
             
             public_key = base64.b64decode(message["public_key"])
             # Store peer's public key for verification
@@ -355,16 +366,27 @@ class SecureChatProtocol:
             self.encryption_key, self.mac_key = self.derive_keys(shared_secret)
             self.shared_key = shared_secret
             
-            return shared_secret, ciphertext
+            return shared_secret, ciphertext, version_warning
         except Exception as e:
             raise ValueError(f"Key exchange init failed: {e}")
     
-    def process_key_exchange_response(self, data: bytes, private_key: bytes) -> bytes:
-        """Process key exchange response and derive shared key."""
+    def process_key_exchange_response(self, data: bytes, private_key: bytes) -> tuple[bytes, str | None]:
+        """Process key exchange response and derive shared key.
+        
+        Returns:
+            tuple: (shared_secret, warning_message)
+                  warning_message is None if protocol versions match
+        """
         try:
             message = json.loads(data.decode('utf-8'))
             if message["type"] != MSG_TYPE_KEY_EXCHANGE_RESPONSE:
                 raise ValueError("Invalid message type")
+            
+            # Check protocol version
+            peer_version = message.get("version")
+            version_warning = None
+            if peer_version is not None and peer_version != PROTOCOL_VERSION:
+                version_warning = f"WARNING: Protocol version mismatch. Local: {PROTOCOL_VERSION}, Peer: {peer_version}. Communication may not work properly."
             
             ciphertext = base64.b64decode(message["ciphertext"])
             # Store peer's public key for verification
@@ -377,7 +399,7 @@ class SecureChatProtocol:
             self.encryption_key, self.mac_key = self.derive_keys(shared_secret)
             self.shared_key = shared_secret
             
-            return shared_secret
+            return shared_secret, version_warning
         except Exception as e:
             raise ValueError(f"Key exchange response failed: {e}")
     
@@ -568,7 +590,6 @@ class SecureChatProtocol:
     # File transfer methods
     def create_file_metadata_message(self, file_path: str, return_metadata: bool = False) -> bytes | tuple[bytes, dict]:
         """Create a file metadata message for file transfer initiation."""
-        import os
         
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")

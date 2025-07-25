@@ -11,7 +11,7 @@ from typing import Optional
 import time
 
 from shared import SecureChatProtocol, send_message, receive_message, create_error_message, create_reset_message, \
-    MSG_TYPE_KEY_EXCHANGE_RESPONSE, MSG_TYPE_KEY_VERIFICATION
+    MSG_TYPE_KEY_EXCHANGE_RESPONSE, MSG_TYPE_KEY_VERIFICATION, PROTOCOL_VERSION
 
 
 class SecureChatServer:
@@ -262,6 +262,15 @@ class ClientHandler:
             try:
                 message = json.loads(message_data.decode('utf-8'))
                 message_type = message.get("type")
+                
+                # Check for protocol version mismatch
+                if "version" in message:
+                    peer_version = message.get("version")
+                    if peer_version != PROTOCOL_VERSION:
+                        print(f"\nWARNING: Protocol version mismatch detected in message from {self.client_id}.")
+                        print(f"Server version: {PROTOCOL_VERSION}, Client version: {peer_version}")
+                        print("Communication between clients may not work properly.")
+                
             except (json.JSONDecodeError, UnicodeDecodeError):
                 # If we can't parse the message, assume it's binary key exchange data
                 message_type = "binary_key_exchange"
@@ -309,7 +318,8 @@ class ClientHandler:
         """Notify both clients that key exchange is complete."""
         success_message = {
             "type": "key_exchange_complete",
-            "message": "Secure connection established. You can now send messages."
+            "message": "Secure connection established. You can now send messages.",
+            "version": PROTOCOL_VERSION  # Include server's protocol version
         }
         message_data = json.dumps(success_message).encode('utf-8')
         
