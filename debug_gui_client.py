@@ -11,7 +11,7 @@ import json
 
 from shared import bytes_to_human_readable, send_message, MSG_TYPE_FILE_METADATA, MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT,\
     MSG_TYPE_FILE_COMPLETE, MSG_TYPE_FILE_CHUNK, MSG_TYPE_DELIVERY_CONFIRMATION, MSG_TYPE_KEEP_ALIVE_RESPONSE, MSG_TYPE_KEY_EXCHANGE_RESET, PROTOCOL_VERSION, SEND_CHUNK_SIZE
-
+from gui_client import GUI_VERSION
 
 # noinspection PyAttributeOutsideInit,PyUnresolvedReferences
 class FileTransferWindow:
@@ -180,7 +180,7 @@ class ChatGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Secure Chat Client")
-        self.root.geometry("1200x600")
+        self.root.geometry("1200x750")
         
         # Dark theme colours
         self.BG_COLOR = "#2b2b2b"
@@ -320,7 +320,7 @@ class ChatGUI:
         self.debug_visible = True  # Show debug panel by default
         
         # Debug Actions frame (right side)
-        self.debug_actions_frame = tk.Frame(content_frame, bg=self.BG_COLOR, width=200)
+        self.debug_actions_frame = tk.Frame(content_frame, bg=self.BG_COLOR, width=250)
         self.debug_actions_frame.pack_propagate(False)  # Maintain fixed width
         
         # Show debug frames by default

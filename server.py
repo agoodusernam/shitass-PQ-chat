@@ -14,6 +14,7 @@ from shared import SecureChatProtocol, send_message, receive_message, create_err
     MSG_TYPE_KEY_EXCHANGE_RESPONSE, MSG_TYPE_KEY_VERIFICATION, MSG_TYPE_KEEP_ALIVE, MSG_TYPE_KEEP_ALIVE_RESPONSE, \
     PROTOCOL_VERSION
 
+SERVER_VERSION = 3
 
 class SecureChatServer:
     """Secure chat server that handles two-client connections with end-to-end encryption."""

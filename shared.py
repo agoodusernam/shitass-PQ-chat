@@ -31,6 +31,17 @@ MSG_TYPE_DELIVERY_CONFIRMATION = 14
 FILE_CHUNK_SIZE = 128 * 1024 * 1024  # 128 MiB chunks for loading
 SEND_CHUNK_SIZE = 64 * 1024  # 64 KiB chunks for sending
 
+# Protocol compatibility mapping, not used in this version but kept for future compatibility
+# Maps protocol versions to compatible versions for key exchange and message processing
+PROTOCOL_COMPATIBILITY: dict[int, list[int]] = {
+    1: [1, 2],
+    2: [1, 2],
+    3: [3, 4],
+    4: [3, 4],
+    5: [4, 5, 6],
+    6: [5, 6]
+}
+
 def bytes_to_human_readable(size: int) -> str:
     """Convert a byte count to a human-readable format with appropriate units.
     
