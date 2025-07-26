@@ -259,7 +259,7 @@ class ChatGUI:
             # Play a system notification sound (non-blocking)
             if os.path.exists("notification_sound.wav"):
                 threading.Thread(
-                    target=lambda: winsound.MessageBeep(winsound.MB_ICONEXCLAMATION),
+                    target=lambda: winsound.PlaySound("notification_sound.wav", winsound.SND_FILENAME),
                     daemon=True
                 ).start()
         except Exception:

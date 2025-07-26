@@ -240,20 +240,13 @@ class ChatGUI:
             
         try:
             # Play a system notification sound (non-blocking)
-            threading.Thread(
-                target=lambda: winsound.MessageBeep(winsound.MB_ICONEXCLAMATION),
-                daemon=True
-            ).start()
-        except Exception:
-            # Fallback to simple beep if MessageBeep fails
-            try:
+            if os.path.exists("notification_sound.wav"):
                 threading.Thread(
-                    target=lambda: winsound.Beep(800, 200),  # 800 Hz for 200ms
+                    target=lambda: winsound.PlaySound("notification_sound.wav", winsound.SND_FILENAME),
                     daemon=True
                 ).start()
-            except Exception:
-                # If all sound methods fail, silently continue
-                pass
+        except Exception:
+            pass
 
     def create_widgets(self):
         """Create the GUI widgets."""
