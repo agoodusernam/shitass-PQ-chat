@@ -11,7 +11,7 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
 
 # Protocol constants
-PROTOCOL_VERSION = 4
+PROTOCOL_VERSION = 5
 MSG_TYPE_KEY_EXCHANGE_INIT = 1
 MSG_TYPE_KEY_EXCHANGE_RESPONSE = 2
 MSG_TYPE_ENCRYPTED_MESSAGE = 3

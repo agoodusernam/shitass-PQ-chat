@@ -2542,10 +2542,10 @@ class GUISecureChatClient(SecureChatClient):
                     metadata["total_chunks"]
             )
             
-            # Show progress in GUI every 50 chunks
+            # Show progress in GUI every 10 chunks
             if self.gui:
                 received_chunks = len(self.protocol.received_chunks.get(transfer_id, set()))
-                if received_chunks % 50 == 0:  # Update every 50 chunks
+                if received_chunks % 10 == 0:  # Update every 10 chunks
                     # Calculate bytes transferred for speed tracking
                     # For most chunks, use FILE_CHUNK_SIZE, but for the last chunk use actual size
                     if metadata["total_chunks"] == 1:
@@ -2679,9 +2679,9 @@ class GUISecureChatClient(SecureChatClient):
                 # Update bytes transferred
                 bytes_transferred += len(chunk)
                 
-                # Show progress in GUI every 50 chunks
+                # Show progress in GUI every 10 chunks
                 if self.gui:
-                    if (i + 1) % 50 == 0:  # Update every 50 chunks
+                    if (i + 1) % 10 == 0:  # Update every 10 chunks
                         filename = os.path.basename(file_path)
                         self.gui.root.after(0, lambda curr=i + 1, total=total_chunks, bytes_sent=bytes_transferred,
                                                       fname=filename:
