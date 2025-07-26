@@ -11,7 +11,7 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
 
 # Protocol constants
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 MSG_TYPE_KEY_EXCHANGE_INIT = 1
 MSG_TYPE_KEY_EXCHANGE_RESPONSE = 2
 MSG_TYPE_ENCRYPTED_MESSAGE = 3
@@ -27,7 +27,7 @@ MSG_TYPE_KEEP_ALIVE = 12
 MSG_TYPE_KEEP_ALIVE_RESPONSE = 13
 
 # File transfer constants
-FILE_CHUNK_SIZE = 64 * 1024  # 32KB chunks
+FILE_CHUNK_SIZE = 128 * 1024 * 1024  # 128 MiB chunks
 
 def bytes_to_human_readable(size: int) -> str:
     """Convert a byte count to a human-readable format with appropriate units.
@@ -92,7 +92,8 @@ class SecureChatProtocol:
         
         # File transfer state
         self.file_transfers: dict = {}  # Track ongoing file transfers
-        self.received_chunks: dict = {}  # Buffer for received file chunks
+        self.received_chunks: dict = {}  # Track received chunk indices (set of indices per transfer)
+        self.temp_file_paths: dict = {}  # Track temporary file paths for receiving chunks
         
     def reset_key_exchange(self):
         """Reset all cryptographic state to initial values for key exchange restart."""
@@ -108,6 +109,15 @@ class SecureChatProtocol:
         # Clear file transfer state as well
         self.file_transfers = {}
         self.received_chunks = {}
+        
+        # Clean up any temporary files
+        for temp_path in self.temp_file_paths.values():
+            try:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            except Exception:
+                pass  # Ignore errors during cleanup
+        self.temp_file_paths = {}
         
     def generate_keypair(self) -> tuple[bytes, bytes]:
         """Generate ML-KEM keypair for key exchange."""
@@ -691,13 +701,15 @@ class SecureChatProtocol:
         }
         return self.encrypt_message(json.dumps(message))
     
-    def chunk_file(self, file_path: str) -> list[bytes]:
-        """Split a file into chunks for transmission."""
-        chunks = []
+    def chunk_file(self, file_path: str):
+        """Generate file chunks for transmission one at a time.
+        
+        This is a generator function that yields one chunk at a time
+        to avoid loading the entire file into memory.
+        """
         with open(file_path, 'rb') as f:
             while chunk := f.read(FILE_CHUNK_SIZE):
-                chunks.append(chunk)
-        return chunks
+                yield chunk
     
     def process_file_metadata(self, decrypted_data: str) -> dict:
         """Process a file metadata message."""
@@ -796,39 +808,86 @@ class SecureChatProtocol:
             raise ValueError(f"File chunk processing failed: {e}")
     
     def add_file_chunk(self, transfer_id: str, chunk_index: int, chunk_data: bytes, total_chunks: int) -> bool:
-        """Add a received file chunk and return True if file is complete."""
-        if transfer_id not in self.received_chunks:
-            self.received_chunks[transfer_id] = {}
+        """Add a received file chunk and return True if file is complete.
         
-        self.received_chunks[transfer_id][chunk_index] = chunk_data
+        Instead of storing chunks in memory, this method writes them directly to a temporary file.
+        It keeps track of which chunks have been received using a set of indices.
+        """
+        # Initialize tracking structures if this is the first chunk for this transfer
+        if transfer_id not in self.received_chunks:
+            self.received_chunks[transfer_id] = set()
+            
+            # Create a temporary file for this transfer
+            temp_file_path = os.path.join(os.getcwd(), f".tmp_transfer_{transfer_id}")
+            self.temp_file_paths[transfer_id] = temp_file_path
+            
+            # Create an empty file
+            with open(temp_file_path, 'wb'):
+                pass
+        
+        # Get the temporary file path
+        temp_file_path = self.temp_file_paths[transfer_id]
+        
+        # Write the chunk to the temporary file at the correct position
+        with open(temp_file_path, 'r+b') as f:
+            # Calculate the position based on chunk index and chunk size
+            position = chunk_index * FILE_CHUNK_SIZE
+            f.seek(position)
+            f.write(chunk_data)
+        
+        # Mark this chunk as received
+        self.received_chunks[transfer_id].add(chunk_index)
         
         # Check if all chunks are received
         return len(self.received_chunks[transfer_id]) == total_chunks
     
     def reassemble_file(self, transfer_id: str, output_path: str, expected_hash: str) -> bool:
-        """Reassemble file chunks and verify integrity."""
-        if transfer_id not in self.received_chunks:
-            raise ValueError(f"No chunks found for transfer {transfer_id}")
+        """Finalize file transfer and verify integrity.
         
-        chunks = self.received_chunks[transfer_id]
+        Since chunks are already written to a temporary file, this method:
+        1. Calculates the hash of the temporary file
+        2. Verifies the hash against the expected hash
+        3. Moves the temporary file to the final output path
+        """
+        if transfer_id not in self.received_chunks or transfer_id not in self.temp_file_paths:
+            raise ValueError(f"No data found for transfer {transfer_id}")
         
-        # Sort chunks by index and reassemble
-        sorted_chunks = [chunks[i] for i in sorted(chunks.keys())]
+        temp_file_path = self.temp_file_paths[transfer_id]
         
-        # Write file and calculate hash
+        if not os.path.exists(temp_file_path):
+            raise ValueError(f"Temporary file not found: {temp_file_path}")
+        
+        # Calculate hash of the temporary file
         file_hash = hashlib.sha256()
-        with open(output_path, 'wb') as f:
-            for chunk in sorted_chunks:
-                f.write(chunk)
+        with open(temp_file_path, 'rb') as f:
+            while chunk := f.read(8192):  # Read in small chunks to avoid memory issues
                 file_hash.update(chunk)
         
         # Verify file integrity
         if file_hash.hexdigest() != expected_hash:
-            os.remove(output_path)  # Remove corrupted file
+            os.remove(temp_file_path)  # Remove corrupted file
             raise ValueError("File integrity check failed")
         
-        # Clean up chunks from memory
+        # Move the temporary file to the final output path
+        try:
+            # If the output file already exists, remove it first
+            if os.path.exists(output_path):
+                os.remove(output_path)
+            
+            # Move the temporary file to the final output path
+            os.rename(temp_file_path, output_path)
+        except Exception as e:
+            # If moving fails, try copying instead
+            try:
+                import shutil
+                shutil.copy2(temp_file_path, output_path)
+                os.remove(temp_file_path)
+            except Exception as copy_error:
+                raise ValueError(f"Failed to move file: {e}, copy error: {copy_error}")
+        
+        # Clean up tracking data
         del self.received_chunks[transfer_id]
+        del self.temp_file_paths[transfer_id]
         
         return True
 

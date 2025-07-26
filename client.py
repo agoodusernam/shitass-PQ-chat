@@ -583,7 +583,7 @@ class SecureChatClient:
         )
         
         # Show progress - but only at significant intervals to avoid console spam
-        received_chunks = len(self.protocol.received_chunks.get(transfer_id, {}))
+        received_chunks = len(self.protocol.received_chunks.get(transfer_id, set()))
         progress = (received_chunks / metadata["total_chunks"]) * 100
         
         # Initialize progress tracking for this transfer if not exists
@@ -645,10 +645,11 @@ class SecureChatClient:
     def _send_file_chunks(self, transfer_id: str, file_path: str) -> None:
         """Send file chunks to peer."""
         try:
-            chunks = self.protocol.chunk_file(file_path)
-            total_chunks = len(chunks)
+            # Get total chunks from metadata (already calculated during file_metadata creation)
+            total_chunks = self.pending_file_transfers[transfer_id]["metadata"]["total_chunks"]
+            chunk_generator = self.protocol.chunk_file(file_path)
             
-            for i, chunk in enumerate(chunks):
+            for i, chunk in enumerate(chunk_generator):
                 chunk_msg = self.protocol.create_file_chunk_message(transfer_id, i, chunk)
                 send_message(self.socket, chunk_msg)
                 
