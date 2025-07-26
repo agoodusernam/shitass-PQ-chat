@@ -2599,6 +2599,84 @@ class GUISecureChatClient(SecureChatClient):
             else:
                 print(f"Error handling file chunk: {e}")
     
+    def handle_file_chunk_binary(self, chunk_info: dict):
+        """Handle incoming file chunk (optimized binary format) with GUI progress updates."""
+        try:
+            transfer_id = chunk_info["transfer_id"]
+            
+            if transfer_id not in self.active_file_metadata:
+                if self.gui:
+                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
+                        "Received chunk for unknown file transfer"))
+                return
+            
+            metadata = self.active_file_metadata[transfer_id]
+            
+            # Add chunk to protocol buffer
+            is_complete = self.protocol.add_file_chunk(
+                transfer_id,
+                chunk_info["chunk_index"],
+                chunk_info["chunk_data"],
+                metadata["total_chunks"]
+            )
+            
+            # Show progress in GUI
+            if self.gui:
+                received_chunks = len(self.protocol.received_chunks.get(transfer_id, set()))
+                # Calculate bytes transferred for speed tracking
+                # For most chunks, use SEND_CHUNK_SIZE, but for the last chunk use actual size
+                if metadata["total_chunks"] == 1:
+                    # Only one chunk, use actual size
+                    bytes_transferred = len(chunk_info["chunk_data"])
+                else:
+                    # Multiple chunks - calculate based on complete chunks and current chunk
+                    complete_chunks = received_chunks - 1  # Exclude current chunk
+                    bytes_transferred = (complete_chunks * SEND_CHUNK_SIZE) + len(chunk_info["chunk_data"])
+                
+                # Update GUI with transfer progress every 50 chunks OR for the first chunk
+                if received_chunks % 50 == 0 or received_chunks == 1:
+                    self.gui.root.after(0, lambda rc=received_chunks, tc=metadata['total_chunks'], bt=bytes_transferred, fn=metadata['filename']:
+                        self.gui.file_transfer_window.update_transfer_progress(transfer_id, fn, rc, tc, bt)
+                    )
+            
+            if is_complete:
+                # Reassemble file
+                output_path = os.path.join(os.getcwd(), metadata["filename"])
+                
+                # Handle filename conflicts
+                counter = 1
+                base_name, ext = os.path.splitext(metadata["filename"])
+                while os.path.exists(output_path):
+                    output_path = os.path.join(os.getcwd(), f"{base_name}_{counter}{ext}")
+                    counter += 1
+                
+                try:
+                    self.protocol.reassemble_file(transfer_id, output_path, metadata["file_hash"])
+                    if self.gui:
+                        self.gui.root.after(0, lambda op=output_path: self.gui.file_transfer_window.add_transfer_message(
+                            f"File received successfully: {op}", transfer_id))
+                        # Clear speed when transfer completes
+                        self.gui.root.after(0, lambda: self.gui.file_transfer_window.clear_speed())
+                    
+                    # Send completion message
+                    complete_msg = self.protocol.create_file_complete_message(transfer_id)
+                    send_message(self.socket, complete_msg)
+                    
+                except Exception as e:
+                    if self.gui:
+                        self.gui.root.after(0, lambda err=e: self.gui.file_transfer_window.add_transfer_message(
+                            f"File reassembly failed: {err}", transfer_id))
+                
+                # Clean up
+                del self.active_file_metadata[transfer_id]
+            
+        except Exception as e:
+            if self.gui:
+                self.gui.root.after(0, lambda e=e: self.gui.file_transfer_window.add_transfer_message(
+                    f"Error handling binary file chunk: {e}"))
+            else:
+                print(f"Error handling binary file chunk: {e}")
+    
     def handle_file_complete(self, decrypted_message: str):
         """Handle file transfer completion notification with GUI updates."""
         try:
