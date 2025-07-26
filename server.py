@@ -11,7 +11,8 @@ from typing import Optional
 import time
 
 from shared import SecureChatProtocol, send_message, receive_message, create_error_message, create_reset_message, \
-    MSG_TYPE_KEY_EXCHANGE_RESPONSE, MSG_TYPE_KEY_VERIFICATION, PROTOCOL_VERSION
+    MSG_TYPE_KEY_EXCHANGE_RESPONSE, MSG_TYPE_KEY_VERIFICATION, MSG_TYPE_KEEP_ALIVE, MSG_TYPE_KEEP_ALIVE_RESPONSE, \
+    PROTOCOL_VERSION
 
 
 class SecureChatServer:
@@ -220,6 +221,12 @@ class ClientHandler:
         self.connected = True
         self.key_exchange_complete = False
         
+        # Keepalive tracking
+        self.last_keepalive_time = time.time()
+        self.keepalive_failures = 0
+        self.waiting_for_keepalive_response = False
+        self.keepalive_thread = None
+        
     def handle(self):
         """Main client handling loop."""
         try:
@@ -232,12 +239,17 @@ class ClientHandler:
                         # Handle key exchange messages
                         self.handle_key_exchange(message_data)
                     else:
-                        # Check if this is a verification message
+                        # Check if this is a verification message or keepalive response
                         try:
                             message = json.loads(message_data.decode('utf-8'))
-                            if message.get("type") == MSG_TYPE_KEY_VERIFICATION:
+                            message_type = message.get("type")
+                            
+                            if message_type == MSG_TYPE_KEY_VERIFICATION:
                                 # Route verification messages
                                 self.route_verification_message(message_data)
+                            elif message_type == MSG_TYPE_KEEP_ALIVE_RESPONSE:
+                                # Handle keepalive response
+                                self.handle_keepalive_response(message_data)
                             else:
                                 # Route encrypted messages to other client
                                 self.server.route_message(self.client_id, message_data)
@@ -329,6 +341,9 @@ class ClientHandler:
                 try:
                     send_message(client_handler.socket, message_data)
                     client_handler.key_exchange_complete = True
+                    
+                    # Start keepalive for this client
+                    client_handler.start_keepalive()
                 except: # pylint: disable=bare-except
                     pass
     
@@ -342,6 +357,86 @@ class ClientHandler:
     def is_connected(self) -> bool:
         """Check if client is still connected."""
         return self.connected
+    
+    def start_keepalive(self):
+        """Start the keepalive thread."""
+        if self.keepalive_thread is None:
+            self.keepalive_thread = threading.Thread(target=self.keepalive_loop)
+            self.keepalive_thread.daemon = True
+            self.keepalive_thread.start()
+            print(f"Started keepalive for client {self.client_id}")
+    
+    def keepalive_loop(self):
+        """Send keepalive messages every minute and track responses."""
+        while self.connected:
+            # Send a keepalive message
+            self.send_keepalive()
+            
+            # Wait for 10 seconds for a response
+            response_wait_start = time.time()
+            while self.waiting_for_keepalive_response and (time.time() - response_wait_start) < 10:
+                time.sleep(0.1)  # Short sleep to avoid busy waiting
+                
+                if not self.connected:
+                    break
+            
+            # If we're still waiting for a response after 10 seconds, count it as a failure
+            if self.waiting_for_keepalive_response:
+                self.keepalive_failures += 1
+                print(f"Keepalive failure for client {self.client_id} (failure {self.keepalive_failures}/3)")
+                
+                # Disconnect after 3 failures
+                if self.keepalive_failures >= 3:
+                    print(f"Client {self.client_id} failed 3 keepalives, disconnecting")
+                    self.disconnect()
+                    break
+            
+            # Wait for the remainder of the minute before sending the next keepalive
+            # Total cycle should be 60 seconds (1 minute)
+            elapsed = time.time() - self.last_keepalive_time
+            if elapsed < 60:
+                time.sleep(60 - elapsed)
+            
+            if not self.connected:
+                break
+    
+    def send_keepalive(self):
+        """Send a keepalive message to the client."""
+        if not self.connected or not self.key_exchange_complete:
+            return
+            
+        try:
+            # Create keepalive message
+            keepalive_message = {
+                "version": PROTOCOL_VERSION,
+                "type": MSG_TYPE_KEEP_ALIVE
+            }
+            message_data = json.dumps(keepalive_message).encode('utf-8')
+            
+            # Send to client
+            send_message(self.socket, message_data)
+            print("Sent keepalive to client", self.client_id)
+            
+            # Update tracking
+            self.last_keepalive_time = time.time()
+            self.waiting_for_keepalive_response = True
+            
+        except Exception as e:
+            print(f"Error sending keepalive to client {self.client_id}: {e}")
+            self.disconnect()
+    
+    def handle_keepalive_response(self, message_data: bytes):
+        """Handle a keepalive response from the client."""
+        try:
+            # Parse message to verify it's a keepalive response
+            message = json.loads(message_data.decode('utf-8'))
+            if message.get("type") == MSG_TYPE_KEEP_ALIVE_RESPONSE:
+                # Reset tracking
+                self.waiting_for_keepalive_response = False
+                self.keepalive_failures = 0
+                
+        except Exception as e:
+            print(f"Error handling keepalive response from client {self.client_id}: {e}")
     
     def disconnect(self):
         """Disconnect the client."""

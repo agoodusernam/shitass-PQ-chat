@@ -11,7 +11,7 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
 
 # Protocol constants
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 MSG_TYPE_KEY_EXCHANGE_INIT = 1
 MSG_TYPE_KEY_EXCHANGE_RESPONSE = 2
 MSG_TYPE_ENCRYPTED_MESSAGE = 3
@@ -23,6 +23,8 @@ MSG_TYPE_FILE_REJECT = 8
 MSG_TYPE_FILE_CHUNK = 9
 MSG_TYPE_FILE_COMPLETE = 10
 MSG_TYPE_KEY_EXCHANGE_RESET = 11
+MSG_TYPE_KEEP_ALIVE = 12
+MSG_TYPE_KEEP_ALIVE_RESPONSE = 13
 
 # File transfer constants
 FILE_CHUNK_SIZE = 64 * 1024  # 32KB chunks

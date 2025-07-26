@@ -10,7 +10,8 @@ import sys
 import os
 import time
 from shared import SecureChatProtocol, send_message, receive_message, MSG_TYPE_FILE_METADATA, \
-    MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT, MSG_TYPE_FILE_CHUNK, MSG_TYPE_FILE_COMPLETE, MSG_TYPE_KEY_EXCHANGE_RESET
+    MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT, MSG_TYPE_FILE_CHUNK, MSG_TYPE_FILE_COMPLETE, MSG_TYPE_KEY_EXCHANGE_RESET, \
+    MSG_TYPE_KEEP_ALIVE, MSG_TYPE_KEEP_ALIVE_RESPONSE, PROTOCOL_VERSION
 
 class SecureChatClient:
     
@@ -161,6 +162,8 @@ class SecureChatClient:
                     self.handle_key_verification_message(message_data)
                 elif message_type == MSG_TYPE_KEY_EXCHANGE_RESET:
                     self.handle_key_exchange_reset(message_data)
+                elif message_type == MSG_TYPE_KEEP_ALIVE:
+                    self.handle_keepalive(message_data)
                 elif message.get("type") == "key_exchange_complete":
                     self.handle_key_exchange_complete(message)
                 elif message.get("type") == "initiate_key_exchange":
@@ -174,6 +177,26 @@ class SecureChatClient:
                 
         except Exception as e:
             print(f"\nError handling message: {e}")
+            
+    def handle_keepalive(self, message_data: bytes) -> None:
+        """Handle keepalive messages from the server.
+        
+        Args:
+            message_data (bytes): The raw keepalive message data.
+        """
+        try:
+            # Create keepalive response message
+            response_message = {
+                "version": PROTOCOL_VERSION,
+                "type": MSG_TYPE_KEEP_ALIVE_RESPONSE
+            }
+            response_data = json.dumps(response_message).encode('utf-8')
+            
+            # Send response to server
+            send_message(self.socket, response_data)
+            
+        except Exception as e:
+            print(f"\nError handling keepalive: {e}")
     
     def initiate_key_exchange(self) -> None:
         """Initiate the key exchange process as the first client.
