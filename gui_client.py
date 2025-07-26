@@ -8,7 +8,7 @@ import time
 from client import SecureChatClient
 import json
 from shared import bytes_to_human_readable, send_message, MSG_TYPE_FILE_METADATA, MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT,\
-    MSG_TYPE_FILE_COMPLETE, MSG_TYPE_FILE_CHUNK, FILE_CHUNK_SIZE
+    MSG_TYPE_FILE_COMPLETE, MSG_TYPE_FILE_CHUNK, FILE_CHUNK_SIZE, SEND_CHUNK_SIZE
 
 
 class FileTransferWindow:
@@ -971,10 +971,13 @@ class GUISecureChatClient(SecureChatClient):
                 else:
                     # Multiple chunks - calculate based on complete chunks and current chunk
                     complete_chunks = received_chunks - 1  # Exclude current chunk
-                    bytes_transferred = (complete_chunks * FILE_CHUNK_SIZE) + len(chunk_info["chunk_data"])
-                self.gui.root.after(0, lambda: self.gui.file_transfer_window.update_transfer_progress(
-                    transfer_id, metadata['filename'], received_chunks, metadata['total_chunks'], bytes_transferred
-                ))
+                    bytes_transferred = (complete_chunks * SEND_CHUNK_SIZE) + len(chunk_info["chunk_data"])
+                
+                # Update GUI with transfer progress every 50 chunks
+                if self.gui and received_chunks % 50 == 0:
+                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.update_transfer_progress(
+                        transfer_id, metadata['filename'], received_chunks, metadata['total_chunks'], bytes_transferred
+                    ))
             
             if is_complete:
                 # Reassemble file
@@ -1048,10 +1051,11 @@ class GUISecureChatClient(SecureChatClient):
                 
                 # Show progress in GUI every 50 chunks
                 if self.gui:
-                    filename = os.path.basename(file_path)
-                    self.gui.root.after(0, lambda curr=i+1, total=total_chunks, bytes_sent=bytes_transferred, fname=filename:
-                        self.gui.file_transfer_window.update_transfer_progress(transfer_id, fname, curr, total, bytes_sent)
-                    )
+                    if i % 50 == 0:
+                        filename = os.path.basename(file_path)
+                        self.gui.root.after(0, lambda curr=i+1, total=total_chunks, bytes_sent=bytes_transferred, fname=filename:
+                            self.gui.file_transfer_window.update_transfer_progress(transfer_id, fname, curr, total, bytes_sent)
+                        )
             
             # Final update to ensure 100% progress is shown
             if self.gui:

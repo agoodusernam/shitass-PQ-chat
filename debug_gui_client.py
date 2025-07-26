@@ -9,7 +9,7 @@ from client import SecureChatClient
 import json
 
 from shared import bytes_to_human_readable, send_message, MSG_TYPE_FILE_METADATA, MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT,\
-    MSG_TYPE_FILE_COMPLETE, MSG_TYPE_FILE_CHUNK, MSG_TYPE_KEEP_ALIVE, MSG_TYPE_KEEP_ALIVE_RESPONSE, MSG_TYPE_KEY_EXCHANGE_RESET, PROTOCOL_VERSION, FILE_CHUNK_SIZE
+    MSG_TYPE_FILE_COMPLETE, MSG_TYPE_FILE_CHUNK, MSG_TYPE_KEEP_ALIVE, MSG_TYPE_KEEP_ALIVE_RESPONSE, MSG_TYPE_KEY_EXCHANGE_RESET, PROTOCOL_VERSION, FILE_CHUNK_SIZE, SEND_CHUNK_SIZE
 
 
 class FileTransferWindow:
@@ -2554,7 +2554,7 @@ class GUISecureChatClient(SecureChatClient):
                     else:
                         # Multiple chunks - calculate based on complete chunks and current chunk
                         complete_chunks = received_chunks - 1  # Exclude current chunk
-                        bytes_transferred = (complete_chunks * FILE_CHUNK_SIZE) + len(chunk_info["chunk_data"])
+                        bytes_transferred = (complete_chunks * SEND_CHUNK_SIZE) + len(chunk_info["chunk_data"])
                     self.gui.root.after(0, lambda: self.gui.file_transfer_window.update_transfer_progress(
                             transfer_id, metadata['filename'], received_chunks, metadata['total_chunks'],
                             bytes_transferred

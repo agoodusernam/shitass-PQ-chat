@@ -27,7 +27,8 @@ MSG_TYPE_KEEP_ALIVE = 12
 MSG_TYPE_KEEP_ALIVE_RESPONSE = 13
 
 # File transfer constants
-FILE_CHUNK_SIZE = 8 * 1024 * 1024  # 128 MiB chunks
+FILE_CHUNK_SIZE = 8 * 1024 * 1024  # 128 MiB chunks for loading
+SEND_CHUNK_SIZE = 64 * 1024  # 64 KiB chunks for sending
 
 def bytes_to_human_readable(size: int) -> str:
     """Convert a byte count to a human-readable format with appropriate units.
@@ -625,7 +626,7 @@ class SecureChatProtocol:
             "filename": file_name,
             "file_size": file_size,
             "file_hash": file_hash.hexdigest(),
-            "total_chunks": (file_size + FILE_CHUNK_SIZE - 1) // FILE_CHUNK_SIZE
+            "total_chunks": (file_size + SEND_CHUNK_SIZE - 1) // SEND_CHUNK_SIZE
         }
         
         encrypted_message = self.encrypt_message(json.dumps(metadata))
@@ -706,10 +707,16 @@ class SecureChatProtocol:
         
         This is a generator function that yields one chunk at a time
         to avoid loading the entire file into memory.
+        
+        The file is read in large chunks (FILE_CHUNK_SIZE) to minimize disk I/O,
+        but each large chunk is then split into smaller chunks (SEND_CHUNK_SIZE)
+        for network transmission.
         """
         with open(file_path, 'rb') as f:
-            while chunk := f.read(FILE_CHUNK_SIZE):
-                yield chunk
+            while large_chunk := f.read(FILE_CHUNK_SIZE):
+                # Split the large chunk into smaller chunks for sending
+                for i in range(0, len(large_chunk), SEND_CHUNK_SIZE):
+                    yield large_chunk[i:i + SEND_CHUNK_SIZE]
     
     def process_file_metadata(self, decrypted_data: str) -> dict:
         """Process a file metadata message."""
@@ -830,8 +837,8 @@ class SecureChatProtocol:
         
         # Write the chunk to the temporary file at the correct position
         with open(temp_file_path, 'r+b') as f:
-            # Calculate the position based on chunk index and chunk size
-            position = chunk_index * FILE_CHUNK_SIZE
+            # Calculate the position based on chunk index and send chunk size
+            position = chunk_index * SEND_CHUNK_SIZE
             f.seek(position)
             f.write(chunk_data)
         
