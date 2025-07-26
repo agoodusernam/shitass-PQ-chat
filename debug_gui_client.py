@@ -2246,6 +2246,9 @@ class GUISecureChatClient(SecureChatClient):
         self.last_keepalive_sent = None
         self.respond_to_keepalive = True  # Flag to control whether to respond to keepalives
         
+        # Socket lock for thread synchronization
+        self.socket_lock = threading.Lock()
+        
         # Debug features
         self.simulated_latency = 0  # No latency by default
         
@@ -2642,8 +2645,9 @@ class GUISecureChatClient(SecureChatClient):
                 }
                 response_data = json.dumps(response_message).encode('utf-8')
                 
-                # Send response to server
-                send_message(self.socket, response_data)
+                # Send response to server with socket lock to prevent conflicts with file uploads
+                with self.socket_lock:
+                    send_message(self.socket, response_data)
                 
                 # Update the last keepalive sent time
                 self.last_keepalive_sent = time.time()
@@ -2662,10 +2666,15 @@ class GUISecureChatClient(SecureChatClient):
             chunk_generator = self.protocol.chunk_file(file_path)
             bytes_transferred = 0
             
+            # Pause interval to allow keepalive responses
+            pause_interval = 10  # Pause after every 10 chunks
+            
             for i, chunk in enumerate(chunk_generator):
                 chunk_msg = self.protocol.create_file_chunk_message(transfer_id, i, chunk)
                 
-                send_message(self.socket, chunk_msg)
+                # Use socket lock to prevent conflicts with keepalive responses
+                with self.socket_lock:
+                    send_message(self.socket, chunk_msg)
                 
                 # Update bytes transferred
                 bytes_transferred += len(chunk)
@@ -2679,6 +2688,10 @@ class GUISecureChatClient(SecureChatClient):
                         self.gui.file_transfer_window.update_transfer_progress(transfer_id, fname, curr, total,
                                                                                bytes_sent)
                                             )
+                
+                # Periodically pause to allow keepalive responses to be sent
+                if (i + 1) % pause_interval == 0:
+                    time.sleep(0.01)  # Short pause (10ms) to allow other threads to run
             
             # Final update to ensure 100% progress is shown
             if self.gui:
@@ -2742,7 +2755,9 @@ class GUISecureChatClient(SecureChatClient):
                 # Create a thread to send the message after the simulated latency
                 def delayed_send():
                     time.sleep(latency / 1000.0)  # Convert ms to seconds
-                    send_message(self.socket, encrypted_data)
+                    # Use socket lock to prevent conflicts with keepalive responses and file uploads
+                    with self.socket_lock:
+                        send_message(self.socket, encrypted_data)
                     
                     if self.gui:
                         self.gui.root.after(0, lambda: self.gui.append_to_chat(
@@ -2751,7 +2766,9 @@ class GUISecureChatClient(SecureChatClient):
                 threading.Thread(target=delayed_send, daemon=True).start()
             else:
                 # Send immediately without delay
-                send_message(self.socket, encrypted_data)
+                # Use socket lock to prevent conflicts with keepalive responses and file uploads
+                with self.socket_lock:
+                    send_message(self.socket, encrypted_data)
                 
             return True
             

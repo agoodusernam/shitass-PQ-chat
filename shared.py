@@ -27,7 +27,7 @@ MSG_TYPE_KEEP_ALIVE = 12
 MSG_TYPE_KEEP_ALIVE_RESPONSE = 13
 
 # File transfer constants
-FILE_CHUNK_SIZE = 128 * 1024 * 1024  # 128 MiB chunks
+FILE_CHUNK_SIZE = 8 * 1024 * 1024  # 128 MiB chunks
 
 def bytes_to_human_readable(size: int) -> str:
     """Convert a byte count to a human-readable format with appropriate units.
