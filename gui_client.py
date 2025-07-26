@@ -5,6 +5,7 @@ import sys
 import io
 import os
 import time
+import winsound  # For notification sounds on Windows
 from client import SecureChatClient
 import json
 from shared import bytes_to_human_readable, send_message, MSG_TYPE_FILE_METADATA, MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT,\
@@ -212,6 +213,10 @@ class ChatGUI:
         self.ephemeral_messages = {}  # Track messages with timestamps for removal
         self.message_counter = 0  # Counter for unique message IDs
 
+        # Notification sound settings
+        self.notification_enabled = True
+        self.window_focused = True  # Track if window is focused
+
         # File transfer window with theme colors
         self.file_transfer_window = FileTransferWindow(self.root)
         # Pass theme colors to file transfer window
@@ -227,8 +232,45 @@ class ChatGUI:
         # Redirect stdout to capture print statements
         self.setup_output_redirection()
 
+        # Setup window focus tracking
+        self.setup_focus_tracking()
+
         # Handle window closing
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+    def setup_focus_tracking(self):
+        """Setup window focus tracking for notification sounds."""
+        def on_focus_in(event):
+            self.window_focused = True
+            
+        def on_focus_out(event):
+            self.window_focused = False
+            
+        # Bind focus events to the root window
+        self.root.bind("<FocusIn>", on_focus_in)
+        self.root.bind("<FocusOut>", on_focus_out)
+
+    def play_notification_sound(self):
+        """Play a notification sound if the window is not focused."""
+        if not self.notification_enabled or self.window_focused:
+            return
+            
+        try:
+            # Play a system notification sound (non-blocking)
+            threading.Thread(
+                target=lambda: winsound.MessageBeep(winsound.MB_ICONEXCLAMATION),
+                daemon=True
+            ).start()
+        except Exception:
+            # Fallback to simple beep if MessageBeep fails
+            try:
+                threading.Thread(
+                    target=lambda: winsound.Beep(800, 200),  # 800 Hz for 200ms
+                    daemon=True
+                ).start()
+            except Exception:
+                # If all sound methods fail, silently continue
+                pass
 
     def create_widgets(self):
         """Create the GUI widgets."""
@@ -360,6 +402,10 @@ class ChatGUI:
             self.chat_display.insert(tk.END, f"{text} <!-- {message_id} -->\n")
         else:
             self.chat_display.insert(tk.END, text + "\n")
+        
+        # Play notification sound if this is a message from another user
+        if is_message and text.startswith("Other user:"):
+            self.play_notification_sound()
         
         self.chat_display.see(tk.END)
         self.chat_display.config(state=tk.DISABLED) # type: ignore
