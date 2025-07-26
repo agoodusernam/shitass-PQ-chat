@@ -25,9 +25,10 @@ MSG_TYPE_FILE_COMPLETE = 10
 MSG_TYPE_KEY_EXCHANGE_RESET = 11
 MSG_TYPE_KEEP_ALIVE = 12
 MSG_TYPE_KEEP_ALIVE_RESPONSE = 13
+MSG_TYPE_DELIVERY_CONFIRMATION = 14
 
 # File transfer constants
-FILE_CHUNK_SIZE = 8 * 1024 * 1024  # 128 MiB chunks for loading
+FILE_CHUNK_SIZE = 128 * 1024 * 1024  # 128 MiB chunks for loading
 SEND_CHUNK_SIZE = 64 * 1024  # 64 KiB chunks for sending
 
 def bytes_to_human_readable(size: int) -> str:
@@ -56,6 +57,8 @@ def bytes_to_human_readable(size: int) -> str:
     else:
         return f"{size / 1024**3:.1f} GB"
 
+
+# noinspection PyUnresolvedReferences
 class SecureChatProtocol:
     """
     SecureChatProtocol - Implements the cryptographic protocol for secure chat using ML-KEM and AES-GCM.
@@ -519,7 +522,7 @@ class SecureChatProtocol:
     def handle_key_exchange_init(self, message_data: bytes) -> bytes:
         """Handle key exchange initiation from peer and return response."""
         # Process the init message and get shared secret + ciphertext
-        shared_secret, ciphertext = self.process_key_exchange_init(message_data)
+        shared_secret, ciphertext, _ = self.process_key_exchange_init(message_data)
         
         # Create and return the response message
         return self.create_key_exchange_response(ciphertext)
@@ -699,6 +702,15 @@ class SecureChatProtocol:
             "version": PROTOCOL_VERSION,
             "type": MSG_TYPE_FILE_COMPLETE,
             "transfer_id": transfer_id
+        }
+        return self.encrypt_message(json.dumps(message))
+    
+    def create_delivery_confirmation_message(self, confirmed_message_counter: int) -> bytes:
+        """Create a delivery confirmation message for a received text message."""
+        message = {
+            "version": PROTOCOL_VERSION,
+            "type": MSG_TYPE_DELIVERY_CONFIRMATION,
+            "confirmed_counter": confirmed_message_counter
         }
         return self.encrypt_message(json.dumps(message))
     

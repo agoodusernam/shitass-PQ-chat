@@ -11,7 +11,7 @@ import os
 import time
 from shared import SecureChatProtocol, send_message, receive_message, MSG_TYPE_FILE_METADATA, \
     MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT, MSG_TYPE_FILE_CHUNK, MSG_TYPE_FILE_COMPLETE, MSG_TYPE_KEY_EXCHANGE_RESET, \
-    MSG_TYPE_KEEP_ALIVE, MSG_TYPE_KEEP_ALIVE_RESPONSE, PROTOCOL_VERSION, SEND_CHUNK_SIZE
+    MSG_TYPE_KEEP_ALIVE, MSG_TYPE_KEEP_ALIVE_RESPONSE, MSG_TYPE_DELIVERY_CONFIRMATION, PROTOCOL_VERSION, SEND_CHUNK_SIZE
 
 class SecureChatClient:
     
@@ -164,6 +164,9 @@ class SecureChatClient:
                     self.handle_key_exchange_reset(message_data)
                 elif message_type == MSG_TYPE_KEEP_ALIVE:
                     self.handle_keepalive(message_data)
+                elif message_type == MSG_TYPE_DELIVERY_CONFIRMATION:
+                    if self.key_exchange_complete:
+                        self.handle_delivery_confirmation(message_data)
                 elif message.get("type") == "key_exchange_complete":
                     self.handle_key_exchange_complete(message)
                 elif message.get("type") == "initiate_key_exchange":
@@ -197,6 +200,21 @@ class SecureChatClient:
             
         except Exception as e:
             print(f"\nError handling keepalive: {e}")
+    
+    def handle_delivery_confirmation(self, message_data: bytes) -> None:
+        """Handle delivery confirmation messages from the peer.
+        
+        Args:
+            message_data (bytes): The raw delivery confirmation message data.
+        """
+        try:
+            decrypted_text = self.protocol.decrypt_message(message_data)
+            confirmation = json.loads(decrypted_text)
+            confirmed_counter = confirmation.get("confirmed_counter")
+            print(f"\n✓ Message {confirmed_counter} delivered")
+            
+        except Exception as e:
+            print(f"\nError handling delivery confirmation: {e}")
     
     def initiate_key_exchange(self) -> None:
         """Initiate the key exchange process as the first client.
@@ -362,6 +380,9 @@ class SecureChatClient:
         try:
             decrypted_text = self.protocol.decrypt_message(message_data)
             
+            # Get the message counter that was just processed for delivery confirmation
+            received_message_counter = self.protocol.peer_counter
+            
             # Attempt to parse the decrypted text as a JSON message
             try:
                 message = json.loads(decrypted_text)
@@ -377,16 +398,31 @@ class SecureChatClient:
                     self.handle_file_chunk(decrypted_text)
                 elif message_type == MSG_TYPE_FILE_COMPLETE:
                     self.handle_file_complete(decrypted_text)
+                elif message_type == MSG_TYPE_DELIVERY_CONFIRMATION:
+                    # Don't send delivery confirmation for delivery confirmations
+                    pass
                 else:
                     # It's a regular chat message if it's not a file-related type
                     print(f"\nOther user: {decrypted_text}")
+                    # Send delivery confirmation for text messages only
+                    self._send_delivery_confirmation(received_message_counter)
             
             except (json.JSONDecodeError, TypeError):
                 # If it's not JSON, it's a regular chat message
                 print(f"\nOther user: {decrypted_text}")
+                # Send delivery confirmation for text messages only
+                self._send_delivery_confirmation(received_message_counter)
             
         except Exception as e:
             print(f"\nFailed to decrypt message: {e}")
+    
+    def _send_delivery_confirmation(self, confirmed_counter: int) -> None:
+        """Send a delivery confirmation for a received text message."""
+        try:
+            confirmation_data = self.protocol.create_delivery_confirmation_message(confirmed_counter)
+            send_message(self.socket, confirmation_data)
+        except Exception as e:
+            print(f"\nError sending delivery confirmation: {e}")
     
     def handle_key_exchange_reset(self, message_data: bytes) -> None:
         """Handle key exchange reset message when other client disconnects."""

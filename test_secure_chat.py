@@ -57,7 +57,7 @@ class TestSecureChatProtocol(unittest.TestCase):
         init_message_bytes = self.protocol1.create_key_exchange_init(public_key1)
         
         # Client 2 processes init message and creates response
-        shared_secret2, ciphertext = self.protocol2.process_key_exchange_init(init_message_bytes)
+        shared_secret2, ciphertext, _ = self.protocol2.process_key_exchange_init(init_message_bytes)
         response_message_bytes = self.protocol2.create_key_exchange_response(ciphertext)
         
         # Client 1 processes response message
@@ -207,14 +207,14 @@ class TestSecureChatProtocol(unittest.TestCase):
         # Establish keys for session 1
         pub1, priv1 = session1_proto1.generate_keypair()
         init1 = session1_proto1.create_key_exchange_init(pub1)
-        secret1_2, cipher1 = session1_proto2.process_key_exchange_init(init1)
+        secret1_2, cipher1, _ = session1_proto2.process_key_exchange_init(init1)
         resp1 = session1_proto2.create_key_exchange_response(cipher1)
         secret1_1 = session1_proto1.process_key_exchange_response(resp1, priv1)
         
         # Establish keys for session 2
         pub2, priv2 = session2_proto1.generate_keypair()
         init2 = session2_proto1.create_key_exchange_init(pub2)
-        secret2_2, cipher2 = session2_proto2.process_key_exchange_init(init2)
+        secret2_2, cipher2, _ = session2_proto2.process_key_exchange_init(init2)
         resp2 = session2_proto2.create_key_exchange_response(cipher2)
         secret2_1 = session2_proto1.process_key_exchange_response(resp2, priv2)
         
@@ -428,7 +428,7 @@ class TestSecureChatIntegration(unittest.TestCase):
                 # Client 2 should receive the init message and respond
                 init_data = receive_message(client2)
                 protocol2 = SecureChatProtocol()
-                shared_secret2, ciphertext = protocol2.process_key_exchange_init(init_data)
+                shared_secret2, ciphertext, _ = protocol2.process_key_exchange_init(init_data)
                 response_message = protocol2.create_key_exchange_response(ciphertext)
                 send_message(client2, response_message)
                 
@@ -469,7 +469,7 @@ def run_manual_test():
     # Simulate key exchange
     public_key, private_key = protocol1.generate_keypair()
     init_msg_bytes = protocol1.create_key_exchange_init(public_key)
-    shared_secret2, ciphertext = protocol2.process_key_exchange_init(init_msg_bytes)
+    shared_secret2, ciphertext, _ = protocol2.process_key_exchange_init(init_msg_bytes)
     response_msg_bytes = protocol2.create_key_exchange_response(ciphertext)
     shared_secret1 = protocol1.process_key_exchange_response(response_msg_bytes, private_key)
     

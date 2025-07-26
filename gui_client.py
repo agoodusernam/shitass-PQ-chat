@@ -1,15 +1,15 @@
-import tkinter as tk # type: ignore
-from tkinter import scrolledtext, messagebox, filedialog, ttk # type: ignore
+import tkinter as tk
+from tkinter import scrolledtext, messagebox, filedialog
 import threading
 import sys
 import io
 import os
 import time
-import winsound  # For notification sounds on Windows
+import winsound
 from client import SecureChatClient
 import json
 from shared import bytes_to_human_readable, send_message, MSG_TYPE_FILE_METADATA, MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT,\
-    MSG_TYPE_FILE_COMPLETE, MSG_TYPE_FILE_CHUNK, FILE_CHUNK_SIZE, SEND_CHUNK_SIZE
+    MSG_TYPE_FILE_COMPLETE, MSG_TYPE_FILE_CHUNK, MSG_TYPE_DELIVERY_CONFIRMATION, SEND_CHUNK_SIZE
 
 
 class FileTransferWindow:
@@ -174,7 +174,8 @@ class FileTransferWindow:
         self.last_update_time = time.time()
 
 
-
+# noinspection PyAttributeOutsideInit
+# noinspection DuplicatedCode
 class ChatGUI:
     def __init__(self, root, theme_colors=None):
         self.root = root
@@ -212,6 +213,10 @@ class ChatGUI:
         self.ephemeral_mode = False
         self.ephemeral_messages = {}  # Track messages with timestamps for removal
         self.message_counter = 0  # Counter for unique message IDs
+        
+        # Delivery confirmation tracking
+        self.sent_messages = {}  # Track sent messages: {message_counter: tag_id}
+        self.sent_message_tags = {}  # Track tag IDs for sent messages: {tag_id: message_counter}
 
         # Notification sound settings
         self.notification_enabled = True
@@ -385,16 +390,22 @@ class ChatGUI:
     def append_to_chat(self, text, is_message=False):
         """Append text to the chat display."""
         self.chat_display.config(state=tk.NORMAL) # type: ignore
+        formatted_time = time.strftime("%H:%M:%S")
         
         # If ephemeral mode is enabled and this is a message, track it
         if self.ephemeral_mode and is_message:
             self.message_counter += 1
             message_id = f"msg_{self.message_counter}"
             self.ephemeral_messages[message_id] = time.time()
-            # Add invisible marker for tracking
-            self.chat_display.insert(tk.END, f"{text} <!-- {message_id} -->\n")
+            
+            # Add invisible marker for tracking using tags
+            # The tag is applied to the entire line including the newline character
+            start_index = self.chat_display.index(f"end-1c")
+            self.chat_display.insert(tk.END, f"[{formatted_time}] {text}\n")
+            end_index = self.chat_display.index(f"end-1c")
+            self.chat_display.tag_add(message_id, start_index, end_index)
         else:
-            self.chat_display.insert(tk.END, text + "\n")
+            self.chat_display.insert(tk.END, f"[{formatted_time}] {text}\n")
         
         # Play notification sound if this is a message from another user
         if is_message and text.startswith("Other user:"):
@@ -402,6 +413,81 @@ class ChatGUI:
         
         self.chat_display.see(tk.END)
         self.chat_display.config(state=tk.DISABLED) # type: ignore
+
+    def append_to_chat_with_delivery_status(self, text, message_counter=None, is_message=False):
+        """Append text to chat display with delivery status tracking for sent messages."""
+        self.chat_display.config(state=tk.NORMAL) # type: ignore
+        formatted_time = time.strftime("%H:%M:%S")
+        
+        # Create unique tag for this message if we have a message counter
+        tag_id = None
+        if message_counter is not None:
+            self.message_counter += 1
+            tag_id = f"sent_msg_{self.message_counter}"
+            
+            # Track this sent message
+            self.sent_messages[message_counter] = tag_id
+            self.sent_message_tags[tag_id] = message_counter
+        
+        # Get the starting position for the message
+        start_index = self.chat_display.index("end-1c")
+        
+        # Insert the message with a delivery status placeholder
+        if message_counter is not None:
+            # For sent messages, add a placeholder for delivery status
+            message_text = f"[{formatted_time}] {text} ⏳\n"
+        else:
+            # For other messages, use normal format
+            message_text = f"[{formatted_time}] {text}\n"
+        
+        self.chat_display.insert(tk.END, message_text)
+        
+        # Apply tag if we have one
+        if tag_id:
+            end_index = self.chat_display.index("end-1c")
+            self.chat_display.tag_add(tag_id, start_index, end_index)
+            
+            # Handle ephemeral mode for sent messages
+            if self.ephemeral_mode and is_message:
+                self.ephemeral_messages[tag_id] = time.time()
+        
+        # Play notification sound if this is a message from another user
+        if is_message and text.startswith("Other user:"):
+            self.play_notification_sound()
+        
+        self.chat_display.see(tk.END)
+        self.chat_display.config(state=tk.DISABLED) # type: ignore
+
+    def update_message_delivery_status(self, message_counter):
+        """Update the delivery status of a sent message to show it was delivered."""
+        if message_counter in self.sent_messages:
+            tag_id = self.sent_messages[message_counter]
+            
+            self.chat_display.config(state=tk.NORMAL) # type: ignore
+            
+            # Get the text range for this tag
+            try:
+                ranges = self.chat_display.tag_ranges(tag_id)
+                if ranges:
+                    start, end = ranges[0], ranges[1]
+                    current_text = self.chat_display.get(start, end)
+                    
+                    # Replace the ⏳ with ✔️
+                    updated_text = current_text.replace(" ⏳", " ✔️")
+                    
+                    # Delete the old text and insert the updated text
+                    self.chat_display.delete(start, end)
+                    self.chat_display.insert(start, updated_text)
+                    
+                    # Reapply the tag to the updated text
+                    new_end = self.chat_display.index(f"{start} + {len(updated_text)}c")
+                    self.chat_display.tag_add(tag_id, start, new_end)
+                    
+            except tk.TclError:
+                # Tag might not exist anymore, ignore
+                pass
+            
+            self.chat_display.config(state=tk.DISABLED) # type: ignore
 
     def update_status(self, status_text, color=None):
         """Update the status indicator with new text and color.
@@ -490,7 +576,7 @@ class ChatGUI:
         self.file_transfer_btn.config(state=tk.NORMAL) # type: ignore
         self.message_entry.focus()
         self.update_status("Connected, waiting for other client")
-
+    
     def disconnect_from_server(self):
         """Disconnect from the server."""
         if self.client:
@@ -596,12 +682,21 @@ Do the fingerprints match?"""
 
         # Send the message
         try:
+            # Get the message counter before sending (it will be incremented during send)
+            if hasattr(self.client, 'protocol') and self.client.protocol:
+                next_message_counter = self.client.protocol.message_counter + 1
+            else:
+                next_message_counter = None
+                
             if self.client.send_message(message):
-                # Display the sent message with ephemeral tracking
+                # Display the sent message with delivery tracking
                 if hasattr(self.client, 'protocol') and self.client.protocol.is_peer_key_verified():
-                    self.append_to_chat(f"You: {message}", is_message=True)
+                    display_text = f"You: {message}"
                 else:
-                    self.append_to_chat(f"You (unverified): {message}", is_message=True)
+                    display_text = f"You (unverified): {message}"
+                
+                # Add the message with delivery tracking
+                self.append_to_chat_with_delivery_status(display_text, next_message_counter, is_message=True)
             else:
                 self.append_to_chat("Failed to send message")
 
@@ -674,7 +769,7 @@ Do the fingerprints match?"""
                             self.root.after(0, lambda: self.remove_ephemeral_messages(expired_message_ids))
                     
                     time.sleep(1.0)  # Check every second
-                except Exception as e:
+                except Exception:
                     # Silently continue on errors to avoid breaking the cleanup thread
                     pass
         
@@ -682,49 +777,39 @@ Do the fingerprints match?"""
 
     def toggle_ephemeral_mode(self):
         """Toggle ephemeral mode on/off."""
-        self.ephemeral_mode = not self.ephemeral_mode
-        
-        if self.ephemeral_mode:
-            # Enable ephemeral mode
-            self.ephemeral_btn.config(bg="#ff6b6b", fg="#ffffff", text="⏱️ Ephemeral ON") # type: ignore
-            self.append_to_chat("🔥 Ephemeral mode enabled - messages will disappear after 30 seconds", is_message=True)
+        if not self.ephemeral_mode:
+            # About to enable ephemeral mode
+            self.ephemeral_mode = True
+            self.ephemeral_btn.config(bg="#ff6b6b", fg="#ffffff", text="Ephemeral ON") # type: ignore
+            self.append_to_chat("Ephemeral mode enabled - messages will disappear after 30 seconds", is_message=True)
         else:
-            # Disable ephemeral mode
-            self.ephemeral_btn.config(bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, text="⏱️ Ephemeral") # type: ignore
-            # Clear all ephemeral messages
-            self.ephemeral_messages.clear()
+            # About to disable ephemeral mode
+            self.append_to_chat("Ephemeral mode disabled.", is_message=True)
+            self.ephemeral_mode = False
+            self.ephemeral_btn.config(bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, text="Ephemeral") # type: ignore
+            
+            # Remove all existing ephemeral messages
+            all_message_ids = list(self.ephemeral_messages.keys())
+            if all_message_ids:
+                self.remove_ephemeral_messages(all_message_ids)
 
     def remove_ephemeral_messages(self, message_ids):
         """Remove ephemeral messages from the chat display."""
         try:
-            # Get all chat content
             self.chat_display.config(state=tk.NORMAL) # type: ignore
-            content = self.chat_display.get("1.0", tk.END)
-            lines = content.split('\n')
+            for message_id in message_ids:
+                # Find the tagged message range
+                tag_ranges = self.chat_display.tag_ranges(message_id)
+                if tag_ranges:
+                    # Delete the tagged text
+                    self.chat_display.delete(tag_ranges[0], tag_ranges[1])
+                
+                # Remove from tracking dict
+                self.ephemeral_messages.pop(message_id, None)
             
-            # Remove expired messages (they're tagged with message IDs in comments)
-            filtered_lines = []
-            for line in lines:
-                should_keep = True
-                for message_id in message_ids:
-                    if f"<!-- {message_id} -->" in line:
-                        should_keep = False
-                        break
-                # Only keep non-empty lines to eliminate gaps
-                if should_keep and line.strip():
-                    filtered_lines.append(line)
-            
-            # Update chat display with no gaps
-            self.chat_display.delete("1.0", tk.END)
-            if filtered_lines:
-                self.chat_display.insert("1.0", '\n'.join(filtered_lines) + '\n')
             self.chat_display.see(tk.END)
             self.chat_display.config(state=tk.DISABLED) # type: ignore
             
-            # Remove from tracking dict
-            for message_id in message_ids:
-                self.ephemeral_messages.pop(message_id, None)
-                
         except Exception as e:
             # If removal fails, just clean up the tracking dict
             for message_id in message_ids:
@@ -744,10 +829,13 @@ class GUISecureChatClient(SecureChatClient):
         try:
             decrypted_text = self.protocol.decrypt_message(message_data)
             
+            # Get the message counter that was just processed for delivery confirmation
+            received_message_counter = self.protocol.peer_counter
+            
             # Attempt to parse the decrypted text as a JSON message
             try:
                 
-                message = json.loads(decrypted_text)
+                message: dict = json.loads(decrypted_text)
                 message_type = message.get("type")
 
                 if message_type == MSG_TYPE_FILE_METADATA:
@@ -760,21 +848,56 @@ class GUISecureChatClient(SecureChatClient):
                     self.handle_file_chunk(decrypted_text)
                 elif message_type == MSG_TYPE_FILE_COMPLETE:
                     self.handle_file_complete(decrypted_text)
+                elif message_type == MSG_TYPE_DELIVERY_CONFIRMATION:
+                    self.handle_delivery_confirmation(message)
                 else:
                     # It's a regular chat message
                     if self.gui:
                         self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Other user: {decrypted_text}", is_message=True))
+                    # Send delivery confirmation for text messages only
+                    self._send_delivery_confirmation(received_message_counter)
             
             except (json.JSONDecodeError, TypeError):
                 # If it's not JSON, it's a regular chat message
                 if self.gui:
                     self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Other user: {decrypted_text}", is_message=True))
+                # Send delivery confirmation for text messages only
+                self._send_delivery_confirmation(received_message_counter)
 
         except Exception as e:
             if self.gui:
                 self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Failed to decrypt message: {e}"))
             else:
                 print(f"\nFailed to decrypt message: {e}")
+    
+    def _send_delivery_confirmation(self, confirmed_counter: int) -> None:
+        """Send a delivery confirmation for a received text message."""
+        print(f"\nSent a delivery confirmation for {confirmed_counter} messages")
+        try:
+            confirmation_data = self.protocol.create_delivery_confirmation_message(confirmed_counter)
+            send_message(self.socket, confirmation_data)
+        except Exception as e:
+            if self.gui:
+                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error sending delivery confirmation: {e}"))
+            else:
+                print(f"\nError sending delivery confirmation: {e}")
+
+    def handle_delivery_confirmation(self, message_data: dict) -> None:
+        """Handle delivery confirmation messages from the peer - override to update GUI."""
+        try:
+            confirmed_counter = message_data.get("confirmed_counter")
+            # Update the GUI to show the message was delivered
+            if self.gui and confirmed_counter:
+                self.gui.root.after(0, lambda: self.gui.update_message_delivery_status(confirmed_counter))
+            else:
+                # Fallback to console output if no GUI
+                print(f"\n✓ Message {confirmed_counter} delivered")
+            
+        except Exception as e:
+            if self.gui:
+                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error handling delivery confirmation: {e}"))
+            else:
+                print(f"\nError handling delivery confirmation: {e}")
 
     def handle_key_exchange_init(self, message_data: bytes):
         """Handle key exchange initiation - override to display warnings in GUI."""
