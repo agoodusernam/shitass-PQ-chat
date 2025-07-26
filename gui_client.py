@@ -964,7 +964,7 @@ class GUISecureChatClient(SecureChatClient):
             if self.gui:
                 received_chunks = len(self.protocol.received_chunks.get(transfer_id, set()))
                 # Calculate bytes transferred for speed tracking
-                # For most chunks, use FILE_CHUNK_SIZE, but for the last chunk use actual size
+                # For most chunks, use SEND_CHUNK_SIZE, but for the last chunk use actual size
                 if metadata["total_chunks"] == 1:
                     # Only one chunk, use actual size
                     bytes_transferred = len(chunk_info["chunk_data"])
@@ -973,11 +973,11 @@ class GUISecureChatClient(SecureChatClient):
                     complete_chunks = received_chunks - 1  # Exclude current chunk
                     bytes_transferred = (complete_chunks * SEND_CHUNK_SIZE) + len(chunk_info["chunk_data"])
                 
-                # Update GUI with transfer progress every 10 chunks
-                if self.gui and received_chunks % 50 == 0:
-                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.update_transfer_progress(
-                        transfer_id, metadata['filename'], received_chunks, metadata['total_chunks'], bytes_transferred
-                    ))
+                # Update GUI with transfer progress every 50 chunks OR for the first chunk
+                if received_chunks % 50 == 0 or received_chunks == 1:
+                    self.gui.root.after(0, lambda rc=received_chunks, tc=metadata['total_chunks'], bt=bytes_transferred, fn=metadata['filename']:
+                        self.gui.file_transfer_window.update_transfer_progress(transfer_id, fn, rc, tc, bt)
+                    )
             
             if is_complete:
                 # Reassemble file
@@ -993,7 +993,7 @@ class GUISecureChatClient(SecureChatClient):
                 try:
                     self.protocol.reassemble_file(transfer_id, output_path, metadata["file_hash"])
                     if self.gui:
-                        self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(f"File received successfully: {output_path}", transfer_id))
+                        self.gui.root.after(0, lambda op=output_path: self.gui.file_transfer_window.add_transfer_message(f"File received successfully: {op}", transfer_id))
                         # Clear speed when transfer completes
                         self.gui.root.after(0, lambda: self.gui.file_transfer_window.clear_speed())
                     
@@ -1003,7 +1003,7 @@ class GUISecureChatClient(SecureChatClient):
                     
                 except Exception as e:
                     if self.gui:
-                        self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(f"File reassembly failed: {e}", transfer_id))
+                        self.gui.root.after(0, lambda err=e: self.gui.file_transfer_window.add_transfer_message(f"File reassembly failed: {err}", transfer_id))
                 
                 # Clean up
                 del self.active_file_metadata[transfer_id]
@@ -1049,7 +1049,7 @@ class GUISecureChatClient(SecureChatClient):
                 # Update bytes transferred
                 bytes_transferred += len(chunk)
                 
-                # Show progress in GUI every 10 chunks
+                # Show progress in GUI every 50 chunks
                 if self.gui:
                     if i % 50 == 0:
                         filename = os.path.basename(file_path)

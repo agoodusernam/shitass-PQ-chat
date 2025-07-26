@@ -2536,29 +2536,30 @@ class GUISecureChatClient(SecureChatClient):
             
             # Add chunk to protocol buffer
             is_complete = self.protocol.add_file_chunk(
-                    transfer_id,
-                    chunk_info["chunk_index"],
-                    chunk_info["chunk_data"],
-                    metadata["total_chunks"]
+                transfer_id,
+                chunk_info["chunk_index"],
+                chunk_info["chunk_data"],
+                metadata["total_chunks"]
             )
             
-            # Show progress in GUI every 10 chunks
+            # Show progress in GUI
             if self.gui:
                 received_chunks = len(self.protocol.received_chunks.get(transfer_id, set()))
-                if received_chunks % 10 == 0:  # Update every 10 chunks
-                    # Calculate bytes transferred for speed tracking
-                    # For most chunks, use FILE_CHUNK_SIZE, but for the last chunk use actual size
-                    if metadata["total_chunks"] == 1:
-                        # Only one chunk, use actual size
-                        bytes_transferred = len(chunk_info["chunk_data"])
-                    else:
-                        # Multiple chunks - calculate based on complete chunks and current chunk
-                        complete_chunks = received_chunks - 1  # Exclude current chunk
-                        bytes_transferred = (complete_chunks * SEND_CHUNK_SIZE) + len(chunk_info["chunk_data"])
-                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.update_transfer_progress(
-                            transfer_id, metadata['filename'], received_chunks, metadata['total_chunks'],
-                            bytes_transferred
-                    ))
+                # Calculate bytes transferred for speed tracking
+                # For most chunks, use SEND_CHUNK_SIZE, but for the last chunk use actual size
+                if metadata["total_chunks"] == 1:
+                    # Only one chunk, use actual size
+                    bytes_transferred = len(chunk_info["chunk_data"])
+                else:
+                    # Multiple chunks - calculate based on complete chunks and current chunk
+                    complete_chunks = received_chunks - 1  # Exclude current chunk
+                    bytes_transferred = (complete_chunks * SEND_CHUNK_SIZE) + len(chunk_info["chunk_data"])
+                
+                # Update GUI with transfer progress every 50 chunks OR for the first chunk
+                if received_chunks % 50 == 0 or received_chunks == 1:
+                    self.gui.root.after(0, lambda rc=received_chunks, tc=metadata['total_chunks'], bt=bytes_transferred, fn=metadata['filename']:
+                        self.gui.file_transfer_window.update_transfer_progress(transfer_id, fn, rc, tc, bt)
+                    )
             
             if is_complete:
                 # Reassemble file
@@ -2574,24 +2575,23 @@ class GUISecureChatClient(SecureChatClient):
                 try:
                     self.protocol.reassemble_file(transfer_id, output_path, metadata["file_hash"])
                     if self.gui:
-                        self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
-                            f"File received successfully: {output_path}", transfer_id))
+                        self.gui.root.after(0, lambda op=output_path: self.gui.file_transfer_window.add_transfer_message(
+                            f"File received successfully: {op}", transfer_id))
                         # Clear speed when transfer completes
                         self.gui.root.after(0, lambda: self.gui.file_transfer_window.clear_speed())
                     
                     # Send completion message
-                    
                     complete_msg = self.protocol.create_file_complete_message(transfer_id)
                     send_message(self.socket, complete_msg)
-                
+                    
                 except Exception as e:
                     if self.gui:
-                        self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
-                            f"File reassembly failed: {e}", transfer_id))
+                        self.gui.root.after(0, lambda err=e: self.gui.file_transfer_window.add_transfer_message(
+                            f"File reassembly failed: {err}", transfer_id))
                 
                 # Clean up
                 del self.active_file_metadata[transfer_id]
-        
+            
         except Exception as e:
             if self.gui:
                 self.gui.root.after(0, lambda e=e: self.gui.file_transfer_window.add_transfer_message(
@@ -2681,13 +2681,13 @@ class GUISecureChatClient(SecureChatClient):
                 
                 # Show progress in GUI every 10 chunks
                 if self.gui:
-                    if (i + 1) % 10 == 0:  # Update every 10 chunks
+                    if (i + 1) % 50 == 0:  # Update every 50 chunks
                         filename = os.path.basename(file_path)
                         self.gui.root.after(0, lambda curr=i + 1, total=total_chunks, bytes_sent=bytes_transferred,
-                                                      fname=filename:
-                        self.gui.file_transfer_window.update_transfer_progress(transfer_id, fname, curr, total,
+                                              fn=filename:
+                        self.gui.file_transfer_window.update_transfer_progress(transfer_id, fn, curr, total,
                                                                                bytes_sent)
-                                            )
+                                    )
                 
                 # Periodically pause to allow keepalive responses to be sent
                 if (i + 1) % pause_interval == 0:
@@ -2697,8 +2697,8 @@ class GUISecureChatClient(SecureChatClient):
             if self.gui:
                 filename = os.path.basename(file_path)
                 self.gui.root.after(0, lambda curr=total_chunks, total=total_chunks, bytes_sent=bytes_transferred,
-                                              fname=filename:
-                self.gui.file_transfer_window.update_transfer_progress(transfer_id, fname, curr, total,
+                                              fn=filename:
+                self.gui.file_transfer_window.update_transfer_progress(transfer_id, fn, curr, total,
                                                                        bytes_sent)
                                     )
                 self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
@@ -2781,23 +2781,23 @@ class GUISecureChatClient(SecureChatClient):
 def main():
     """Main function to run the GUI chat client."""
     root = tk.Tk()
-    
+
     # Create GUI
     gui = ChatGUI(root)
-    
+
     # Override the client creation to use our GUI-aware version
     original_connect = gui.connect_to_server
-    
+
     def gui_connect():
         try:
             host = gui.host_entry.get().strip() or "localhost"
             port = int(gui.port_entry.get().strip() or "16384")
-            
+
             gui.append_to_chat(f"Connecting to {host}:{port}...")
-            
+
             # Create GUI-aware client instance
             gui.client = GUISecureChatClient(host, port, gui)
-            
+
             # Start connection in a separate thread
             def connect_thread():
                 try:
@@ -2809,16 +2809,16 @@ def main():
                         gui.root.after(0, lambda: gui.append_to_chat("Failed to connect to server"))
                 except Exception as e:
                     gui.root.after(0, lambda e=e: gui.append_to_chat(f"Connection error: {e}"))
-            
+
             threading.Thread(target=connect_thread, daemon=True).start()
-        
+
         except ValueError:
             messagebox.showerror("Error", "Invalid port number")
         except Exception as e:
             gui.append_to_chat(f"Connection error: {e}")
-    
+
     gui.connect_to_server = gui_connect
-    
+
     # Start the GUI
     root.mainloop()
 
