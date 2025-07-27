@@ -11,7 +11,7 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
 
 # Protocol constants
-PROTOCOL_VERSION = 6
+PROTOCOL_VERSION = 7
 MSG_TYPE_KEY_EXCHANGE_INIT = 1
 MSG_TYPE_KEY_EXCHANGE_RESPONSE = 2
 MSG_TYPE_ENCRYPTED_MESSAGE = 3
@@ -26,6 +26,7 @@ MSG_TYPE_KEY_EXCHANGE_RESET = 11
 MSG_TYPE_KEEP_ALIVE = 12
 MSG_TYPE_KEEP_ALIVE_RESPONSE = 13
 MSG_TYPE_DELIVERY_CONFIRMATION = 14
+MSG_TYPE_EMERGENCY_CLOSE = 15
 
 # File transfer constants
 FILE_CHUNK_SIZE = 128 * 1024 * 1024  # 128 MiB chunks for loading
@@ -39,7 +40,8 @@ PROTOCOL_COMPATIBILITY: dict[int, list[int]] = {
     3: [3, 4],
     4: [3, 4],
     5: [4, 5, 6],
-    6: [5, 6]
+    6: [5, 6],
+    7: [5, 6, 7]
 }
 
 def bytes_to_human_readable(size: int) -> str:

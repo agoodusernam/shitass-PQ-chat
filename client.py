@@ -11,7 +11,7 @@ import os
 import time
 from shared import SecureChatProtocol, send_message, receive_message, MSG_TYPE_FILE_METADATA, \
     MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT, MSG_TYPE_FILE_CHUNK, MSG_TYPE_FILE_COMPLETE, MSG_TYPE_KEY_EXCHANGE_RESET, \
-    MSG_TYPE_KEEP_ALIVE, MSG_TYPE_KEEP_ALIVE_RESPONSE, MSG_TYPE_DELIVERY_CONFIRMATION, PROTOCOL_VERSION, SEND_CHUNK_SIZE
+    MSG_TYPE_KEEP_ALIVE, MSG_TYPE_KEEP_ALIVE_RESPONSE, MSG_TYPE_DELIVERY_CONFIRMATION, MSG_TYPE_EMERGENCY_CLOSE, PROTOCOL_VERSION, SEND_CHUNK_SIZE
 
 class SecureChatClient:
     
@@ -167,6 +167,8 @@ class SecureChatClient:
                 elif message_type == MSG_TYPE_DELIVERY_CONFIRMATION:
                     if self.key_exchange_complete:
                         self.handle_delivery_confirmation(message_data)
+                elif message_type == MSG_TYPE_EMERGENCY_CLOSE:
+                    self.handle_emergency_close(message_data)
                 elif message.get("type") == "key_exchange_complete":
                     self.handle_key_exchange_complete(message)
                 elif message.get("type") == "initiate_key_exchange":
@@ -450,6 +452,37 @@ class SecureChatClient:
             
         except Exception as e:
             print(f"Error handling key exchange reset: {e}")
+    
+    def send_emergency_close(self) -> None:
+        """Send an emergency close message to notify the other client."""
+        try:
+            emergency_message = {
+                "version": PROTOCOL_VERSION,
+                "type": MSG_TYPE_EMERGENCY_CLOSE,
+                "message": "Emergency close activated"
+            }
+            message_data = json.dumps(emergency_message).encode('utf-8')
+            send_message(self.socket, message_data)
+        except Exception:
+            return
+    
+    def handle_emergency_close(self, message_data: bytes) -> None:
+        """Handle emergency close message from the other client."""
+        try:
+            message = json.loads(message_data.decode('utf-8'))
+            close_message = message.get("message", "Emergency close received")
+            print(f"\n{'='*50}")
+            print("EMERGENCY CLOSE RECEIVED")
+            print(f"The other client has activated emergency close.")
+            print(f"Message: {close_message}")
+            print("Connection will be terminated immediately.")
+            print(f"{'='*50}")
+            
+            # Immediately disconnect
+            self.disconnect()
+            
+        except Exception as e:
+            print(f"Error handling emergency close: {e}")
     
     def send_message(self, text: str) -> bool | None:
         """Encrypt and send a chat message."""

@@ -1,5 +1,6 @@
 import tkinter as tk  # type: ignore
 from tkinter import scrolledtext, messagebox, filedialog, ttk  # type: ignore
+from tkinterdnd2 import DND_FILES, TkinterDnD
 import threading
 import sys
 import io
@@ -10,7 +11,7 @@ from client import SecureChatClient
 import json
 
 from shared import bytes_to_human_readable, send_message, MSG_TYPE_FILE_METADATA, MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT,\
-    MSG_TYPE_FILE_COMPLETE, MSG_TYPE_FILE_CHUNK, MSG_TYPE_DELIVERY_CONFIRMATION, MSG_TYPE_KEEP_ALIVE_RESPONSE, MSG_TYPE_KEY_EXCHANGE_RESET, PROTOCOL_VERSION, SEND_CHUNK_SIZE
+    MSG_TYPE_FILE_COMPLETE, MSG_TYPE_FILE_CHUNK, MSG_TYPE_DELIVERY_CONFIRMATION, MSG_TYPE_KEEP_ALIVE_RESPONSE, MSG_TYPE_KEY_EXCHANGE_RESET, MSG_TYPE_EMERGENCY_CLOSE, PROTOCOL_VERSION, SEND_CHUNK_SIZE
 from gui_client import GUI_VERSION
 
 # noinspection PyAttributeOutsideInit,PyUnresolvedReferences
@@ -234,6 +235,9 @@ class ChatGUI:
         # Bind focus events to the root window
         self.root.bind("<FocusIn>", on_focus_in)
         self.root.bind("<FocusOut>", on_focus_out)
+        
+        # Bind Control+Q for emergency close at window level
+        self.root.bind("<Control-q>", lambda event: self.emergency_close())
 
     def play_notification_sound(self):
         """Play a notification sound if the window is not focused."""
@@ -313,6 +317,8 @@ class ChatGUI:
                 relief=tk.FLAT
         )
         self.chat_display.pack(fill=tk.BOTH, expand=True)  # type: ignore
+        self.chat_display.drop_target_register(DND_FILES)
+        self.chat_display.dnd_bind('<<Drop>>', self.handle_drop)
         
         # Debug frame (middle, initially visible by default)
         self.debug_frame = tk.Frame(content_frame, bg=self.BG_COLOR, width=300)
@@ -662,6 +668,46 @@ class ChatGUI:
         self.chat_display.see(tk.END)
         self.chat_display.config(state=tk.DISABLED)  # type: ignore
     
+    def handle_drop(self, event):
+        """Handle file drop events."""
+        if not self.connected or not self.client:
+            return
+
+        if not hasattr(self.client, 'verification_complete') or not self.client.verification_complete:
+            self.append_to_chat("Cannot send files - verification not complete")
+            return
+
+        # The event.data attribute contains a string of file paths
+        # It can be a single path or multiple paths separated by spaces
+        # File paths with spaces are enclosed in curly braces {}
+        file_paths_str = event.data
+        
+        # Simple parsing for now, assuming single file drop
+        # A more robust parser would be needed for multiple files with spaces
+        file_path = file_paths_str.strip()
+        if file_path.startswith('{') and file_path.endswith('}'):
+            file_path = file_path[1:-1]
+
+        if os.path.exists(file_path):
+            self.confirm_and_send_file(file_path)
+
+    def confirm_and_send_file(self, file_path):
+        """Ask for confirmation and then send the file."""
+        try:
+            file_size = os.path.getsize(file_path)
+            file_name = os.path.basename(file_path)
+            
+            result = messagebox.askyesno(
+                "Send File",
+                f"Send file '{file_name}' ({bytes_to_human_readable(file_size)})?"
+            )
+            
+            if result:
+                self.append_to_chat(f"Sending file: {file_name}")
+                self.client.send_file(file_path)
+        except Exception as e:
+            self.append_to_chat(f"File send error: {e}")
+
     def update_status(self, status_text, color="#ff6b6b"):
         """Update the status indicator with new text and color."""
         self.status_label.config(text=status_text, fg=color)  # type: ignore
@@ -1098,19 +1144,7 @@ Do the fingerprints match?"""
             )
             
             if file_path:
-                # Get file info
-                file_size = os.path.getsize(file_path)
-                file_name = os.path.basename(file_path)
-                
-                # Confirm file sending
-                result = messagebox.askyesno(
-                        "Send File",
-                        f"Send file '{file_name}' ({bytes_to_human_readable(file_size)})?"
-                )
-                
-                if result:
-                    self.append_to_chat(f"Sending file: {file_name}")
-                    self.client.send_file(file_path)
+                self.confirm_and_send_file(file_path)
         
         except Exception as e:
             self.append_to_chat(f"File send error: {e}")
@@ -1118,8 +1152,28 @@ Do the fingerprints match?"""
     def on_key_press(self, event):
         """Handle key press events in message entry."""
         # Allow normal typing when connected
+        # Note: Control+Q is handled at the window level, not here
         pass
     
+    def emergency_close(self):
+        """Handle emergency close (Control+Q) - send emergency message and close immediately."""
+        try:
+            if self.connected and self.client:
+                # Send emergency close message as quickly as possible
+                self.client.send_emergency_close()
+                # Force immediate disconnect without waiting
+                self.client.connected = False
+                if self.client.socket:
+                    self.client.socket.close()
+            # Close the application immediately
+            self.root.quit()
+            self.root.destroy()
+        except Exception as e:
+            # Even if there's an error, still close the application
+            print(f"Error during emergency close: {e}")
+            self.root.quit()
+            self.root.destroy()
+
     def on_closing(self):
         """Handle window closing."""
         if self.connected:
@@ -2447,6 +2501,36 @@ class GUISecureChatClient(SecureChatClient):
             else:
                 print(f"\nError handling delivery confirmation: {e}")
     
+    def handle_emergency_close(self, message_data: bytes) -> None:
+        """Handle emergency close message from the other client - override to display in GUI."""
+        try:
+            message = json.loads(message_data.decode('utf-8'))
+            close_message = message.get("message", "Emergency close received")
+            
+            if self.gui:
+                # Display emergency close message in GUI
+                self.gui.root.after(0, lambda: self.gui.append_to_chat("🚨 EMERGENCY CLOSE RECEIVED"))
+                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"The other client has activated emergency close."))
+                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Message: {close_message}"))
+                self.gui.root.after(0, lambda: self.gui.append_to_chat("Connection will be terminated immediately."))
+            else:
+                # Fallback to console output if no GUI
+                print(f"\n{'='*50}")
+                print("🚨 EMERGENCY CLOSE RECEIVED")
+                print(f"The other client has activated emergency close.")
+                print(f"Message: {close_message}")
+                print("Connection will be terminated immediately.")
+                print(f"{'='*50}")
+            
+            # Immediately disconnect
+            self.disconnect()
+            
+        except Exception as e:
+            if self.gui:
+                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error handling emergency close: {e}"))
+            else:
+                print(f"Error handling emergency close: {e}")
+
     def handle_key_exchange_response(self, message_data: bytes):
         """Handle key exchange response - override to send to GUI."""
         try:
@@ -2990,7 +3074,7 @@ class GUISecureChatClient(SecureChatClient):
 
 def main():
     """Main function to run the GUI chat client."""
-    root = tk.Tk()
+    root = TkinterDnD.Tk()
 
     # Create GUI
     gui = ChatGUI(root)

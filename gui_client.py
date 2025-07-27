@@ -12,7 +12,7 @@ import json
 from plyer import notification
 from PIL import Image, ImageTk, ImageGrab
 from shared import bytes_to_human_readable, send_message, MSG_TYPE_FILE_METADATA, MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT,\
-    MSG_TYPE_FILE_COMPLETE, MSG_TYPE_FILE_CHUNK, MSG_TYPE_DELIVERY_CONFIRMATION, SEND_CHUNK_SIZE
+    MSG_TYPE_FILE_COMPLETE, MSG_TYPE_FILE_CHUNK, MSG_TYPE_DELIVERY_CONFIRMATION, MSG_TYPE_EMERGENCY_CLOSE, SEND_CHUNK_SIZE
 
 
 GUI_VERSION = 17
@@ -314,6 +314,9 @@ class ChatGUI:
         # Bind focus events to the root window
         self.root.bind("<FocusIn>", on_focus_in)
         self.root.bind("<FocusOut>", on_focus_out)
+        
+        # Bind Control+Q for emergency close at window level
+        self.root.bind("<Control-q>", lambda event: self.emergency_close())
 
     def play_notification_sound(self):
         """Play a notification sound if the window is not focused."""
@@ -716,8 +719,8 @@ class ChatGUI:
                     else:
                         self.root.after(0, lambda: self.append_to_chat("Failed to connect to server"))
                         self.root.after(0, lambda: self.update_status("Not Connected"))
-                except Exception as e:
-                    self.root.after(0, lambda e=e: self.append_to_chat(f"Connection error: {e}"))
+                except Exception as er:
+                    self.root.after(0, lambda error=er: self.append_to_chat(f"Connection error: {error}"))
                     self.root.after(0, lambda: self.update_status("Not Connected"))
 
             threading.Thread(target=connect_thread, daemon=True).start()
@@ -907,6 +910,7 @@ Do the fingerprints match?"""
     def on_key_press(self, event):
         """Handle key press events in message entry."""
         # Allow normal typing when connected
+        # Note: Control+Q is handled at the window level, not here
         pass
 
     def on_paste(self, event):
@@ -982,6 +986,25 @@ Do the fingerprints match?"""
         except Exception as e:
             self.append_to_chat(f"Error handling clipboard image: {e}")
 
+    def emergency_close(self):
+        """Handle emergency close (Control+Q) - send emergency message and close immediately."""
+        try:
+            if self.connected and self.client:
+                # Send emergency close message as quickly as possible
+                self.client.send_emergency_close()
+                # Force immediate disconnect without waiting
+                self.client.connected = False
+                if self.client.socket:
+                    self.client.socket.close()
+            # Close the application immediately
+            self.root.quit()
+            self.root.destroy()
+        except Exception as e:
+            # Even if there's an error, still close the application
+            print(f"Error during emergency close: {e}")
+            self.root.quit()
+            self.root.destroy()
+
     def on_closing(self):
         """Handle window closing."""
         if self.connected:
@@ -1047,7 +1070,7 @@ Do the fingerprints match?"""
             self.chat_display.see(tk.END)
             self.chat_display.config(state=tk.DISABLED) # type: ignore
             
-        except Exception as e:
+        except Exception:
             # If removal fails, just clean up the tracking dict
             for message_id in message_ids:
                 self.ephemeral_messages.pop(message_id, None)
@@ -1151,6 +1174,36 @@ class GUISecureChatClient(SecureChatClient):
                 self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error handling delivery confirmation: {e}"))
             else:
                 print(f"\nError handling delivery confirmation: {e}")
+
+    def handle_emergency_close(self, message_data: bytes) -> None:
+        """Handle emergency close message from the other client - override to display in GUI."""
+        try:
+            message = json.loads(message_data.decode('utf-8'))
+            close_message = message.get("message", "Emergency close received")
+            
+            if self.gui:
+                # Display emergency close message in GUI
+                self.gui.root.after(0, lambda: self.gui.append_to_chat("🚨 EMERGENCY CLOSE RECEIVED"))
+                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"The other client has activated emergency close."))
+                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Message: {close_message}"))
+                self.gui.root.after(0, lambda: self.gui.append_to_chat("Connection will be terminated immediately."))
+            else:
+                # Fallback to console output if no GUI
+                print(f"\n{'='*50}")
+                print("🚨 EMERGENCY CLOSE RECEIVED")
+                print(f"The other client has activated emergency close.")
+                print(f"Message: {close_message}")
+                print("Connection will be terminated immediately.")
+                print(f"{'='*50}")
+            
+            # Immediately disconnect
+            self.disconnect()
+            
+        except Exception as e:
+            if self.gui:
+                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error handling emergency close: {e}"))
+            else:
+                print(f"Error handling emergency close: {e}")
 
     def handle_key_exchange_init(self, message_data: bytes):
         """Handle key exchange initiation - override to display warnings in GUI."""
@@ -1659,8 +1712,8 @@ def main():
                         gui.start_chat_monitoring()
                     else:
                         gui.root.after(0, lambda: gui.append_to_chat("Failed to connect to server"))
-                except Exception as e:
-                    gui.root.after(0, lambda e=e: gui.append_to_chat(f"Connection error: {e}"))
+                except Exception as er:
+                    gui.root.after(0, lambda error=er: gui.append_to_chat(f"Connection error: {error}"))
 
             threading.Thread(target=connect_thread, daemon=True).start()
 
