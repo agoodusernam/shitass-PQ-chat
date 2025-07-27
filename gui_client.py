@@ -25,19 +25,42 @@ def get_image_from_clipboard() -> Image.Image | None:
     except Exception:
         return None
 
+
 def display_image(image: Image.Image, root: tk.mainloop):
-    """Display an image in a new Tkinter window."""
+    """Display an image in a new Tkinter window, scaling it down if it's too large."""
     if image is None:
         return
+    
+    # Define max dimensions as 80% of the screen size
+    max_width = int(root.winfo_screenwidth() * 0.8)
+    max_height = int(root.winfo_screenheight() * 0.8)
+    
+    img_width, img_height = image.size
+    to_display_image = image
+    
+    # Check if the image needs to be resized
+    if img_width > max_width or img_height > max_height:
+        # Calculate the scaling ratio to fit within the max dimensions
+        ratio = min(max_width / img_width, max_height / img_height)
+        new_width = int(img_width * ratio)
+        new_height = int(img_height * ratio)
         
+        # Resize the image using a high-quality downsampling filter
+        to_display_image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+    
     window: tk.Toplevel = tk.Toplevel(root)
-    window.title("Image")
+    # Update window title to show original and scaled dimensions
+    if to_display_image.size != image.size:
+        window.title(f"Image (scaled from {img_width}x{img_height} to {to_display_image.width}x{to_display_image.height})")
+    else:
+        window.title(f"Image ({img_width}x{img_height})")
+    
     window.transient(root)
     
-    # Convert the PIL image to a PhotoImage
-    photo = ImageTk.PhotoImage(image, master=root)
+    # Convert the (possibly resized) PIL image to a PhotoImage
+    photo = ImageTk.PhotoImage(to_display_image, master=root)
     
-    label = tk.Label(window, image=photo) # type: ignore
+    label = tk.Label(window, image=photo)  # type: ignore
     # Keep a reference to the image to prevent it from being garbage collected
     label.image = photo
     label.pack()
