@@ -12,7 +12,7 @@ from PIL import Image, ImageTk, ImageGrab
 from shared import bytes_to_human_readable, send_message, MSG_TYPE_FILE_METADATA, MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT,\
     MSG_TYPE_FILE_COMPLETE, MSG_TYPE_FILE_CHUNK, MSG_TYPE_DELIVERY_CONFIRMATION, SEND_CHUNK_SIZE
 
-GUI_VERSION = 13
+GUI_VERSION = 14
 
 def get_image_from_clipboard() -> Image.Image | None:
     """Get an image from the clipboard."""
