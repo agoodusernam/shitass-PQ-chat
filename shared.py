@@ -51,13 +51,6 @@ def bytes_to_human_readable(size: int) -> str:
     Returns:
         str: A formatted string with the size and appropriate unit (B, KB, MB, or GB).
         
-    Examples:
-        >>> bytes_to_human_readable(512)
-        '512 B'
-        >>> bytes_to_human_readable(1536)
-        '1.5 KB'
-        >>> bytes_to_human_readable(2097152)
-        '2.0 MB'
     """
     if size < 1024:
         return f"{size} B"

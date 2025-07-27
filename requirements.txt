@@ -1,2 +1,3 @@
 cryptography~=45.0.5
 kyber_py~=1.0.1
+pillow~=11.3.0

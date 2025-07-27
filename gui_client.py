@@ -8,10 +8,41 @@ import time
 import winsound
 from client import SecureChatClient
 import json
+from PIL import Image, ImageTk, ImageGrab
 from shared import bytes_to_human_readable, send_message, MSG_TYPE_FILE_METADATA, MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT,\
     MSG_TYPE_FILE_COMPLETE, MSG_TYPE_FILE_CHUNK, MSG_TYPE_DELIVERY_CONFIRMATION, SEND_CHUNK_SIZE
 
 GUI_VERSION = 13
+
+def get_image_from_clipboard() -> Image.Image | None:
+    """Get an image from the clipboard."""
+    try:
+        image = ImageGrab.grabclipboard()
+        if isinstance(image, Image.Image):
+            return image
+        else:
+            return None
+    except Exception:
+        return None
+
+def display_image(image: Image.Image, root: tk.mainloop):
+    """Display an image in a new Tkinter window."""
+    if image is None:
+        return
+        
+    window: tk.Toplevel = tk.Toplevel(root)
+    window.title("Image")
+    window.transient(root)
+    
+    # Convert the PIL image to a PhotoImage
+    photo = ImageTk.PhotoImage(image, master=root)
+    
+    label = tk.Label(window, image=photo) # type: ignore
+    # Keep a reference to the image to prevent it from being garbage collected
+    label.image = photo
+    label.pack()
+    
+
 class FileTransferWindow:
     """Separate window for file transfer progress and status updates."""
     
@@ -180,7 +211,7 @@ class ChatGUI:
     def __init__(self, root, theme_colors=None):
         self.root = root
         self.root.title("Secure Chat Client")
-        self.root.geometry("600x500")
+        self.root.geometry("900x600")
 
         # Store the theme colors dictionary
         self.theme_colors = theme_colors or {}
@@ -331,13 +362,14 @@ class ChatGUI:
         input_frame.pack(fill=tk.X) # type: ignore
 
         # Message input
-        self.message_entry = tk.Entry(
-            input_frame, font=("Consolas", 10), bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR,
-            insertbackground=self.FG_COLOR, relief=tk.FLAT # type: ignore
+        self.message_entry = tk.Text(
+            input_frame, height=1, font=("Consolas", 10), bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR, width=15,
+            insertbackground=self.FG_COLOR, relief=tk.FLAT, wrap=tk.NONE # type: ignore
         )
         self.message_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10)) # type: ignore
         self.message_entry.bind("<Return>", self.send_message)
         self.message_entry.bind("<KeyPress>", self.on_key_press)
+        self.message_entry.bind("<Control-v>", self.on_paste)
 
         # Ephemeral mode button (with gap before Send File)
         self.ephemeral_btn = tk.Button(
@@ -656,30 +688,38 @@ Do the fingerprints match?"""
 
         except Exception as e:
             self.append_to_chat(f"Verification error: {e}")
-
+    
     def send_message(self, event=None):
         """Send a message."""
+        # Prevent the default newline insertion on Return key press
+        if event and event.keysym == "Return":
+            # Allow Shift+Return to insert a newline for multi-line messages in the future
+            if not (event.state & 0x0001):  # Check if Shift key is not pressed
+                pass
+            else:
+                return None  # Do not send, allow newline
+        
         if not self.connected or not self.client:
-            return
-
+            return "break"
+        
         # Check if verification is complete (like console client does)
         if not hasattr(self.client, 'verification_complete') or not self.client.verification_complete:
             self.append_to_chat("Cannot send messages - verification not complete")
-            return
-
-        message = self.message_entry.get().strip()
+            return "break"
+        
+        message = self.message_entry.get("1.0", "end-1c").strip()
         if not message:
-            return
-
+            return "break"
+        
         # Handle special commands
         if message.lower() == '/quit':
             self.disconnect_from_server()
-            return
+            return "break"
         elif message.lower() == '/verify':
             self.show_verification_dialog()
-            self.message_entry.delete(0, tk.END)
-            return
-
+            self.message_entry.delete("1.0", tk.END)
+            return "break"
+        
         # Send the message
         try:
             # Get the message counter before sending (it will be incremented during send)
@@ -687,7 +727,7 @@ Do the fingerprints match?"""
                 next_message_counter = self.client.protocol.message_counter + 1
             else:
                 next_message_counter = None
-                
+            
             if self.client.send_message(message):
                 # Display the sent message with delivery tracking
                 if hasattr(self.client, 'protocol') and self.client.protocol.is_peer_key_verified():
@@ -699,12 +739,13 @@ Do the fingerprints match?"""
                 self.append_to_chat_with_delivery_status(display_text, next_message_counter, is_message=True)
             else:
                 self.append_to_chat("Failed to send message")
-
+        
         except Exception as e:
             self.append_to_chat(f"Send error: {e}")
-
-        self.message_entry.delete(0, tk.END)
-
+        
+        self.message_entry.delete("1.0", tk.END)
+        return "break"  # Prevents the default newline insertion
+    
     def send_file(self):
         """Send a file using file dialog."""
         if not self.connected or not self.client:
@@ -744,6 +785,79 @@ Do the fingerprints match?"""
         """Handle key press events in message entry."""
         # Allow normal typing when connected
         pass
+
+    def on_paste(self, event):
+        """Handle paste events in message entry - check for images."""
+        if not self.connected or not self.client:
+            return "break"  # Prevent default paste behavior
+        
+        # Check if verification is complete
+        if not hasattr(self.client, 'verification_complete') or not self.client.verification_complete:
+            return "break"  # Prevent default paste behavior
+        
+        try:
+            # Check if there's an image in the clipboard
+            clipboard_image = get_image_from_clipboard()
+            
+            if clipboard_image is not None:
+                # There's an image in the clipboard, handle it
+                self.handle_clipboard_image(clipboard_image)
+                return "break"  # Prevent default paste behavior
+            else:
+                # No image, allow normal text paste
+                return None  # Allow default paste behavior
+                
+        except Exception as e:
+            self.append_to_chat(f"Error handling paste: {e}")
+            return "break"  # Prevent default paste behavior on error
+
+    def handle_clipboard_image(self, image):
+        """Handle pasted clipboard image by saving to temp file and sending."""
+        try:
+            import tempfile
+            import uuid
+            
+            # Create a temporary file with a unique name
+            temp_dir = tempfile.gettempdir()
+            temp_filename = f"clipboard_image_{uuid.uuid4().hex[:8]}.png"
+            temp_path = os.path.join(temp_dir, temp_filename)
+            
+            # Save the image to the temporary file
+            image.save(temp_path, "PNG")
+            
+            # Get file info
+            file_size = os.path.getsize(temp_path)
+            
+            # Confirm image sending
+            result = messagebox.askyesno(
+                "Send Image",
+                f"Send clipboard image as '{temp_filename}' ({bytes_to_human_readable(file_size)})?"
+            )
+            
+            if result:
+                self.append_to_chat(f"Sending clipboard image: {temp_filename}")
+                self.client.send_file(temp_path)
+                
+                # Schedule cleanup of temp file after a delay (to allow file transfer to complete)
+                def cleanup_temp_file():
+                    try:
+                        time.sleep(5)  # Wait 5 seconds before cleanup
+                        if os.path.exists(temp_path):
+                            os.remove(temp_path)
+                    except Exception:
+                        pass  # Ignore cleanup errors
+                
+                threading.Thread(target=cleanup_temp_file, daemon=True).start()
+            else:
+                # User declined, clean up temp file immediately
+                try:
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
+                except Exception:
+                    pass  # Ignore cleanup errors
+                    
+        except Exception as e:
+            self.append_to_chat(f"Error handling clipboard image: {e}")
 
     def on_closing(self):
         """Handle window closing."""
@@ -824,6 +938,23 @@ class GUISecureChatClient(SecureChatClient):
         # Initialize verification_complete flag like console client
         self.verification_complete = False
 
+    def _is_image_file(self, file_path: str) -> bool:
+        """Check if a file is an image based on its extension."""
+        image_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.tif', '.webp', '.ico'}
+        _, ext = os.path.splitext(file_path.lower())
+        return ext in image_extensions
+
+    def _display_received_image(self, file_path: str):
+        """Display a received image file in a separate window."""
+        try:
+            if self.gui and self._is_image_file(file_path):
+                # Load and display the image
+                image = Image.open(file_path)
+                self.gui.root.after(0, lambda: display_image(image, self.gui.root))
+        except Exception as e:
+            if self.gui:
+                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Error displaying received image: {e}"))
+
     def handle_encrypted_message(self, message_data: bytes):
         """Handle encrypted chat messages - override to send to GUI."""
         try:
@@ -872,7 +1003,6 @@ class GUISecureChatClient(SecureChatClient):
     
     def _send_delivery_confirmation(self, confirmed_counter: int) -> None:
         """Send a delivery confirmation for a received text message."""
-        print(f"\nSent a delivery confirmation for {confirmed_counter} messages")
         try:
             confirmation_data = self.protocol.create_delivery_confirmation_message(confirmed_counter)
             send_message(self.socket, confirmation_data)
@@ -1159,6 +1289,9 @@ class GUISecureChatClient(SecureChatClient):
                         # Clear speed when transfer completes
                         self.gui.root.after(0, lambda: self.gui.file_transfer_window.clear_speed())
                     
+                    # Display image if it's an image file
+                    self._display_received_image(output_path)
+                    
                     # Send completion message
                     complete_msg = self.protocol.create_file_complete_message(transfer_id)
                     send_message(self.socket, complete_msg)
@@ -1232,6 +1365,9 @@ class GUISecureChatClient(SecureChatClient):
                         self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(f"File received successfully: {output_path}", transfer_id))
                         # Clear speed when transfer completes
                         self.gui.root.after(0, lambda: self.gui.file_transfer_window.clear_speed())
+                    
+                    # Display image if it's an image file
+                    self._display_received_image(output_path)
                     
                     # Send completion message
                     complete_msg = self.protocol.create_file_complete_message(transfer_id)
