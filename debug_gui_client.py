@@ -1,365 +1,265 @@
-import tkinter as tk  # type: ignore
-from tkinter import scrolledtext, messagebox, filedialog, ttk  # type: ignore
-from tkinterdnd2 import DND_FILES, TkinterDnD
-import threading
-import sys
-import io
-import os
-import time
-import winsound  # For notification sounds on Windows
-from client import SecureChatClient
+#!/usr/bin/env python3
+"""
+Debug GUI Client - Extends the base GUI client with debugging functionality.
+This version uses inheritance instead of code duplication.
+"""
 import json
+import random
+import tkinter as tk
+from tkinter import scrolledtext, messagebox, filedialog
+from tkinterdnd2 import TkinterDnD, DND_FILES
+import time
+import threading
+import hashlib
 
-from shared import bytes_to_human_readable, send_message, MSG_TYPE_FILE_METADATA, MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT,\
-    MSG_TYPE_FILE_COMPLETE, MSG_TYPE_FILE_CHUNK, MSG_TYPE_DELIVERY_CONFIRMATION, MSG_TYPE_KEEP_ALIVE_RESPONSE, MSG_TYPE_KEY_EXCHANGE_RESET, MSG_TYPE_EMERGENCY_CLOSE, PROTOCOL_VERSION, SEND_CHUNK_SIZE
-from gui_client import GUI_VERSION
+# Import base classes
+from gui_client import ChatGUI, GUISecureChatClient, FileTransferWindow, load_theme_colors
+from shared import PROTOCOL_VERSION, send_message
 
-# noinspection PyAttributeOutsideInit,PyUnresolvedReferences
-class FileTransferWindow:
-    """Separate window for file transfer progress and status updates."""
+
+class DebugFileTransferWindow(FileTransferWindow):
+    """Debug version of FileTransferWindow - extends base with debug features."""
+    pass
+
+
+# noinspection DuplicatedCode,PyAttributeOutsideInit
+class DebugChatGUI(ChatGUI):
+    """Debug version of ChatGUI - extends base with debug features."""
     
-    def __init__(self, parent_root):
-        """Initialize the file transfer window manager.
-
-        Args:
-            parent_root (tk.Tk): The parent root window that this transfer window
-                will be associated with.
-
-        Attributes:
-            parent_root (tk.Tk): Reference to the parent window.
-            window (tk.Toplevel): The actual transfer window (created on demand).
-            transfers (dict): Dictionary mapping transfer ID to transfer information.
-            speed_label (tk.Label): Label widget displaying current transfer speed.
-            transfer_list (scrolledtext.ScrolledText): Text widget showing transfer messages.
-            last_update_time (float): Timestamp of last speed calculation update.
-            last_bytes_transferred (int): Bytes transferred at last speed update.
-            current_speed (float): Current transfer speed in bytes per second.
-            BG_COLOR (str): Background color for dark theme.
-            FG_COLOR (str): Foreground text color for dark theme.
-            ENTRY_BG_COLOR (str): Background color for entry widgets.
-            BUTTON_BG_COLOR (str): Background color for button widgets.
+    def __init__(self, root, theme_colors=None):
+        # Initialize debug-specific attributes
+        self.debug_visible = True  # Show debug panel by default
+        self.last_debug_update = 0
+        self.debug_update_interval = 1.0
+        
+        # Call parent constructor
+        super().__init__(root, theme_colors)
+        self.root.geometry("1400x700")
+        
+        # Add debug-specific UI elements
+        self._setup_debug_ui()
+    
+    def _setup_debug_ui(self):
+        """Initialize debug-specific UI setup.
+        
+        This method is called after the parent constructor to set up any
+        debug-specific initialization. The actual UI creation happens in
+        create_widgets() via _modify_layout_for_debug() and _create_debug_ui().
         """
-        self.parent_root = parent_root
-        self.window = None
-        self.transfers = {}  # transfer_id -> transfer_info
-        self.speed_label = None
-        self.transfer_list = None
+        # Initialize debug-specific state variables
+        self.debug_timer_id = None
         
-        # Speed calculation variables
-        self.last_update_time = time.time()
-        self.last_bytes_transferred = 0
-        self.current_speed = 0.0
-        
-        # Dark theme colors (matching main window)
-        self.BG_COLOR = "#2b2b2b"
-        self.FG_COLOR = "#d4d4d4"
-        self.ENTRY_BG_COLOR = "#3c3c3c"
-        self.BUTTON_BG_COLOR = "#555555"
+        # Start periodic debug info updates
+        self._start_debug_timer()
     
-    def create_window(self):
-        """Create the file transfer window if it doesn't exist."""
-        if self.window is None or not self.window.winfo_exists():
-            self.window = tk.Toplevel(self.parent_root)
-            self.window.title("File Transfer Progress")
-            self.window.geometry("550x400")
-            self.window.configure(bg=self.BG_COLOR)
-            
-            # Make window stay on top but not always
-            self.window.transient(self.parent_root)
-            
-            # Top frame for speed display
-            top_frame = tk.Frame(self.window, bg=self.BG_COLOR)
-            top_frame.pack(fill=tk.X, padx=10, pady=5) #type: ignore
-            
-            # Speed label in top right
-            self.speed_label = tk.Label(
-                    top_frame,
-                    text="Speed: 0.0 MiB/s",
-                    bg=self.BG_COLOR,
-                    fg="#4CAF50",
-                    font=("Consolas", 10, "bold")
+    def _start_debug_timer(self):
+        """Start the periodic debug info update timer."""
+        if self.debug_visible and hasattr(self, 'root'):
+            # Schedule the next debug update
+            self.debug_timer_id = self.root.after(
+                int(self.debug_update_interval * 1000),  # Convert to milliseconds
+                self._periodic_debug_update
             )
-            self.speed_label.pack(side=tk.RIGHT) #type: ignore
-            
-            # Title label
-            title_label = tk.Label(
-                    top_frame,
-                    text="File Transfers",
-                    bg=self.BG_COLOR,
-                    fg=self.FG_COLOR,
-                    font=("Consolas", 12, "bold")
-            )
-            title_label.pack(side=tk.LEFT) #type: ignore
-            
-            # Main frame for transfer list
-            main_frame = tk.Frame(self.window, bg=self.BG_COLOR)
-            main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5) #type: ignore
-            
-            # Scrollable text area for transfer updates
-            self.transfer_list = scrolledtext.ScrolledText(
-                    main_frame,
-                    state=tk.DISABLED,
-                    wrap=tk.WORD,
-                    height=20,
-                    font=("Consolas", 9),
-                    bg="#1e1e1e",
-                    fg=self.FG_COLOR,
-                    insertbackground=self.FG_COLOR,
-                    relief=tk.FLAT
-            )
-            self.transfer_list.pack(fill=tk.BOTH, expand=True) #type: ignore
-            
-            # Handle window closing
-            self.window.protocol("WM_DELETE_WINDOW", self.hide_window)
     
-    def show_window(self):
-        """Show the file transfer window."""
-        self.create_window()
-        self.window.deiconify()
-        self.window.lift()
-    
-    def hide_window(self):
-        """Hide the file transfer window."""
-        if self.window:
-            self.window.withdraw()
-    
-    def add_transfer_message(self, message, transfer_id=None):
-        """Add a message to the transfer window."""
-        self.create_window()
-        
-        if self.transfer_list:
-            self.transfer_list.config(state=tk.NORMAL)
-            timestamp = time.strftime("%H:%M:%S")
-            self.transfer_list.insert(tk.END, f"[{timestamp}] {message}\n")
-            self.transfer_list.see(tk.END)
-            self.transfer_list.config(state=tk.DISABLED)
-        
-        # Show window if not visible
-        if self.window.state() == 'withdrawn':
-            self.show_window()
-    
-    def update_transfer_progress(self, transfer_id, filename, current, total, bytes_transferred=None):
-        """Update progress for a specific transfer."""
-        progress = (current / total) * 100 if total > 0 else 0
-        
-        # Calculate speed if bytes_transferred is provided
-        if bytes_transferred is not None:
-            self.update_speed(bytes_transferred)
-        
-        message = f"{filename}: {progress:.1f}% ({current}/{total} chunks)"
-        self.add_transfer_message(message, transfer_id)
-    
-    def update_speed(self, total_bytes_transferred):
-        """Update the transfer speed display."""
-        current_time = time.time()
-        time_diff = current_time - self.last_update_time
-        
-        if time_diff >= 1.0:  # Update speed every second
-            bytes_diff = total_bytes_transferred - self.last_bytes_transferred
-            speed_bytes_per_sec = bytes_diff / time_diff
-            speed_mib_per_sec = speed_bytes_per_sec / (1024 * 1024)  # Convert to MiB/s
-            
-            self.current_speed = speed_mib_per_sec
-            
-            if self.speed_label:
-                self.speed_label.config(text=f"Speed: {speed_mib_per_sec:.2f} MiB/s")
-            
-            self.last_update_time = current_time
-            self.last_bytes_transferred = total_bytes_transferred
-    
-    def clear_speed(self):
-        """Clear the speed display when no transfers are active."""
-        self.current_speed = 0.0
-        if self.speed_label:
-            self.speed_label.config(text="Speed: 0.0 MiB/s")
-        self.last_bytes_transferred = 0
-        self.last_update_time = time.time()
-
-# noinspection PyAttributeOutsideInit
-# noinspection DuplicatedCode
-class ChatGUI:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Secure Chat Client")
-        self.root.geometry("1200x750")
-        
-        # Dark theme colours
-        self.BG_COLOR = "#2b2b2b"
-        self.FG_COLOR = "#d4d4d4"
-        self.ENTRY_BG_COLOR = "#3c3c3c"
-        self.BUTTON_BG_COLOR = "#555555"
-        self.BUTTON_ACTIVE_BG = "#6a6a6a"
-        
-        self.root.configure(bg=self.BG_COLOR)
-        
-        # Chat client instance
-        self.client = None
-        self.connected = False
-        
-        # Ephemeral mode state
-        self.ephemeral_mode = False
-        self.ephemeral_messages = {}  # Track messages with timestamps for removal
-        self.message_counter = 0  # Counter for unique message IDs
-        
-        # Debug update throttling
-        self.last_debug_update = 0  # Timestamp of last debug update
-        self.debug_update_interval = 1.0  # Update debug info max once per second
-        
-        # Notification sound settings
-        self.notification_enabled = True
-        self.window_focused = True  # Track if window is focused
-        
-        # File transfer window
-        self.file_transfer_window = FileTransferWindow(self.root)
-        
-        # Create GUI elements
-        self.create_widgets()
-        
-        # Redirect stdout to capture print statements
-        self.setup_output_redirection()
-        
-        # Setup window focus tracking
-        self.setup_focus_tracking()
-        
-        # Handle window closing
-        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
-    
-    def setup_focus_tracking(self):
-        """Setup window focus tracking for notification sounds."""
-        def on_focus_in(event):
-            self.window_focused = True
-            
-        def on_focus_out(event):
-            self.window_focused = False
-            
-        # Bind focus events to the root window
-        self.root.bind("<FocusIn>", on_focus_in)
-        self.root.bind("<FocusOut>", on_focus_out)
-        
-        # Bind Control+Q for emergency close at window level
-        self.root.bind("<Control-q>", lambda event: self.emergency_close())
-
-    def play_notification_sound(self):
-        """Play a notification sound if the window is not focused."""
-        if not self.notification_enabled or self.window_focused:
-            return
-            
+    def _periodic_debug_update(self):
+        """Periodic callback to update debug information."""
         try:
-            # Play a system notification sound (non-blocking)
-            if os.path.exists("notification_sound.wav"):
-                threading.Thread(
-                    target=lambda: winsound.PlaySound("notification_sound.wav", winsound.SND_FILENAME),
-                    daemon=True
-                ).start()
+            # Update debug info if visible and client exists
+            if self.debug_visible and hasattr(self, 'client') and self.client:
+                self.update_debug_info()
         except Exception:
+            # Silently handle errors to prevent timer from stopping
             pass
-
+        finally:
+            # Schedule the next update
+            self._start_debug_timer()
+    
+    def _stop_debug_timer(self):
+        """Stop the periodic debug info update timer."""
+        if self.debug_timer_id:
+            self.root.after_cancel(self.debug_timer_id)
+            self.debug_timer_id = None
+    
     def create_widgets(self):
-        """Create the GUI widgets."""
+        """Override create_widgets to create proper side-by-side layout."""
+        # Create the main layout with debug panels from the start
         # Main frame
         main_frame = tk.Frame(self.root, bg=self.BG_COLOR)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)  # type: ignore
-        
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
         # Connection frame
         conn_frame = tk.Frame(main_frame, bg=self.BG_COLOR)
-        conn_frame.pack(fill=tk.X, pady=(0, 10))  # type: ignore
-        
+        conn_frame.pack(fill=tk.X, pady=(0, 10))
+
         # Host and port inputs
-        tk.Label(conn_frame, text="Host:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=tk.LEFT)  # type: ignore
+        tk.Label(conn_frame, text="Host:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=tk.LEFT)
         self.host_entry = tk.Entry(
-                conn_frame, width=15, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR,
-                insertbackground=self.FG_COLOR, relief=tk.FLAT  # type: ignore
+            conn_frame, width=15, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR,
+            insertbackground=self.FG_COLOR, relief=tk.FLAT
         )
-        self.host_entry.pack(side=tk.LEFT, padx=(5, 10))  # type: ignore
+        self.host_entry.pack(side=tk.LEFT, padx=(5, 10))
         self.host_entry.insert(0, "localhost")
-        
-        tk.Label(conn_frame, text="Port:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=tk.LEFT)  # type: ignore
+
+        tk.Label(conn_frame, text="Port:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=tk.LEFT)
         self.port_entry = tk.Entry(
-                conn_frame, width=8, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR,
-                insertbackground=self.FG_COLOR, relief=tk.FLAT  # type: ignore
+            conn_frame, width=8, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR,
+            insertbackground=self.FG_COLOR, relief=tk.FLAT
         )
-        self.port_entry.pack(side=tk.LEFT, padx=(5, 10))  # type: ignore
+        self.port_entry.pack(side=tk.LEFT, padx=(5, 10))
         self.port_entry.insert(0, "16384")
-        
+
         # Connect/Disconnect button
         self.connect_btn = tk.Button(
-                conn_frame, text="Connect", command=self.toggle_connection,
-                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,  # type: ignore
-                activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR
+            conn_frame, text="Connect", command=self.toggle_connection,
+            bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,
+            activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR
         )
-        self.connect_btn.pack(side=tk.LEFT, padx=(10, 0))  # type: ignore
-        
+        self.connect_btn.pack(side=tk.LEFT, padx=(10, 0))
+
+        # Sound toggle button
+        self.sound_btn = tk.Button(
+            conn_frame, text="Notif sounds ON", command=self.toggle_sound_notifications,
+            bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,
+            activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
+            font=("Consolas", 10)
+        )
+        self.sound_btn.pack(side=tk.LEFT, padx=(10, 0))
+
+        # Windows notifications toggle button
+        self.windows_notif_btn = tk.Button(
+            conn_frame, text="System notifs ON", command=self.toggle_windows_notifications,
+            bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,
+            activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
+            font=("Consolas", 10)
+        )
+        self.windows_notif_btn.pack(side=tk.LEFT, padx=(10, 0))
+
         # Status indicator (top right)
         self.status_label = tk.Label(
-                conn_frame, text="Not Connected",
-                bg=self.BG_COLOR, fg="#ff6b6b", font=("Consolas", 9, "bold")
+            conn_frame, text="Not Connected",
+            bg=self.BG_COLOR, fg="#ff6b6b", font=("Consolas", 9, "bold")
         )
-        self.status_label.pack(side=tk.RIGHT, padx=(10, 0))  # type: ignore
-        
+        self.status_label.pack(side=tk.RIGHT, padx=(10, 0))
+
+        # Debug toggle button (in connection frame)
+        self.debug_toggle_btn = tk.Button(
+            conn_frame, text="🔍 Hide Debug Info", command=self.toggle_debug_box,
+            bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,
+            activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
+            font=("Consolas", 9)
+        )
+        self.debug_toggle_btn.pack(side=tk.RIGHT, padx=(5, 10))
+
         # Content frame to hold chat and debug side by side
         content_frame = tk.Frame(main_frame, bg=self.BG_COLOR)
-        content_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))  # type: ignore
-        
+        content_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+
         # Chat frame (left side)
         chat_frame = tk.Frame(content_frame, bg=self.BG_COLOR)
-        chat_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))  # type: ignore
-        
-        # Chat display area
+        chat_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
+
+        # Chat display area (in chat frame)
         self.chat_display = scrolledtext.ScrolledText(
-                chat_frame,
-                state=tk.DISABLED,
-                wrap=tk.WORD,
-                height=20,
-                font=("Consolas", 10),
-                bg="#1e1e1e",
-                fg=self.FG_COLOR,
-                insertbackground=self.FG_COLOR,
-                relief=tk.FLAT
+            chat_frame,
+            state=tk.DISABLED,
+            wrap=tk.WORD,
+            height=20,
+            font=("Consolas", 10),
+            bg=self.TEXT_BG_COLOR,
+            fg=self.FG_COLOR,
+            insertbackground=self.FG_COLOR,
+            relief=tk.FLAT
         )
-        self.chat_display.pack(fill=tk.BOTH, expand=True)  # type: ignore
+        self.chat_display.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
         self.chat_display.drop_target_register(DND_FILES)
         self.chat_display.dnd_bind('<<Drop>>', self.handle_drop)
-        
-        # Debug frame (middle, initially visible by default)
+
+        # Input frame (in chat frame)
+        self.input_frame = tk.Frame(chat_frame, bg=self.BG_COLOR)
+        self.input_frame.pack(fill=tk.X)
+
+        # Message input
+        self.message_entry = tk.Text(
+            self.input_frame, height=1, font=("Consolas", 10), bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR, width=15,
+            insertbackground=self.FG_COLOR, relief=tk.FLAT, wrap=tk.NONE
+        )
+        self.message_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        self.message_entry.bind("<Return>", self.send_message)
+        self.message_entry.bind("<KeyPress>", self.on_key_press)
+        self.message_entry.bind("<Control-v>", self.on_paste)
+
+        # Ephemeral mode button
+        self.ephemeral_btn = tk.Button(
+            self.input_frame, text="Ephemeral", command=self.toggle_ephemeral_mode,
+            bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,
+            activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
+            font=("Consolas", 9)
+        )
+        self.ephemeral_btn.pack(side=tk.RIGHT, padx=(0, 5))
+
+        # File Transfer window button
+        self.file_transfer_btn = tk.Button(
+            self.input_frame, text="Transfers", command=self.show_file_transfer_window,
+            bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,
+            activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
+            font=("Consolas", 9)
+        )
+        self.file_transfer_btn.pack(side=tk.RIGHT, padx=(0, 10))
+
+        # Send File button
+        self.send_file_btn = tk.Button(
+            self.input_frame, text="Send File", command=self.send_file,
+            bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,
+            activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
+            font=("Consolas", 9)
+        )
+        self.send_file_btn.pack(side=tk.RIGHT, padx=(0, 10))
+
+        # Send button
+        self.send_btn = tk.Button(
+            self.input_frame, text="Send", command=self.send_message,
+            bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,
+            activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
+            font=("Consolas", 9)
+        )
+        self.send_btn.pack(side=tk.RIGHT)
+
+        # Debug frame (middle, initially visible)
         self.debug_frame = tk.Frame(content_frame, bg=self.BG_COLOR, width=300)
-        self.debug_frame.pack_propagate(False)  # Maintain fixed width
-        self.debug_visible = True  # Show debug panel by default
-        
+        self.debug_frame.pack_propagate(False)
+        self.debug_visible = True
+
         # Debug Actions frame (right side)
         self.debug_actions_frame = tk.Frame(content_frame, bg=self.BG_COLOR, width=250)
-        self.debug_actions_frame.pack_propagate(False)  # Maintain fixed width
-        
-        # Show debug frames by default
-        self.debug_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(5, 5))  # type: ignore
-        self.debug_actions_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=False, padx=(0, 0))  # type: ignore
-        
-        # Debug toggle button frame
-        debug_toggle_frame = tk.Frame(main_frame, bg=self.BG_COLOR)
-        debug_toggle_frame.pack(fill=tk.X, pady=(0, 5))  # type: ignore
-        
-        self.debug_toggle_btn = tk.Button(
-                debug_toggle_frame, text="🔍 Hide Debug Info", command=self.toggle_debug_box,
-                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,  # type: ignore
-                activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
-                font=("Consolas", 9)
-        )
-        self.debug_toggle_btn.pack(side=tk.LEFT)  # type: ignore
-        
-        # Debug display area
+        self.debug_actions_frame.pack_propagate(False)
+
+        # Pack debug frames to the right
+        self.debug_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(5, 5))
+        self.debug_actions_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(0, 0))
+
+        # Create debug UI elements
+        self._create_debug_display()
+        self._create_debug_action_buttons()
+    
+    
+    def _create_debug_display(self):
+        """Create the debug information display area."""
         self.debug_display = scrolledtext.ScrolledText(
-                self.debug_frame,
-                state=tk.DISABLED,
-                wrap=tk.WORD,
-                height=20,
-                font=("Consolas", 8),
-                bg="#2d2d2d",
-                fg="#00ff00",
-                insertbackground="#00ff00",
-                relief=tk.FLAT
+            self.debug_frame,
+            state=tk.DISABLED,
+            wrap=tk.WORD,
+            height=20,
+            font=("Consolas", 8),
+            bg="#2d2d2d",
+            fg="#00ff00",
+            insertbackground="#00ff00",
+            relief=tk.FLAT
         )
-        self.debug_display.pack(fill=tk.BOTH, expand=True, padx=5)  # type: ignore
-        
-        # Debug Actions area
+        self.debug_display.pack(fill=tk.BOTH, expand=True, padx=5)
+    
+    def _create_debug_action_buttons(self):
+        """Create all debug action buttons."""
+        # Debug Actions label
         debug_actions_label = tk.Label(
             self.debug_actions_frame, 
             text="Debug Actions", 
@@ -367,8 +267,13 @@ class ChatGUI:
             fg=self.FG_COLOR,
             font=("Consolas", 10, "bold")
         )
-        debug_actions_label.pack(fill=tk.X, padx=5, pady=5) # type: ignore
+        debug_actions_label.pack(fill=tk.X, padx=5, pady=5)
         
+        # Create all debug buttons
+        self._create_debug_buttons()
+    
+    def _create_debug_buttons(self):
+        """Create individual debug action buttons."""
         # Keepalive toggle button
         self.keepalive_toggle_btn = tk.Button(
             self.debug_actions_frame, 
@@ -376,12 +281,12 @@ class ChatGUI:
             command=self.toggle_keepalive_responses,
             bg=self.BUTTON_BG_COLOR, 
             fg=self.FG_COLOR, 
-            relief=tk.FLAT, # type: ignore
+            relief=tk.FLAT,
             activebackground=self.BUTTON_ACTIVE_BG, 
             activeforeground=self.FG_COLOR,
             font=("Consolas", 9)
         )
-        self.keepalive_toggle_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
+        self.keepalive_toggle_btn.pack(fill=tk.X, padx=5, pady=2)
         
         # Delivery confirmation toggle button
         self.delivery_confirmation_toggle_btn = tk.Button(
@@ -390,12 +295,12 @@ class ChatGUI:
             command=self.toggle_delivery_confirmations,
             bg=self.BUTTON_BG_COLOR, 
             fg=self.FG_COLOR, 
-            relief=tk.FLAT, # type: ignore
+            relief=tk.FLAT,
             activebackground=self.BUTTON_ACTIVE_BG, 
             activeforeground=self.FG_COLOR,
             font=("Consolas", 9)
         )
-        self.delivery_confirmation_toggle_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
+        self.delivery_confirmation_toggle_btn.pack(fill=tk.X, padx=5, pady=2)
         
         # Send malformed message button
         self.malformed_msg_btn = tk.Button(
@@ -404,12 +309,12 @@ class ChatGUI:
             command=self.send_malformed_message,
             bg=self.BUTTON_BG_COLOR, 
             fg=self.FG_COLOR, 
-            relief=tk.FLAT, # type: ignore
+            relief=tk.FLAT,
             activebackground=self.BUTTON_ACTIVE_BG, 
             activeforeground=self.FG_COLOR,
             font=("Consolas", 9)
         )
-        self.malformed_msg_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
+        self.malformed_msg_btn.pack(fill=tk.X, padx=5, pady=2)
         
         # Set chain keys button
         self.set_chain_keys_btn = tk.Button(
@@ -418,12 +323,12 @@ class ChatGUI:
             command=self.set_chain_keys,
             bg=self.BUTTON_BG_COLOR, 
             fg=self.FG_COLOR, 
-            relief=tk.FLAT, # type: ignore
+            relief=tk.FLAT,
             activebackground=self.BUTTON_ACTIVE_BG, 
             activeforeground=self.FG_COLOR,
             font=("Consolas", 9)
         )
-        self.set_chain_keys_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
+        self.set_chain_keys_btn.pack(fill=tk.X, padx=5, pady=2)
         
         # Force disconnect button
         self.force_disconnect_btn = tk.Button(
@@ -432,12 +337,12 @@ class ChatGUI:
             command=self.force_disconnect,
             bg=self.BUTTON_BG_COLOR, 
             fg="#ff6b6b", 
-            relief=tk.FLAT, # type: ignore
+            relief=tk.FLAT,
             activebackground=self.BUTTON_ACTIVE_BG, 
             activeforeground="#ff6b6b",
             font=("Consolas", 9, "bold")
         )
-        self.force_disconnect_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
+        self.force_disconnect_btn.pack(fill=tk.X, padx=5, pady=2)
         
         # Force key reset button
         self.force_key_reset_btn = tk.Button(
@@ -446,12 +351,12 @@ class ChatGUI:
             command=self.force_key_reset,
             bg=self.BUTTON_BG_COLOR, 
             fg=self.FG_COLOR, 
-            relief=tk.FLAT, # type: ignore
+            relief=tk.FLAT,
             activebackground=self.BUTTON_ACTIVE_BG, 
             activeforeground=self.FG_COLOR,
             font=("Consolas", 9)
         )
-        self.force_key_reset_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
+        self.force_key_reset_btn.pack(fill=tk.X, padx=5, pady=2)
         
         # View fingerprints button
         self.view_fingerprints_btn = tk.Button(
@@ -460,12 +365,12 @@ class ChatGUI:
             command=self.view_key_fingerprints,
             bg=self.BUTTON_BG_COLOR, 
             fg=self.FG_COLOR, 
-            relief=tk.FLAT, # type: ignore
+            relief=tk.FLAT,
             activebackground=self.BUTTON_ACTIVE_BG, 
             activeforeground=self.FG_COLOR,
             font=("Consolas", 9)
         )
-        self.view_fingerprints_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
+        self.view_fingerprints_btn.pack(fill=tk.X, padx=5, pady=2)
         
         # Simulate latency button
         self.simulate_latency_btn = tk.Button(
@@ -474,12 +379,12 @@ class ChatGUI:
             command=self.simulate_network_latency,
             bg=self.BUTTON_BG_COLOR, 
             fg=self.FG_COLOR, 
-            relief=tk.FLAT, # type: ignore
+            relief=tk.FLAT,
             activebackground=self.BUTTON_ACTIVE_BG, 
             activeforeground=self.FG_COLOR,
             font=("Consolas", 9)
         )
-        self.simulate_latency_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
+        self.simulate_latency_btn.pack(fill=tk.X, padx=5, pady=2)
         
         # Export debug log button
         self.export_debug_log_btn = tk.Button(
@@ -488,12 +393,12 @@ class ChatGUI:
             command=self.export_debug_log,
             bg=self.BUTTON_BG_COLOR, 
             fg=self.FG_COLOR, 
-            relief=tk.FLAT, # type: ignore
+            relief=tk.FLAT,
             activebackground=self.BUTTON_ACTIVE_BG, 
             activeforeground=self.FG_COLOR,
             font=("Consolas", 9)
         )
-        self.export_debug_log_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
+        self.export_debug_log_btn.pack(fill=tk.X, padx=5, pady=2)
         
         # Send stale message button
         self.stale_msg_btn = tk.Button(
@@ -502,12 +407,12 @@ class ChatGUI:
             command=self.send_stale_message,
             bg=self.BUTTON_BG_COLOR, 
             fg=self.FG_COLOR, 
-            relief=tk.FLAT, # type: ignore
+            relief=tk.FLAT,
             activebackground=self.BUTTON_ACTIVE_BG, 
             activeforeground=self.FG_COLOR,
             font=("Consolas", 9)
         )
-        self.stale_msg_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
+        self.stale_msg_btn.pack(fill=tk.X, padx=5, pady=2)
         
         # Simulate packet loss button
         self.packet_loss_btn = tk.Button(
@@ -516,12 +421,12 @@ class ChatGUI:
             command=self.simulate_packet_loss,
             bg=self.BUTTON_BG_COLOR, 
             fg=self.FG_COLOR, 
-            relief=tk.FLAT, # type: ignore
+            relief=tk.FLAT,
             activebackground=self.BUTTON_ACTIVE_BG, 
             activeforeground=self.FG_COLOR,
             font=("Consolas", 9)
         )
-        self.packet_loss_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
+        self.packet_loss_btn.pack(fill=tk.X, padx=5, pady=2)
         
         # Send duplicate message button
         self.duplicate_msg_btn = tk.Button(
@@ -530,12 +435,12 @@ class ChatGUI:
             command=self.send_duplicate_message,
             bg=self.BUTTON_BG_COLOR, 
             fg=self.FG_COLOR, 
-            relief=tk.FLAT, # type: ignore
+            relief=tk.FLAT,
             activebackground=self.BUTTON_ACTIVE_BG, 
             activeforeground=self.FG_COLOR,
             font=("Consolas", 9)
         )
-        self.duplicate_msg_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
+        self.duplicate_msg_btn.pack(fill=tk.X, padx=5, pady=2)
         
         # Set message counter button
         self.set_counter_btn = tk.Button(
@@ -544,12 +449,12 @@ class ChatGUI:
             command=self.set_message_counter,
             bg=self.BUTTON_BG_COLOR, 
             fg=self.FG_COLOR, 
-            relief=tk.FLAT, # type: ignore
+            relief=tk.FLAT,
             activebackground=self.BUTTON_ACTIVE_BG, 
             activeforeground=self.FG_COLOR,
             font=("Consolas", 9)
         )
-        self.set_counter_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
+        self.set_counter_btn.pack(fill=tk.X, padx=5, pady=2)
         
         # Test protocol version button
         self.test_protocol_btn = tk.Button(
@@ -558,183 +463,31 @@ class ChatGUI:
             command=self.test_protocol_version,
             bg=self.BUTTON_BG_COLOR, 
             fg=self.FG_COLOR, 
-            relief=tk.FLAT, # type: ignore
+            relief=tk.FLAT,
             activebackground=self.BUTTON_ACTIVE_BG, 
             activeforeground=self.FG_COLOR,
             font=("Consolas", 9)
         )
-        self.test_protocol_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
-        
-        # Initially disable debug action buttons until connected
-        self.keepalive_toggle_btn.config(state=tk.DISABLED) # type: ignore
-        self.delivery_confirmation_toggle_btn.config(state=tk.DISABLED) # type: ignore
-        self.malformed_msg_btn.config(state=tk.DISABLED) # type: ignore
-        self.set_chain_keys_btn.config(state=tk.DISABLED) # type: ignore
-        self.force_disconnect_btn.config(state=tk.DISABLED) # type: ignore
-        self.force_key_reset_btn.config(state=tk.DISABLED) # type: ignore
-        self.view_fingerprints_btn.config(state=tk.DISABLED) # type: ignore
-        self.simulate_latency_btn.config(state=tk.DISABLED) # type: ignore
-        self.stale_msg_btn.config(state=tk.DISABLED) # type: ignore
-        self.packet_loss_btn.config(state=tk.DISABLED) # type: ignore
-        self.duplicate_msg_btn.config(state=tk.DISABLED) # type: ignore
-        self.set_counter_btn.config(state=tk.DISABLED) # type: ignore
-        self.test_protocol_btn.config(state=tk.DISABLED) # type: ignore
-        # Export debug log is always enabled
-        self.export_debug_log_btn.config(state=tk.NORMAL) # type: ignore
-        
-        # Input frame
-        input_frame = tk.Frame(main_frame, bg=self.BG_COLOR)
-        input_frame.pack(fill=tk.X)  # type: ignore
-        
-        # Message input
-        self.message_entry = tk.Entry(
-                input_frame, font=("Consolas", 10), bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR,
-                insertbackground=self.FG_COLOR, relief=tk.FLAT  # type: ignore
-        )
-        self.message_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))  # type: ignore
-        self.message_entry.bind("<Return>", self.send_message)
-        self.message_entry.bind("<KeyPress>", self.on_key_press)
-        
-        # Ephemeral mode button (with gap before Send File)
-        self.ephemeral_btn = tk.Button(
-                input_frame, text="⏱️ Ephemeral", command=self.toggle_ephemeral_mode,
-                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,  # type: ignore
-                activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
-                font=("Consolas", 9)
-        )
-        self.ephemeral_btn.pack(side=tk.RIGHT, padx=(0, 5))  # type: ignore
-        
-        # File Transfer window button
-        self.file_transfer_btn = tk.Button(
-                input_frame, text="📁 Transfers", command=self.show_file_transfer_window,
-                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,  # type: ignore
-                activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
-                font=("Consolas", 9)
-        )
-        self.file_transfer_btn.pack(side=tk.RIGHT, padx=(0, 10))  # type: ignore
-        
-        # Send File button
-        self.send_file_btn = tk.Button(
-                input_frame, text="Send File", command=self.send_file,
-                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,  # type: ignore
-                activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR
-        )
-        self.send_file_btn.pack(side=tk.RIGHT, padx=(0, 5))  # type: ignore
-        
-        # Send button
-        self.send_btn = tk.Button(
-                input_frame, text="Send", command=self.send_message,
-                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,  # type: ignore
-                activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR
-        )
-        self.send_btn.pack(side=tk.RIGHT)  # type: ignore
-        
-        # Initially disable input until connected
-        self.message_entry.config(state=tk.DISABLED)  # type: ignore
-        self.send_btn.config(state=tk.DISABLED)  # type: ignore
-        self.send_file_btn.config(state=tk.DISABLED)  # type: ignore
-        self.ephemeral_btn.config(state=tk.DISABLED)  # type: ignore
-        self.file_transfer_btn.config(state=tk.DISABLED)  # type: ignore
-        
-        # Start ephemeral message cleanup thread
-        self.start_ephemeral_cleanup()
+        self.test_protocol_btn.pack(fill=tk.X, padx=5, pady=2)
     
-    def setup_output_redirection(self):
-        """Setup output redirection to capture print statements."""
-        self.output_buffer = io.StringIO()
-    
-    def append_to_chat(self, text, is_message=False):
-        """Append text to the chat display."""
-        self.chat_display.config(state=tk.NORMAL)  # type: ignore
-        
-        # If ephemeral mode is enabled and this is a message, track it
-        if self.ephemeral_mode and is_message:
-            self.message_counter += 1
-            message_id = f"msg_{self.message_counter}"
-            self.ephemeral_messages[message_id] = time.time()
-            
-            # Add invisible marker for tracking using tags
-            start_index = self.chat_display.index(f"end-1c")
-            self.chat_display.insert(tk.END, text + "\n")
-            end_index = self.chat_display.index(f"end-1c")
-            self.chat_display.tag_add(message_id, start_index, end_index)
-        else:
-            self.chat_display.insert(tk.END, text + "\n")
-        
-        # Play notification sound if this is a message from another user
-        if is_message and text.startswith("Other user:"):
-            self.play_notification_sound()
-        
-        self.chat_display.see(tk.END)
-        self.chat_display.config(state=tk.DISABLED)  # type: ignore
-    
-    def handle_drop(self, event):
-        """Handle file drop events."""
-        if not self.connected or not self.client:
-            return
-
-        if not hasattr(self.client, 'verification_complete') or not self.client.verification_complete:
-            self.append_to_chat("Cannot send files - verification not complete")
-            return
-
-        # The event.data attribute contains a string of file paths
-        # It can be a single path or multiple paths separated by spaces
-        # File paths with spaces are enclosed in curly braces {}
-        file_paths_str = event.data
-        
-        # Simple parsing for now, assuming single file drop
-        # A more robust parser would be needed for multiple files with spaces
-        file_path = file_paths_str.strip()
-        if file_path.startswith('{') and file_path.endswith('}'):
-            file_path = file_path[1:-1]
-
-        if os.path.exists(file_path):
-            self.confirm_and_send_file(file_path)
-
-    def confirm_and_send_file(self, file_path):
-        """Ask for confirmation and then send the file."""
-        try:
-            file_size = os.path.getsize(file_path)
-            file_name = os.path.basename(file_path)
-            
-            result = messagebox.askyesno(
-                "Send File",
-                f"Send file '{file_name}' ({bytes_to_human_readable(file_size)})?"
-            )
-            
-            if result:
-                self.append_to_chat(f"Sending file: {file_name}")
-                self.client.send_file(file_path)
-        except Exception as e:
-            self.append_to_chat(f"File send error: {e}")
-
-    def update_status(self, status_text, color="#ff6b6b"):
-        """Update the status indicator with new text and color."""
-        self.status_label.config(text=status_text, fg=color)  # type: ignore
-    
-    def update_message_delivery_status(self, confirmed_counter: int):
-        """Update the GUI to show that a message was delivered."""
-        try:
-            # Add a delivery confirmation message to the chat
-            self.append_to_chat(f"✓ Message {confirmed_counter} delivered")
-        except Exception as e:
-            print(f"Error updating delivery status: {e}")
-    
-    def show_file_transfer_window(self):
-        """Show the file transfer progress window."""
-        self.file_transfer_window.show_window()
-    
+    # Debug-specific methods
     def toggle_debug_box(self):
         """Toggle the visibility of the debug information box."""
         if self.debug_visible:
             self.debug_frame.pack_forget()
-            self.debug_toggle_btn.config(text="🔍 Show Debug Info")  # type: ignore
+            self.debug_actions_frame.pack_forget()
+            self.debug_toggle_btn.config(text="🔍 Show Debug Info")
             self.debug_visible = False
+            # Stop the debug timer when hiding
+            self._stop_debug_timer()
         else:
-            self.debug_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=False, padx=(5, 0))  # type: ignore
-            self.debug_toggle_btn.config(text="🔍 Hide Debug Info")  # type: ignore
+            self.debug_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(5, 5))
+            self.debug_actions_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(0, 0))
+            self.debug_toggle_btn.config(text="🔍 Hide Debug Info")
             self.debug_visible = True
-            # Update debug info when showing
+            # Start the debug timer when showing
+            self._start_debug_timer()
+            # Update debug info immediately when showing
             if hasattr(self, 'client') and self.client:
                 self.update_debug_info()
     
@@ -887,11 +640,11 @@ class ChatGUI:
             debug_text += "\n" + "="*50 + "\n"
             
             # Update the debug display
-            self.debug_display.config(state=tk.NORMAL)  # type: ignore
+            self.debug_display.config(state=tk.NORMAL)
             self.debug_display.delete(1.0, tk.END)
             self.debug_display.insert(tk.END, debug_text)
             self.debug_display.see(tk.END)
-            self.debug_display.config(state=tk.DISABLED)  # type: ignore
+            self.debug_display.config(state=tk.DISABLED)
             
         except Exception as e:
             # Fallback debug info if there's an error
@@ -899,352 +652,10 @@ class ChatGUI:
             error_text += f"Client exists: {hasattr(self, 'client')}\n"
             error_text += f"Connected: {self.connected}\n"
             
-            self.debug_display.config(state=tk.NORMAL)  # type: ignore
+            self.debug_display.config(state=tk.NORMAL)
             self.debug_display.delete(1.0, tk.END)
             self.debug_display.insert(tk.END, error_text)
-            self.debug_display.config(state=tk.DISABLED)  # type: ignore
-    
-    def toggle_connection(self):
-        """Toggle connection to the server."""
-        if not self.connected:
-            self.connect_to_server()
-        else:
-            self.disconnect_from_server()
-    
-    def connect_to_server(self):
-        """Connect to the chat server."""
-        try:
-            host = self.host_entry.get().strip() or "localhost"
-            port = int(self.port_entry.get().strip() or "16384")
-            
-            self.update_status("Connecting...", "#ffa500")  # Orange for connecting
-            
-            # Create client instance
-            self.client = GUISecureChatClient(host, port, gui=self)
-            
-            # Start connection in a separate thread
-            def connect_thread():
-                try:
-                    if self.client.connect():
-                        self.connected = True
-                        self.root.after(0, self.on_connected)
-                        self.start_chat_monitoring()
-                    else:
-                        self.root.after(0, lambda: self.append_to_chat("Failed to connect to server"))
-                        self.root.after(0, lambda: self.update_status("Not Connected", "#ff6b6b"))
-                except Exception as e:
-                    self.root.after(0, lambda e=e: self.append_to_chat(f"Connection error: {e}"))
-                    self.root.after(0, lambda: self.update_status("Not Connected", "#ff6b6b"))
-            
-            threading.Thread(target=connect_thread, daemon=True).start()
-        
-        except ValueError:
-            messagebox.showerror("Error", "Invalid port number")
-            self.update_status("Not Connected", "#ff6b6b")
-        except Exception as e:
-            self.append_to_chat(f"Connection error: {e}")
-            self.update_status("Not Connected", "#ff6b6b")
-    
-    def on_connected(self):
-        """Called when successfully connected."""
-        self.connected = True
-        self.connect_btn.config(text="Disconnect")
-        self.host_entry.config(state=tk.DISABLED)  # type: ignore
-        self.port_entry.config(state=tk.DISABLED)  # type: ignore
-        self.message_entry.config(state=tk.NORMAL)  # type: ignore
-        self.send_btn.config(state=tk.NORMAL)  # type: ignore
-        self.send_file_btn.config(state=tk.NORMAL)  # type: ignore
-        self.ephemeral_btn.config(state=tk.NORMAL)  # type: ignore
-        self.file_transfer_btn.config(state=tk.NORMAL)  # type: ignore
-        
-        # Enable debug action buttons
-        self.keepalive_toggle_btn.config(state=tk.NORMAL) # type: ignore
-        self.delivery_confirmation_toggle_btn.config(state=tk.NORMAL) # type: ignore
-        self.malformed_msg_btn.config(state=tk.NORMAL) # type: ignore
-        self.set_chain_keys_btn.config(state=tk.NORMAL) # type: ignore
-        self.force_disconnect_btn.config(state=tk.NORMAL) # type: ignore
-        self.force_key_reset_btn.config(state=tk.NORMAL) # type: ignore
-        self.view_fingerprints_btn.config(state=tk.NORMAL) # type: ignore
-        self.simulate_latency_btn.config(state=tk.NORMAL) # type: ignore
-        # Enable new debug buttons
-        self.stale_msg_btn.config(state=tk.NORMAL) # type: ignore
-        self.packet_loss_btn.config(state=tk.NORMAL) # type: ignore
-        self.duplicate_msg_btn.config(state=tk.NORMAL) # type: ignore
-        self.set_counter_btn.config(state=tk.NORMAL) # type: ignore
-        self.test_protocol_btn.config(state=tk.NORMAL) # type: ignore
-        
-        self.message_entry.focus()
-        self.update_status("Connected, waiting for other client", "#ffff00")  # Yellow for waiting
-        
-        # Update debug info after connection
-        self.update_debug_info()
-    
-    def disconnect_from_server(self):
-        """Disconnect from the server."""
-        if self.client:
-            self.client.disconnect()
-        self.connected = False
-        self.connect_btn.config(text="Connect")
-        self.host_entry.config(state=tk.NORMAL)  # type: ignore
-        self.port_entry.config(state=tk.NORMAL)  # type: ignore
-        self.message_entry.config(state=tk.DISABLED)  # type: ignore
-        self.send_btn.config(state=tk.DISABLED)  # type: ignore
-        self.send_file_btn.config(state=tk.DISABLED)  # type: ignore
-        self.ephemeral_btn.config(state=tk.DISABLED)  # type: ignore
-        self.file_transfer_btn.config(state=tk.DISABLED)  # type: ignore
-        
-        # Disable debug action buttons
-        self.keepalive_toggle_btn.config(state=tk.DISABLED) # type: ignore
-        self.delivery_confirmation_toggle_btn.config(state=tk.DISABLED) # type: ignore
-        self.malformed_msg_btn.config(state=tk.DISABLED) # type: ignore
-        self.set_chain_keys_btn.config(state=tk.DISABLED) # type: ignore
-        self.force_disconnect_btn.config(state=tk.DISABLED) # type: ignore
-        self.force_key_reset_btn.config(state=tk.DISABLED) # type: ignore
-        self.view_fingerprints_btn.config(state=tk.DISABLED) # type: ignore
-        self.simulate_latency_btn.config(state=tk.DISABLED) # type: ignore
-        # Disable new debug buttons # type: ignore
-        self.stale_msg_btn.config(state=tk.DISABLED) # type: ignore
-        self.packet_loss_btn.config(state=tk.DISABLED) # type: ignore
-        self.duplicate_msg_btn.config(state=tk.DISABLED) # type: ignore
-        self.set_counter_btn.config(state=tk.DISABLED) # type: ignore
-        self.test_protocol_btn.config(state=tk.DISABLED) # type: ignore
-        
-        self.append_to_chat("Disconnected from server.")
-        self.update_status("Not Connected", "#ff6b6b")
-        
-        # Update debug info after disconnection
-        self.update_debug_info()
-        
-        sys.exit(0)  # Exit the application
-    
-    def start_chat_monitoring(self):
-        """Start monitoring the chat client for messages and status updates."""
-        
-        def monitor_thread():
-            try:
-                while self.connected and self.client and self.client.connected:
-                    # Check if key exchange is complete and verification is needed
-                    if (hasattr(self.client, 'key_exchange_complete') and
-                            self.client.key_exchange_complete and
-                            not hasattr(self.client, 'verification_started')):
-                        # Mark that we've started verification to avoid repeated prompts
-                        self.client.verification_started = True
-                        
-                        # Show verification dialogue
-                        self.root.after(0, self.show_verification_dialog)
-                    
-                    # Update debug info regularly if debug box is visible
-                    if self.debug_visible:
-                        self.root.after(0, self.update_debug_info)
-                    
-                    
-                    time.sleep(0.5)  # Update every 500ms for better responsiveness
-            
-            except Exception as e:
-                self.root.after(0, lambda: self.append_to_chat(f"Monitor error: {e}"))
-        
-        threading.Thread(target=monitor_thread, daemon=True).start()
-    
-    def show_verification_dialog(self):
-        """Show the key verification dialogue."""
-        if not self.client or not hasattr(self.client, 'protocol'):
-            return
-        
-        # Update status to show we're now verifying the fingerprint
-        self.update_status("Verifying fingerprint", "#ffa500")  # Orange for verifying
-        
-        try:
-            fingerprint = self.client.protocol.get_own_key_fingerprint()
-            
-            dialog_text = f"""Key Exchange Complete!
-
-{fingerprint}
-
-INSTRUCTIONS:
-1. Compare the fingerprint above with the other person through a
-   separate secure channel (phone call, in person, etc.)
-2. If the fingerprints match exactly, click 'Verify'
-3. If they don't match or you're unsure, click 'Don't Verify'
-
-Do the fingerprints match?"""
-            
-            result = messagebox.askyesno("Key Verification", dialog_text)
-            
-            # Send verification result
-            self.client.confirm_key_verification(result)
-            
-            if result:
-                self.append_to_chat("You verified the peer's key.")
-                self.update_status("Verified, Secure", "#00ff00")  # Green for verified
-            else:
-                self.append_to_chat("You did not verify the peer's key.")
-                self.update_status("Not Verified, Secure", "#ffff00")  # Yellow for not verified but secure
-            
-            self.append_to_chat("You can now send messages!")
-        
-        except Exception as e:
-            self.append_to_chat(f"Verification error: {e}")
-    
-    def send_message(self, event=None):
-        """Send a message."""
-        if not self.connected or not self.client:
-            return
-        
-        # Check if verification is complete (like console client does)
-        if not hasattr(self.client, 'verification_complete') or not self.client.verification_complete:
-            self.append_to_chat("Cannot send messages - verification not complete")
-            return
-        
-        message = self.message_entry.get().strip()
-        if not message:
-            return
-        
-        # Handle special commands
-        if message.lower() == '/quit':
-            self.disconnect_from_server()
-            return
-        elif message.lower() == '/verify':
-            self.show_verification_dialog()
-            self.message_entry.delete(0, tk.END)
-            return
-        
-        # Send the message
-        try:
-            if self.client.send_message(message):
-                # Display the sent message with ephemeral tracking
-                if hasattr(self.client, 'protocol') and self.client.protocol.is_peer_key_verified():
-                    self.append_to_chat(f"You: {message}", is_message=True)
-                else:
-                    self.append_to_chat(f"You (unverified): {message}", is_message=True)
-                
-                # Update debug info after message encryption
-                self.update_debug_info()
-            else:
-                self.append_to_chat("Failed to send message")
-        
-        except Exception as e:
-            self.append_to_chat(f"Send error: {e}")
-        
-        self.message_entry.delete(0, tk.END)
-    def send_file(self):
-        """Send a file using file dialog."""
-        if not self.connected or not self.client:
-            return
-        
-        # Check if verification is complete
-        if not hasattr(self.client, 'verification_complete') or not self.client.verification_complete:
-            self.append_to_chat("Cannot send files - verification not complete")
-            return
-        
-        try:
-            # Open file dialog
-            file_path = filedialog.askopenfilename(
-                    title="Select file to send",
-                    filetypes=[("All files", "*.*")]
-            )
-            
-            if file_path:
-                self.confirm_and_send_file(file_path)
-        
-        except Exception as e:
-            self.append_to_chat(f"File send error: {e}")
-    
-    def on_key_press(self, event):
-        """Handle key press events in message entry."""
-        # Allow normal typing when connected
-        # Note: Control+Q is handled at the window level, not here
-        pass
-    
-    def emergency_close(self):
-        """Handle emergency close (Control+Q) - send emergency message and close immediately."""
-        try:
-            if self.connected and self.client:
-                # Send emergency close message as quickly as possible
-                self.client.send_emergency_close()
-                # Force immediate disconnect without waiting
-                self.client.connected = False
-                if self.client.socket:
-                    self.client.socket.close()
-            # Close the application immediately
-            self.root.quit()
-            self.root.destroy()
-        except Exception as e:
-            # Even if there's an error, still close the application
-            print(f"Error during emergency close: {e}")
-            self.root.quit()
-            self.root.destroy()
-
-    def on_closing(self):
-        """Handle window closing."""
-        if self.connected:
-            self.disconnect_from_server()
-        self.root.destroy()
-    
-    def start_ephemeral_cleanup(self):
-        """Start the background thread to clean up ephemeral messages."""
-        
-        def cleanup_thread():
-            
-            while True:
-                try:
-                    if self.ephemeral_mode and self.ephemeral_messages:
-                        current_time = time.time()
-                        # Find messages older than 30 seconds
-                        expired_message_ids = []
-                        for message_id, timestamp in self.ephemeral_messages.items():
-                            if current_time - timestamp >= 30.0:
-                                expired_message_ids.append(message_id)
-                        
-                        # Remove expired messages
-                        if expired_message_ids:
-                            self.root.after(0, lambda: self.remove_ephemeral_messages(expired_message_ids))
-                    
-                    time.sleep(1.0)  # Check every second
-                except Exception as e:
-                    # Silently continue on errors to avoid breaking the cleanup thread
-                    pass
-        
-        threading.Thread(target=cleanup_thread, daemon=True).start()
-    
-    def toggle_ephemeral_mode(self):
-        """Toggle ephemeral mode on/off."""
-        if not self.ephemeral_mode:
-            # About to enable ephemeral mode
-            self.ephemeral_mode = True
-            self.ephemeral_btn.config(bg="#ff6b6b", fg="#ffffff", text="⏱️ Ephemeral ON")  # type: ignore
-            self.append_to_chat("🔥 Ephemeral mode enabled - messages will disappear after 30 seconds", is_message=True)
-        else:
-            # About to disable ephemeral mode
-            self.append_to_chat("Ephemeral mode disabled.", is_message=True)
-            self.ephemeral_mode = False
-            self.ephemeral_btn.config(bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, text="⏱️ Ephemeral")  # type: ignore
-            
-            # Remove all existing ephemeral messages
-            all_message_ids = list(self.ephemeral_messages.keys())
-            if all_message_ids:
-                self.remove_ephemeral_messages(all_message_ids)
-    
-    def remove_ephemeral_messages(self, message_ids):
-        """Remove ephemeral messages from the chat display."""
-        try:
-            self.chat_display.config(state=tk.NORMAL)  # type: ignore
-            for message_id in message_ids:
-                # Find the tagged message range
-                tag_ranges = self.chat_display.tag_ranges(message_id)
-                if tag_ranges:
-                    # Delete the tagged text
-                    self.chat_display.delete(tag_ranges[0], tag_ranges[1])
-                
-                # Remove from tracking dict
-                self.ephemeral_messages.pop(message_id, None)
-            
-            self.chat_display.see(tk.END)
-            self.chat_display.config(state=tk.DISABLED)  # type: ignore
-            
-        except Exception as e:
-            # If removal fails, just clean up the tracking dict
-            for message_id in message_ids:
-                self.ephemeral_messages.pop(message_id, None)
+            self.debug_display.config(state=tk.DISABLED)
     
     def toggle_keepalive_responses(self):
         """Toggle whether the client responds to keepalive messages."""
@@ -1332,14 +743,14 @@ Do the fingerprints match?"""
             dialog.grab_set()
             
             # Send chain key input
-            tk.Label(dialog, text="Send Chain Key (hex):", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(anchor=tk.W, padx=10, pady=(10, 0)) # type: ignore
+            tk.Label(dialog, text="Send Chain Key (hex):", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(anchor=tk.W, padx=10, pady=(10, 0))
             send_key_entry = tk.Entry(dialog, width=50, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR)
-            send_key_entry.pack(fill=tk.X, padx=10, pady=5) # type: ignore
+            send_key_entry.pack(fill=tk.X, padx=10, pady=5)
             
             # Receive chain key input
-            tk.Label(dialog, text="Receive Chain Key (hex):", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(anchor=tk.W, padx=10, pady=(10, 0)) # type: ignore
+            tk.Label(dialog, text="Receive Chain Key (hex):", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(anchor=tk.W, padx=10, pady=(10, 0))
             receive_key_entry = tk.Entry(dialog, width=50, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR)
-            receive_key_entry.pack(fill=tk.X, padx=10, pady=5) # type: ignore
+            receive_key_entry.pack(fill=tk.X, padx=10, pady=5)
             
             # Pre-fill with current values if available
             if hasattr(self.client.protocol, 'send_chain_key') and self.client.protocol.send_chain_key:
@@ -1353,344 +764,203 @@ Do the fingerprints match?"""
                 text="WARNING: Setting custom chain keys will break the security of the connection.\nOnly use for debugging!",
                 bg=self.BG_COLOR, 
                 fg="#ff6b6b",
-                justify=tk.LEFT # type: ignore
+                justify=tk.LEFT
             )
-            warning_label.pack(fill=tk.X, padx=10, pady=10) # type: ignore
-            
-            # Buttons frame
-            buttons_frame = tk.Frame(dialog, bg=self.BG_COLOR)
-            buttons_frame.pack(fill=tk.X, padx=10, pady=10) # type: ignore
+            warning_label.pack(fill=tk.X, padx=10, pady=10)
             
             def apply_keys():
                 try:
-                    # Get values from entries
                     send_key_hex = send_key_entry.get().strip()
                     receive_key_hex = receive_key_entry.get().strip()
                     
-                    # Convert hex to bytes
                     if send_key_hex:
                         self.client.protocol.send_chain_key = bytes.fromhex(send_key_hex)
                     if receive_key_hex:
                         self.client.protocol.receive_chain_key = bytes.fromhex(receive_key_hex)
                     
-                    self.append_to_chat("Custom chain keys applied")
+                    self.append_to_chat("Chain keys updated")
                     self.update_debug_info()
                     dialog.destroy()
+                except ValueError as e:
+                    messagebox.showerror("Error", f"Invalid hex value: {e}")
                 except Exception as e:
-                    tk.messagebox.showerror("Error", f"Invalid hex values: {e}")
+                    messagebox.showerror("Error", f"Failed to set keys: {e}")
             
-            # Apply button
+            # Buttons
+            button_frame = tk.Frame(dialog, bg=self.BG_COLOR)
+            button_frame.pack(fill=tk.X, padx=10, pady=10)
+            
             apply_btn = tk.Button(
-                buttons_frame, 
-                text="Apply", 
-                command=apply_keys,
-                bg=self.BUTTON_BG_COLOR, 
-                fg=self.FG_COLOR
+                button_frame, text="Apply", command=apply_keys,
+                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT
             )
-            apply_btn.pack(side=tk.RIGHT, padx=5) # type: ignore
+            apply_btn.pack(side=tk.LEFT, padx=(0, 5))
             
-            # Cancel button
             cancel_btn = tk.Button(
-                buttons_frame, 
-                text="Cancel", 
-                command=dialog.destroy,
-                bg=self.BUTTON_BG_COLOR, 
-                fg=self.FG_COLOR
+                button_frame, text="Cancel", command=dialog.destroy,
+                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT
             )
-            cancel_btn.pack(side=tk.RIGHT, padx=5) # type: ignore
+            cancel_btn.pack(side=tk.LEFT)
             
         except Exception as e:
-            self.append_to_chat(f"Error setting chain keys: {e}")
+            self.append_to_chat(f"Error opening chain key dialog: {e}")
     
     def force_disconnect(self):
-        """Forcefully kill the connection without proper shutdown."""
-        if not hasattr(self, 'client') or not self.client or not self.client.socket:
-            return
-            
-        try:
-            # Ask for confirmation
-            if not tk.messagebox.askyesno("Confirm", "Are you sure you want to forcefully kill the connection?\nThis will not perform a clean disconnect."):
-                return
-                
-            # Close the socket directly without proper shutdown
-            self.client.socket.close()
-            
-            # Update UI
-            self.connected = False
-            self.connect_btn.config(text="Connect")
-            self.host_entry.config(state=tk.NORMAL)  # type: ignore
-            self.port_entry.config(state=tk.NORMAL)  # type: ignore
-            self.message_entry.config(state=tk.DISABLED)  # type: ignore
-            self.send_btn.config(state=tk.DISABLED)  # type: ignore
-            self.send_file_btn.config(state=tk.DISABLED)  # type: ignore
-            self.ephemeral_btn.config(state=tk.DISABLED)  # type: ignore
-            self.file_transfer_btn.config(state=tk.DISABLED)  # type: ignore
-            
-            # Disable debug action buttons
-            self.keepalive_toggle_btn.config(state=tk.DISABLED) # type: ignore
-            self.delivery_confirmation_toggle_btn.config(state=tk.DISABLED) # type: ignore
-            self.malformed_msg_btn.config(state=tk.DISABLED) # type: ignore
-            self.set_chain_keys_btn.config(state=tk.DISABLED) # type: ignore
-            self.force_disconnect_btn.config(state=tk.DISABLED) # type: ignore
-            self.force_key_reset_btn.config(state=tk.DISABLED) # type: ignore
-            self.view_fingerprints_btn.config(state=tk.DISABLED) # type: ignore
-            self.simulate_latency_btn.config(state=tk.DISABLED) # type: ignore
-            
-            self.append_to_chat("Connection forcefully killed")
-            self.update_status("Not Connected", "#ff6b6b")
-            
-            # Update debug info
-            self.update_debug_info()
-            
-        except Exception as e:
-            self.append_to_chat(f"Error forcing disconnect: {e}")
-    
-    def force_key_reset(self):
-        """Force a key exchange reset."""
+        """Force disconnect without proper cleanup."""
         if not hasattr(self, 'client') or not self.client:
             return
             
         try:
-            # Ask for confirmation
-            if not tk.messagebox.askyesno("Confirm", "Are you sure you want to force a key exchange reset?"):
-                return
-                
-            # Create a reset message and send it
-            self.append_to_chat("Forcing key exchange reset...")
-            
-            # Reset the protocol state
-            if hasattr(self.client, 'protocol'):
-                self.client.protocol.reset_key_exchange()
-                
-            # Send a key exchange reset message
             if hasattr(self.client, 'socket') and self.client.socket:
-                reset_message = json.dumps({"type": MSG_TYPE_KEY_EXCHANGE_RESET}).encode('utf-8')
-                send_message(self.client.socket, reset_message)
-                
-            self.append_to_chat("Key exchange reset initiated")
-            self.update_status("Key exchange reset", "#ffa500")  # Orange for reset
-            
-            # Update debug info
-            self.update_debug_info()
-            
+                self.client.socket.close()
+            self.connected = False
+            self.connect_btn.config(text="Connect")
+            self.update_status("Force Disconnected", "#ff6b6b")
+            self.append_to_chat("Force disconnected from server")
         except Exception as e:
-            self.append_to_chat(f"Error forcing key reset: {e}")
+            self.append_to_chat(f"Error during force disconnect: {e}")
     
-    def view_key_fingerprints(self):
-        """Display key fingerprints."""
+    def force_key_reset(self):
+        """Force reset all cryptographic keys."""
         if not hasattr(self, 'client') or not self.client or not hasattr(self.client, 'protocol'):
             return
             
         try:
-            # Create a dialog to display fingerprints
+            # Reset all keys
+            self.client.protocol.shared_key = None
+            self.client.protocol.encryption_key = None
+            self.client.protocol.mac_key = None
+            self.client.protocol.send_chain_key = None
+            self.client.protocol.receive_chain_key = None
+            self.client.protocol.message_counter = 0
+            self.client.protocol.peer_counter = 0
+            self.client.key_exchange_complete = False
+            self.client.verification_complete = False
+            
+            self.append_to_chat("All cryptographic keys have been reset")
+            self.update_debug_info()
+        except Exception as e:
+            self.append_to_chat(f"Error resetting keys: {e}")
+    
+    def view_key_fingerprints(self):
+        """View key fingerprints in a dialog."""
+        if not hasattr(self, 'client') or not self.client or not hasattr(self.client, 'protocol'):
+            return
+            
+        try:
+            
             dialog = tk.Toplevel(self.root)
             dialog.title("Key Fingerprints")
             dialog.geometry("600x400")
             dialog.configure(bg=self.BG_COLOR)
-            
-            # Make dialog modal
             dialog.transient(self.root)
-            dialog.grab_set()
             
-            # Add a label
-            tk.Label(
-                dialog, 
-                text="Key Fingerprints", 
-                bg=self.BG_COLOR, 
-                fg=self.FG_COLOR,
-                font=("Consolas", 12, "bold")
-            ).pack(pady=10)
-            
-            # Create a frame for the fingerprints
-            fingerprint_frame = tk.Frame(dialog, bg=self.BG_COLOR)
-            fingerprint_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10) # type: ignore
-            
-            # Own key fingerprint
-            tk.Label(
-                fingerprint_frame, 
-                text="Your Key Fingerprint:", 
-                bg=self.BG_COLOR, 
-                fg=self.FG_COLOR,
-                font=("Consolas", 10, "bold"),
-                anchor="w"
-            ).pack(fill=tk.X, pady=(10, 5)) # type: ignore
-            
-            own_fingerprint = "Not available"
-            if hasattr(self.client.protocol, 'get_own_key_fingerprint'):
-                own_fingerprint = self.client.protocol.get_own_key_fingerprint() or "Not available"
-                
-            own_fingerprint_text = scrolledtext.ScrolledText(
-                fingerprint_frame,
-                height=5,
+            text_area = scrolledtext.ScrolledText(
+                dialog,
+                state=tk.DISABLED,
+                wrap=tk.WORD,
                 font=("Consolas", 10),
-                bg="#2d2d2d",
-                fg="#00ff00",
-                wrap=tk.WORD
-            )
-            own_fingerprint_text.pack(fill=tk.X, pady=(0, 10))  # type: ignore
-            own_fingerprint_text.insert(tk.END, own_fingerprint)
-            own_fingerprint_text.config(state=tk.DISABLED) # type: ignore
-            
-            # Peer key fingerprint
-            tk.Label(
-                fingerprint_frame, 
-                text="Peer Key Fingerprint:", 
-                bg=self.BG_COLOR, 
+                bg="#1e1e1e",
                 fg=self.FG_COLOR,
-                font=("Consolas", 10, "bold"),
-                anchor="w"
-            ).pack(fill=tk.X, pady=(10, 5)) # type: ignore
-            
-            peer_fingerprint = "Not available"
-            if hasattr(self.client.protocol, 'get_peer_key_fingerprint'):
-                peer_fingerprint = self.client.protocol.get_peer_key_fingerprint() or "Not available"
-                
-            peer_fingerprint_text = scrolledtext.ScrolledText(
-                fingerprint_frame,
-                height=5,
-                font=("Consolas", 10),
-                bg="#2d2d2d",
-                fg="#00ff00",
-                wrap=tk.WORD
+                insertbackground=self.FG_COLOR,
+                relief=tk.FLAT
             )
-            peer_fingerprint_text.pack(fill=tk.X, pady=(0, 10)) # type: ignore
-            peer_fingerprint_text.insert(tk.END, peer_fingerprint)
-            peer_fingerprint_text.config(state=tk.DISABLED) # type: ignore
+            text_area.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
             
-            # Session fingerprint
-            tk.Label(
-                fingerprint_frame, 
-                text="Session Fingerprint:", 
-                bg=self.BG_COLOR, 
-                fg=self.FG_COLOR,
-                font=("Consolas", 10, "bold"),
-                anchor="w"
-            ).pack(fill=tk.X, pady=(10, 5)) # type: ignore
+            fingerprint_text = "=== KEY FINGERPRINTS ===\n\n"
             
-            session_fingerprint = "Not available"
-            if hasattr(self.client.protocol, 'generate_session_fingerprint'):
-                session_fingerprint = self.client.protocol.generate_session_fingerprint() or "Not available"
-                
-            session_fingerprint_text = scrolledtext.ScrolledText(
-                fingerprint_frame,
-                height=5,
-                font=("Consolas", 10),
-                bg="#2d2d2d",
-                fg="#00ff00",
-                wrap=tk.WORD
-            )
-            session_fingerprint_text.pack(fill=tk.X, pady=(0, 10)) # type: ignore
-            session_fingerprint_text.insert(tk.END, session_fingerprint)
-            session_fingerprint_text.config(state=tk.DISABLED) # type: ignore
+            # Own public key fingerprint
+            if hasattr(self.client.protocol, 'own_public_key') and self.client.protocol.own_public_key:
+                own_fp = hashlib.sha256(self.client.protocol.own_public_key).hexdigest()[:32]
+                fingerprint_text += f"Own Public Key:\n{own_fp}\n\n"
+            else:
+                fingerprint_text += "Own Public Key: Not available\n\n"
             
-            # Close button
-            tk.Button(
-                dialog, 
-                text="Close", 
-                command=dialog.destroy,
-                bg=self.BUTTON_BG_COLOR, 
-                fg=self.FG_COLOR,
-                relief=tk.FLAT, # type: ignore
-                activebackground=self.BUTTON_ACTIVE_BG, 
-                activeforeground=self.FG_COLOR
-            ).pack(pady=10)
+            # Peer public key fingerprint
+            if hasattr(self.client.protocol, 'peer_public_key') and self.client.protocol.peer_public_key:
+                peer_fp = hashlib.sha256(self.client.protocol.peer_public_key).hexdigest()[:32]
+                fingerprint_text += f"Peer Public Key:\n{peer_fp}\n\n"
+            else:
+                fingerprint_text += "Peer Public Key: Not available\n\n"
+            
+            # Shared key fingerprint
+            if hasattr(self.client.protocol, 'shared_key') and self.client.protocol.shared_key:
+                shared_fp = hashlib.sha256(self.client.protocol.shared_key).hexdigest()[:32]
+                fingerprint_text += f"Shared Key:\n{shared_fp}\n\n"
+            else:
+                fingerprint_text += "Shared Key: Not available\n\n"
+            
+            text_area.config(state=tk.NORMAL)
+            text_area.insert(tk.END, fingerprint_text)
+            text_area.config(state=tk.DISABLED)
             
         except Exception as e:
-            self.append_to_chat(f"Error viewing key fingerprints: {e}")
+            self.append_to_chat(f"Error viewing fingerprints: {e}")
     
     def simulate_network_latency(self):
-        """Simulate network latency."""
+        """Simulate network latency by delaying message sending."""
         if not hasattr(self, 'client') or not self.client:
             return
             
         try:
-            # Create a dialog to configure latency
             dialog = tk.Toplevel(self.root)
             dialog.title("Simulate Network Latency")
             dialog.geometry("400x200")
             dialog.configure(bg=self.BG_COLOR)
-            
-            # Make dialog modal
             dialog.transient(self.root)
             dialog.grab_set()
             
-            # Add a label
-            tk.Label(
-                dialog, 
-                text="Simulate Network Latency", 
-                bg=self.BG_COLOR, 
-                fg=self.FG_COLOR,
-                font=("Consolas", 12, "bold")
-            ).pack(pady=10)
+            tk.Label(dialog, text="Latency (milliseconds):", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(pady=10)
+            latency_entry = tk.Entry(dialog, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR)
+            latency_entry.pack(pady=5)
+            latency_entry.insert(0, "100")
             
-            # Create a frame for the latency settings
-            latency_frame = tk.Frame(dialog, bg=self.BG_COLOR)
-            latency_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10) # type: ignore
-            
-            # Latency slider
-            tk.Label(
-                latency_frame, 
-                text="Latency (ms):", 
-                bg=self.BG_COLOR, 
-                fg=self.FG_COLOR,
-                font=("Consolas", 10),
-                anchor="w"
-            ).pack(fill=tk.X, pady=(10, 5)) # type: ignore
-            
-            latency_var = tk.IntVar(value=100)  # Default 100ms
-            latency_slider = tk.Scale(
-                latency_frame,
-                from_=0,
-                to=2000,
-                orient=tk.HORIZONTAL, # type: ignore
-                variable=latency_var,
-                bg=self.BG_COLOR,
-                fg=self.FG_COLOR,
-                highlightthickness=0,
-                troughcolor="#2d2d2d"
-            )
-            latency_slider.pack(fill=tk.X, pady=(0, 10)) # type: ignore
-            
-            # Button frame
-            button_frame = tk.Frame(dialog, bg=self.BG_COLOR)
-            button_frame.pack(fill=tk.X, pady=10) # type: ignore
-            
-            # Apply button
             def apply_latency():
-                latency = latency_var.get()
-                self.append_to_chat(f"Simulating {latency}ms network latency for the next message")
-                
-                # Store the latency value in the client for use when sending the next message
-                self.client.simulated_latency = latency
-                
-                # Close the dialog
-                dialog.destroy()
+                try:
+                    latency_ms = int(latency_entry.get())
+                    self.client.network_latency = latency_ms / 1000.0  # Convert to seconds
+                    self.append_to_chat(f"Network latency set to {latency_ms}ms")
+                    dialog.destroy()
+                except ValueError:
+                    messagebox.showerror("Error", "Please enter a valid number")
+                except Exception as e:
+                    messagebox.showerror("Error", f"Failed to set latency: {e}")
             
-            tk.Button(
-                button_frame, 
-                text="Apply", 
-                command=apply_latency,
-                bg=self.BUTTON_BG_COLOR, 
-                fg=self.FG_COLOR,
-                relief=tk.FLAT, # type: ignore
-                activebackground=self.BUTTON_ACTIVE_BG, 
-                activeforeground=self.FG_COLOR
-            ).pack(side=tk.LEFT, padx=5) # type: ignore
+            button_frame = tk.Frame(dialog, bg=self.BG_COLOR)
+            button_frame.pack(pady=20)
             
-            # Cancel button
-            tk.Button(
-                button_frame, 
-                text="Cancel", 
-                command=dialog.destroy,
-                bg=self.BUTTON_BG_COLOR, 
-                fg=self.FG_COLOR,
-                relief=tk.FLAT, # type: ignore
-                activebackground=self.BUTTON_ACTIVE_BG, 
-                activeforeground=self.FG_COLOR
-            ).pack(side=tk.RIGHT, padx=5) # type: ignore
+            apply_btn = tk.Button(
+                button_frame, text="Apply", command=apply_latency,
+                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT
+            )
+            apply_btn.pack(side=tk.LEFT, padx=5)
+            
+            cancel_btn = tk.Button(
+                button_frame, text="Cancel", command=dialog.destroy,
+                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT
+            )
+            cancel_btn.pack(side=tk.LEFT, padx=5)
             
         except Exception as e:
-            self.append_to_chat(f"Error simulating network latency: {e}")
+            self.append_to_chat(f"Error opening latency dialog: {e}")
+    
+    def export_debug_log(self):
+        """Export debug information to a file."""
+        try:
+            
+            filename = filedialog.asksaveasfilename(
+                defaultextension=".txt",
+                filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+                title="Export Debug Log"
+            )
+            
+            if filename:
+                debug_content = self.debug_display.get(1.0, tk.END)
+                with open(filename, 'w', encoding='utf-8') as f:
+                    f.write(debug_content)
+                self.append_to_chat(f"Debug log exported to {filename}")
+        except Exception as e:
+            self.append_to_chat(f"Error exporting debug log: {e}")
     
     def send_stale_message(self):
         """Send a stale message (with an old counter value) to test replay protection."""
@@ -1725,7 +995,7 @@ Do the fingerprints match?"""
                 fg=self.FG_COLOR,
                 font=("Consolas", 10),
                 anchor="w"
-            ).pack(fill=tk.X, padx=20, pady=(10, 5)) # type: ignore
+            ).pack(fill=tk.X, padx=20, pady=(10, 5))
             
             message_entry = tk.Entry(
                 dialog,
@@ -1734,22 +1004,23 @@ Do the fingerprints match?"""
                 fg=self.FG_COLOR,
                 insertbackground=self.FG_COLOR
             )
-            message_entry.pack(fill=tk.X, padx=20, pady=(0, 10)) # type: ignore
+            message_entry.pack(fill=tk.X, padx=20, pady=(0, 10))
             message_entry.insert(0, "This is a stale message")
             
             # Button frame
             button_frame = tk.Frame(dialog, bg=self.BG_COLOR)
-            button_frame.pack(fill=tk.X, pady=10) # type: ignore
+            button_frame.pack(fill=tk.X, pady=10)
             
             # Send button
             def send_stale():
                 message_text = message_entry.get().strip()
                 if not message_text:
-                    tk.messagebox.showerror("Error", "Please enter a message")
+                    messagebox.showerror("Error", "Please enter a message")
                     return
                 
                 # Store the current message counter
                 current_counter = self.client.protocol.message_counter
+                current_chain_key = self.client.protocol.send_chain_key
                 
                 # Set the counter to a lower value to make the message stale
                 self.client.protocol.message_counter = max(0, current_counter - 10)
@@ -1765,6 +1036,7 @@ Do the fingerprints match?"""
                     
                     # Restore the original counter
                     self.client.protocol.message_counter = current_counter
+                    self.client.protocol.send_chain_key = current_chain_key
                     
                 except Exception as e:
                     self.append_to_chat(f"Error sending stale message: {e}")
@@ -1777,10 +1049,10 @@ Do the fingerprints match?"""
                 command=send_stale,
                 bg=self.BUTTON_BG_COLOR, 
                 fg=self.FG_COLOR,
-                relief=tk.FLAT, # type: ignore
+                relief=tk.FLAT,
                 activebackground=self.BUTTON_ACTIVE_BG, 
                 activeforeground=self.FG_COLOR
-            ).pack(side=tk.LEFT, padx=5) # type: ignore
+            ).pack(side=tk.LEFT, padx=5)
             
             # Cancel button
             tk.Button(
@@ -1789,10 +1061,10 @@ Do the fingerprints match?"""
                 command=dialog.destroy,
                 bg=self.BUTTON_BG_COLOR, 
                 fg=self.FG_COLOR,
-                relief=tk.FLAT, # type: ignore
+                relief=tk.FLAT,
                 activebackground=self.BUTTON_ACTIVE_BG, 
                 activeforeground=self.FG_COLOR
-            ).pack(side=tk.RIGHT, padx=5) # type: ignore
+            ).pack(side=tk.RIGHT, padx=5)
             
         except Exception as e:
             self.append_to_chat(f"Error creating stale message dialog: {e}")
@@ -1824,35 +1096,35 @@ Do the fingerprints match?"""
             
             # Create a frame for the packet loss settings
             loss_frame = tk.Frame(dialog, bg=self.BG_COLOR)
-            loss_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10) # type: ignore
+            loss_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
             
             # Packet loss percentage slider
             tk.Label(
-                loss_frame, 
-                text="Packet Loss Percentage:", 
-                bg=self.BG_COLOR, 
+                loss_frame,
+                text="Packet Loss Percentage:",
+                bg=self.BG_COLOR,
                 fg=self.FG_COLOR,
                 font=("Consolas", 10),
                 anchor="w"
-            ).pack(fill=tk.X, pady=(10, 5)) # type: ignore
+            ).pack(fill=tk.X, pady=(10, 5))
             
             loss_var = tk.IntVar(value=25)  # Default 25%
             loss_slider = tk.Scale(
                 loss_frame,
                 from_=0,
                 to=100,
-                orient=tk.HORIZONTAL, # type: ignore
+                orient=tk.HORIZONTAL,
                 variable=loss_var,
                 bg=self.BG_COLOR,
                 fg=self.FG_COLOR,
                 highlightthickness=0,
                 troughcolor="#2d2d2d"
             )
-            loss_slider.pack(fill=tk.X, pady=(0, 10)) # type: ignore
+            loss_slider.pack(fill=tk.X, pady=(0, 10))
             
             # Button frame
             button_frame = tk.Frame(dialog, bg=self.BG_COLOR)
-            button_frame.pack(fill=tk.X, pady=10) # type: ignore
+            button_frame.pack(fill=tk.X, pady=10)
             
             # Apply button
             def apply_packet_loss():
@@ -1877,10 +1149,10 @@ Do the fingerprints match?"""
                 command=apply_packet_loss,
                 bg=self.BUTTON_BG_COLOR, 
                 fg=self.FG_COLOR,
-                relief=tk.FLAT, # type: ignore
+                relief=tk.FLAT,
                 activebackground=self.BUTTON_ACTIVE_BG, 
                 activeforeground=self.FG_COLOR
-            ).pack(side=tk.LEFT, padx=5) # type: ignore
+            ).pack(side=tk.LEFT, padx=5)
             
             # Cancel button
             tk.Button(
@@ -1889,10 +1161,10 @@ Do the fingerprints match?"""
                 command=dialog.destroy,
                 bg=self.BUTTON_BG_COLOR, 
                 fg=self.FG_COLOR,
-                relief=tk.FLAT, # type: ignore
+                relief=tk.FLAT,
                 activebackground=self.BUTTON_ACTIVE_BG, 
                 activeforeground=self.FG_COLOR
-            ).pack(side=tk.RIGHT, padx=5) # type: ignore
+            ).pack(side=tk.RIGHT, padx=5)
             
         except Exception as e:
             self.append_to_chat(f"Error simulating packet loss: {e}")
@@ -1930,7 +1202,7 @@ Do the fingerprints match?"""
                 fg=self.FG_COLOR,
                 font=("Consolas", 10),
                 anchor="w"
-            ).pack(fill=tk.X, padx=20, pady=(10, 5)) # type: ignore
+            ).pack(fill=tk.X, padx=20, pady=(10, 5))
             
             message_entry = tk.Entry(
                 dialog,
@@ -1939,7 +1211,7 @@ Do the fingerprints match?"""
                 fg=self.FG_COLOR,
                 insertbackground=self.FG_COLOR
             )
-            message_entry.pack(fill=tk.X, padx=20, pady=(0, 10)) # type: ignore
+            message_entry.pack(fill=tk.X, padx=20, pady=(0, 10))
             message_entry.insert(0, "This is a duplicate message")
             
             # Count input
@@ -1950,25 +1222,25 @@ Do the fingerprints match?"""
                 fg=self.FG_COLOR,
                 font=("Consolas", 10),
                 anchor="w"
-            ).pack(fill=tk.X, padx=20, pady=(10, 5)) # type: ignore
+            ).pack(fill=tk.X, padx=20, pady=(10, 5))
             
             count_var = tk.IntVar(value=3)  # Default 3 duplicates
             count_slider = tk.Scale(
                 dialog,
                 from_=2,
                 to=10,
-                orient=tk.HORIZONTAL, # type: ignore
+                orient=tk.HORIZONTAL,
                 variable=count_var,
                 bg=self.BG_COLOR,
                 fg=self.FG_COLOR,
                 highlightthickness=0,
                 troughcolor="#2d2d2d"
             )
-            count_slider.pack(fill=tk.X, padx=20, pady=(0, 10)) # type: ignore
+            count_slider.pack(fill=tk.X, padx=20, pady=(0, 10))
             
             # Button frame
             button_frame = tk.Frame(dialog, bg=self.BG_COLOR)
-            button_frame.pack(fill=tk.X, pady=10) # type: ignore
+            button_frame.pack(fill=tk.X, pady=10)
             
             # Send button
             def send_duplicates():
@@ -1976,7 +1248,7 @@ Do the fingerprints match?"""
                 count = count_var.get()
                 
                 if not message_text:
-                    tk.messagebox.showerror("Error", "Please enter a message")
+                    messagebox.showerror("Error", "Please enter a message")
                     return
                 
                 # Create the encrypted message
@@ -1999,10 +1271,10 @@ Do the fingerprints match?"""
                 command=send_duplicates,
                 bg=self.BUTTON_BG_COLOR, 
                 fg=self.FG_COLOR,
-                relief=tk.FLAT, # type: ignore
+                relief=tk.FLAT,
                 activebackground=self.BUTTON_ACTIVE_BG, 
                 activeforeground=self.FG_COLOR
-            ).pack(side=tk.LEFT, padx=5) # type: ignore
+            ).pack(side=tk.LEFT, padx=5)
             
             # Cancel button
             tk.Button(
@@ -2011,10 +1283,10 @@ Do the fingerprints match?"""
                 command=dialog.destroy,
                 bg=self.BUTTON_BG_COLOR, 
                 fg=self.FG_COLOR,
-                relief=tk.FLAT, # type: ignore
+                relief=tk.FLAT,
                 activebackground=self.BUTTON_ACTIVE_BG, 
                 activeforeground=self.FG_COLOR
-            ).pack(side=tk.RIGHT, padx=5) # type: ignore
+            ).pack(side=tk.RIGHT, padx=5)
             
         except Exception as e:
             self.append_to_chat(f"Error creating duplicate message dialog: {e}")
@@ -2041,7 +1313,7 @@ Do the fingerprints match?"""
                 fg=self.FG_COLOR,
                 font=("Consolas", 10),
                 anchor="w"
-            ).pack(fill=tk.X, padx=20, pady=(20, 5)) # type: ignore
+            ).pack(fill=tk.X, padx=20, pady=(20, 5))
             
             send_counter_entry = tk.Entry(
                 dialog,
@@ -2050,7 +1322,7 @@ Do the fingerprints match?"""
                 fg=self.FG_COLOR,
                 insertbackground=self.FG_COLOR
             )
-            send_counter_entry.pack(fill=tk.X, padx=20, pady=(0, 10)) # type: ignore
+            send_counter_entry.pack(fill=tk.X, padx=20, pady=(0, 10))
             
             # Pre-fill with current value if available
             if hasattr(self.client.protocol, 'message_counter'):
@@ -2064,7 +1336,7 @@ Do the fingerprints match?"""
                 fg=self.FG_COLOR,
                 font=("Consolas", 10),
                 anchor="w"
-            ).pack(fill=tk.X, padx=20, pady=(10, 5)) # type: ignore
+            ).pack(fill=tk.X, padx=20, pady=(10, 5))
             
             peer_counter_entry = tk.Entry(
                 dialog,
@@ -2073,7 +1345,7 @@ Do the fingerprints match?"""
                 fg=self.FG_COLOR,
                 insertbackground=self.FG_COLOR
             )
-            peer_counter_entry.pack(fill=tk.X, padx=20, pady=(0, 10)) # type: ignore
+            peer_counter_entry.pack(fill=tk.X, padx=20, pady=(0, 10))
             
             # Pre-fill with current value if available
             if hasattr(self.client.protocol, 'peer_counter'):
@@ -2085,13 +1357,13 @@ Do the fingerprints match?"""
                 text="WARNING: Setting custom counters may break message encryption.\nOnly use for debugging!",
                 bg=self.BG_COLOR, 
                 fg="#ff6b6b",
-                justify=tk.LEFT # type: ignore
+                justify=tk.LEFT
             )
-            warning_label.pack(fill=tk.X, padx=20, pady=10) # type: ignore
+            warning_label.pack(fill=tk.X, padx=20, pady=10)
             
             # Buttons frame
             buttons_frame = tk.Frame(dialog, bg=self.BG_COLOR)
-            buttons_frame.pack(fill=tk.X, padx=20, pady=10) # type: ignore
+            buttons_frame.pack(fill=tk.X, padx=20, pady=10)
             
             def apply_counters():
                 try:
@@ -2107,9 +1379,9 @@ Do the fingerprints match?"""
                     self.update_debug_info()
                     dialog.destroy()
                 except ValueError:
-                    tk.messagebox.showerror("Error", "Please enter valid integer values")
+                    messagebox.showerror("Error", "Please enter valid integer values")
                 except Exception as e:
-                    tk.messagebox.showerror("Error", f"Failed to set counters: {e}")
+                    messagebox.showerror("Error", f"Failed to set counters: {e}")
             
             # Apply button
             apply_btn = tk.Button(
@@ -2118,11 +1390,11 @@ Do the fingerprints match?"""
                 command=apply_counters,
                 bg=self.BUTTON_BG_COLOR, 
                 fg=self.FG_COLOR,
-                relief=tk.FLAT, # type: ignore
+                relief=tk.FLAT,
                 activebackground=self.BUTTON_ACTIVE_BG, 
                 activeforeground=self.FG_COLOR
             )
-            apply_btn.pack(side=tk.LEFT, padx=5) # type: ignore
+            apply_btn.pack(side=tk.LEFT, padx=5)
             
             # Cancel button
             cancel_btn = tk.Button(
@@ -2131,11 +1403,11 @@ Do the fingerprints match?"""
                 command=dialog.destroy,
                 bg=self.BUTTON_BG_COLOR, 
                 fg=self.FG_COLOR,
-                relief=tk.FLAT, # type: ignore
+                relief=tk.FLAT,
                 activebackground=self.BUTTON_ACTIVE_BG, 
                 activeforeground=self.FG_COLOR
             )
-            cancel_btn.pack(side=tk.RIGHT, padx=5) # type: ignore
+            cancel_btn.pack(side=tk.RIGHT, padx=5)
             
         except Exception as e:
             self.append_to_chat(f"Error setting message counters: {e}")
@@ -2173,7 +1445,7 @@ Do the fingerprints match?"""
                 fg=self.FG_COLOR,
                 font=("Consolas", 10),
                 anchor="w"
-            ).pack(fill=tk.X, padx=20, pady=(10, 5)) # type: ignore
+            ).pack(fill=tk.X, padx=20, pady=(10, 5))
             
             message_entry = tk.Entry(
                 dialog,
@@ -2182,7 +1454,7 @@ Do the fingerprints match?"""
                 fg=self.FG_COLOR,
                 insertbackground=self.FG_COLOR
             )
-            message_entry.pack(fill=tk.X, padx=20, pady=(0, 10)) # type: ignore
+            message_entry.pack(fill=tk.X, padx=20, pady=(0, 10))
             message_entry.insert(0, "Testing protocol version compatibility")
             
             # Version input
@@ -2193,7 +1465,7 @@ Do the fingerprints match?"""
                 fg=self.FG_COLOR,
                 font=("Consolas", 10),
                 anchor="w"
-            ).pack(fill=tk.X, padx=20, pady=(10, 5)) # type: ignore
+            ).pack(fill=tk.X, padx=20, pady=(10, 5))
             
             # Get the current protocol version
             current_version = PROTOCOL_VERSION
@@ -2205,7 +1477,7 @@ Do the fingerprints match?"""
                 fg=self.FG_COLOR,
                 insertbackground=self.FG_COLOR
             )
-            version_entry.pack(fill=tk.X, padx=20, pady=(0, 10)) # type: ignore
+            version_entry.pack(fill=tk.X, padx=20, pady=(0, 10))
             version_entry.insert(0, str(current_version - 1))  # Default to previous version
             
             # Current version label
@@ -2216,11 +1488,11 @@ Do the fingerprints match?"""
                 fg=self.FG_COLOR,
                 font=("Consolas", 9),
                 anchor="w"
-            ).pack(fill=tk.X, padx=20, pady=(0, 10)) # type: ignore
+            ).pack(fill=tk.X, padx=20, pady=(0, 10))
             
             # Button frame
             button_frame = tk.Frame(dialog, bg=self.BG_COLOR)
-            button_frame.pack(fill=tk.X, pady=10) # type: ignore
+            button_frame.pack(fill=tk.X, pady=10)
             
             # Send button
             def send_with_version():
@@ -2228,18 +1500,15 @@ Do the fingerprints match?"""
                 try:
                     version = int(version_entry.get().strip())
                 except ValueError:
-                    tk.messagebox.showerror("Error", "Please enter a valid version number")
+                    messagebox.showerror("Error", "Please enter a valid version number")
                     return
                 
                 if not message_text:
-                    tk.messagebox.showerror("Error", "Please enter a message")
+                    messagebox.showerror("Error", "Please enter a message")
                     return
                 
                 # Create a message with the specified version
                 try:
-                    # Store the current protocol version
-                    original_version = PROTOCOL_VERSION
-                    
                     # Create a custom message with the specified version
                     encrypted_data = self.client.protocol.encrypt_message(message_text)
                     
@@ -2253,10 +1522,10 @@ Do the fingerprints match?"""
                     # Send the modified message
                     send_message(self.client.socket, modified_data)
                     
-                    self.append_to_chat(f"Sent message with protocol version {version} (current: {original_version})")
+                    self.append_to_chat(f"Sent message with protocol version {version} (current: {current_version})")
                     
                 except Exception as e:
-                    self.append_to_chat(f"Error sending message with custom version: {e}")
+                    self.append_to_chat(f"Error sending version test message: {e}")
                 
                 dialog.destroy()
             
@@ -2266,10 +1535,10 @@ Do the fingerprints match?"""
                 command=send_with_version,
                 bg=self.BUTTON_BG_COLOR, 
                 fg=self.FG_COLOR,
-                relief=tk.FLAT, # type: ignore
+                relief=tk.FLAT,
                 activebackground=self.BUTTON_ACTIVE_BG, 
                 activeforeground=self.FG_COLOR
-            ).pack(side=tk.LEFT, padx=5) # type: ignore
+            ).pack(side=tk.LEFT, padx=5)
             
             # Cancel button
             tk.Button(
@@ -2278,104 +1547,27 @@ Do the fingerprints match?"""
                 command=dialog.destroy,
                 bg=self.BUTTON_BG_COLOR, 
                 fg=self.FG_COLOR,
-                relief=tk.FLAT, # type: ignore
+                relief=tk.FLAT,
                 activebackground=self.BUTTON_ACTIVE_BG, 
                 activeforeground=self.FG_COLOR
-            ).pack(side=tk.RIGHT, padx=5) # type: ignore
+            ).pack(side=tk.RIGHT, padx=5)
             
         except Exception as e:
-            self.append_to_chat(f"Error testing protocol version: {e}")
+            self.append_to_chat(f"Error creating protocol version test dialog: {e}")
     
-    def export_debug_log(self):
-        """Export debug log to a file."""
-        try:
-            # Ask for a file to save to
-            file_path = filedialog.asksaveasfilename(
-                defaultextension=".txt",
-                filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
-                title="Export Debug Log"
-            )
-            
-            if not file_path:
-                return  # User cancelled
-                
-            # Get the debug info
-            debug_info = ""
-            
-            # Add connection info
-            debug_info += "=== CONNECTION INFO ===\n"
-            if hasattr(self, 'client') and self.client:
-                debug_info += f"Connected: {self.connected}\n"
-                debug_info += f"Host: {self.client.host}\n"
-                debug_info += f"Port: {self.client.port}\n"
-                
-                if hasattr(self.client, 'protocol_version'):
-                    debug_info += f"Protocol Version: {self.client.protocol_version}\n"
-                if hasattr(self.client, 'server_version'):
-                    debug_info += f"Server Version: {self.client.server_version or 'Unknown'}\n"
-                if hasattr(self.client, 'peer_version'):
-                    debug_info += f"Peer Version: {self.client.peer_version or 'Unknown'}\n"
-            else:
-                debug_info += "Not connected\n"
-                
-            # Add protocol info
-            debug_info += "\n=== PROTOCOL INFO ===\n"
-            if hasattr(self, 'client') and self.client and hasattr(self.client, 'protocol'):
-                protocol = self.client.protocol
-                
-                # Key exchange status
-                debug_info += f"Key Exchange Complete: {hasattr(self.client, 'key_exchange_complete') and self.client.key_exchange_complete}\n"
-                debug_info += f"Verification Complete: {hasattr(self.client, 'verification_complete') and self.client.verification_complete}\n"
-                
-                # Chain keys
-                if hasattr(protocol, 'send_chain_key'):
-                    debug_info += f"Send Chain Key: {protocol.send_chain_key.hex() if protocol.send_chain_key else 'None'}\n"
-                if hasattr(protocol, 'recv_chain_key'):
-                    debug_info += f"Receive Chain Key: {protocol.recv_chain_key.hex() if protocol.recv_chain_key else 'None'}\n"
-                if hasattr(protocol, 'send_counter'):
-                    debug_info += f"Send Counter: {protocol.send_counter}\n"
-                if hasattr(protocol, 'recv_counter'):
-                    debug_info += f"Receive Counter: {protocol.recv_counter}\n"
-            else:
-                debug_info += "No protocol information available\n"
-                
-            # Add keepalive info
-            debug_info += "\n=== KEEPALIVE INFO ===\n"
-            if hasattr(self, 'client') and self.client:
-                if hasattr(self.client, 'last_keepalive_sent'):
-                    last_sent = self.client.last_keepalive_sent
-                    debug_info += f"Last Keepalive Sent: {last_sent if last_sent else 'None'}\n"
-                if hasattr(self.client, 'last_keepalive_received'):
-                    last_received = self.client.last_keepalive_received
-                    debug_info += f"Last Keepalive Received: {last_received if last_received else 'None'}\n"
-                if hasattr(self.client, 'respond_to_keepalive'):
-                    debug_info += f"Respond to Keepalive: {self.client.respond_to_keepalive}\n"
-            else:
-                debug_info += "No keepalive information available\n"
-                
-            # Add chat history
-            debug_info += "\n=== CHAT HISTORY ===\n"
-            chat_text = self.chat_display.get("1.0", tk.END)
-            debug_info += chat_text
-            
-            # Write to file
-            with open(file_path, 'w') as f:
-                f.write(debug_info)
-                
-            self.append_to_chat(f"Debug log exported to {file_path}")
-            
-        except Exception as e:
-            self.append_to_chat(f"Error exporting debug log: {e}")
+    def on_closing(self):
+        """Handle window closing - override to clean up debug timer."""
+        # Stop the debug timer before closing
+        self._stop_debug_timer()
+        # Call parent cleanup
+        super().on_closing()
 
 
-class GUISecureChatClient(SecureChatClient):
-    """Extended SecureChatClient that works with GUI."""
+class DebugGUISecureChatClient(GUISecureChatClient):
+    """Debug version of GUISecureChatClient - extends base with debug features."""
     
     def __init__(self, host='localhost', port=16384, gui=None):
-        super().__init__(host, port)
-        self.gui = gui
-        # Initialize verification_complete flag like console client
-        self.verification_complete = False
+        super().__init__(host, port, gui)
         
         # Protocol version tracking
         self.protocol_version = PROTOCOL_VERSION
@@ -2395,13 +1587,35 @@ class GUISecureChatClient(SecureChatClient):
         
         # Debug features
         self.simulated_latency = 0  # No latency by default
+        self.packet_loss_percentage = 0  # No packet loss by default
+    
+    def handle_message(self, message_data: bytes) -> None:
+        """Handle incoming messages with GUI updates and debug logging."""
+        if self.simulated_latency > 0:
+            time.sleep(self.simulated_latency)
         
+        if self.packet_loss_percentage > 0:
+            if random.randint(1, 100) <= self.packet_loss_percentage:
+                if self.gui:
+                    self.gui.root.after(0, lambda: self.gui.append_to_chat(
+                        f"DEBUG: Packet loss simulated ({self.packet_loss_percentage}%)", is_message=False))
+                return
+    
+        super().handle_message(message_data)
+        
+        
+
     def handle_key_exchange_init(self, message_data: bytes):
         """Handle key exchange init - override to extract and store protocol version."""
         try:
             # Extract protocol version from message
             message = json.loads(message_data.decode('utf-8'))
             self.peer_version = message.get("version")
+            
+            # Debug logging
+            if self.gui:
+                self.gui.root.after(0, lambda: self.gui.append_to_chat(
+                    f"DEBUG: Key exchange init from peer (version {self.peer_version})", is_message=False))
             
             # Call parent method to handle the key exchange
             super().handle_key_exchange_init(message_data)
@@ -2415,683 +1629,90 @@ class GUISecureChatClient(SecureChatClient):
                 self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Key exchange init error: {e}"))
             else:
                 print(f"Key exchange init error: {e}")
-    
-    def handle_encrypted_message(self, message_data: bytes):
-        """Handle encrypted chat messages - override to send to GUI."""
-        try:
-            decrypted_text = self.protocol.decrypt_message(message_data)
-            
-            # Get the message counter that was just processed for delivery confirmation
-            received_message_counter = self.protocol.peer_counter
-            
-            # Update debug info after decryption
-            if self.gui:
-                self.gui.root.after(0, lambda: self.gui.update_debug_info())
-            
-            # Attempt to parse the decrypted text as a JSON message
-            try:
-                
-                message = json.loads(decrypted_text)
-                message_type = message.get("type")
-                
-                if message_type == MSG_TYPE_FILE_METADATA:
-                    self.handle_file_metadata(decrypted_text)
-                elif message_type == MSG_TYPE_FILE_ACCEPT:
-                    self.handle_file_accept(decrypted_text)
-                elif message_type == MSG_TYPE_FILE_REJECT:
-                    self.handle_file_reject(decrypted_text)
-                elif message_type == MSG_TYPE_FILE_CHUNK:
-                    self.handle_file_chunk(decrypted_text)
-                elif message_type == MSG_TYPE_FILE_COMPLETE:
-                    self.handle_file_complete(decrypted_text)
-                elif message_type == MSG_TYPE_DELIVERY_CONFIRMATION:
-                    # Handle delivery confirmation
-                    self.handle_delivery_confirmation(message)
-                else:
-                    # It's a regular chat message
-                    if self.gui:
-                        self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Other user: {decrypted_text}",
-                                                                               is_message=True))
-                    # Send delivery confirmation for text messages only
-                    self._send_delivery_confirmation(received_message_counter)
-            
-            except (json.JSONDecodeError, TypeError):
-                # If it's not JSON, it's a regular chat message
-                if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Other user: {decrypted_text}",
-                                                                           is_message=True))
-                # Send delivery confirmation for text messages only
-                self._send_delivery_confirmation(received_message_counter)
-        
-        except Exception as e:
-            if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Failed to decrypt message: {e}"))
-            else:
-                print(f"\nFailed to decrypt message: {e}")
-    
-    def _send_delivery_confirmation(self, confirmed_counter: int) -> None:
-        """Send a delivery confirmation for a received text message."""
-        # Check if delivery confirmations are enabled
-        if not getattr(self, 'send_delivery_confirmations', True):
-            return
-            
-        try:
-            confirmation_data = self.protocol.create_delivery_confirmation_message(confirmed_counter)
-            send_message(self.socket, confirmation_data)
-        except Exception as e:
-            if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error sending delivery confirmation: {e}"))
-            else:
-                print(f"\nError sending delivery confirmation: {e}")
-    
-    def handle_delivery_confirmation(self, message_data: dict) -> None:
-        """Handle delivery confirmation messages from the peer - override to update GUI."""
-        try:
-            confirmed_counter = message_data.get("confirmed_counter")
-            # Update the GUI to show the message was delivered
-            if self.gui and confirmed_counter:
-                self.gui.root.after(0, lambda: self.gui.update_message_delivery_status(confirmed_counter))
-            else:
-                # Fallback to console output if no GUI
-                print(f"\n✓ Message {confirmed_counter} delivered")
-            
-        except Exception as e:
-            if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error handling delivery confirmation: {e}"))
-            else:
-                print(f"\nError handling delivery confirmation: {e}")
-    
-    def handle_emergency_close(self, message_data: bytes) -> None:
-        """Handle emergency close message from the other client - override to display in GUI."""
-        try:
-            message = json.loads(message_data.decode('utf-8'))
-            close_message = message.get("message", "Emergency close received")
-            
-            if self.gui:
-                # Display emergency close message in GUI
-                self.gui.root.after(0, lambda: self.gui.append_to_chat("🚨 EMERGENCY CLOSE RECEIVED"))
-                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"The other client has activated emergency close."))
-                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Message: {close_message}"))
-                self.gui.root.after(0, lambda: self.gui.append_to_chat("Connection will be terminated immediately."))
-            else:
-                # Fallback to console output if no GUI
-                print(f"\n{'='*50}")
-                print("🚨 EMERGENCY CLOSE RECEIVED")
-                print(f"The other client has activated emergency close.")
-                print(f"Message: {close_message}")
-                print("Connection will be terminated immediately.")
-                print(f"{'='*50}")
-            
-            # Immediately disconnect
-            self.disconnect()
-            
-        except Exception as e:
-            if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error handling emergency close: {e}"))
-            else:
-                print(f"Error handling emergency close: {e}")
 
-    def handle_key_exchange_response(self, message_data: bytes):
-        """Handle key exchange response - override to send to GUI."""
-        try:
-            if hasattr(self, 'private_key'):
-                if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.update_status("Processing key exchange", "#ffa500"))
-                else:
-                    print("Key exchange completed successfully.")
-                
-                # Extract protocol version from message
-                try:
-                    message = json.loads(message_data.decode('utf-8'))
-                    self.server_version = message.get("version")
-                    # The version in the response message is actually the peer's version, not the server's
-                    self.peer_version = message.get("version")
-                except:
-                    pass
-                
-                self.protocol.process_key_exchange_response(message_data, self.private_key)
-                
-                # Update debug info after key exchange processing
-                if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.update_debug_info())
-            else:
-                if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.append_to_chat(
-                        "Received key exchange response but no private key found"))
-                else:
-                    print("Received key exchange response but no private key found")
-        
-        except Exception as e:
-            if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Key exchange response error: {e}"))
-            else:
-                print(f"Key exchange response error: {e}")
-    
-    def handle_key_exchange_complete(self, message: dict):
-        """Handle key exchange completion notification - override to use GUI."""
-        self.key_exchange_complete = True
-        
-        # Extract server version from the message
-        if "version" in message:
-            self.server_version = message.get("version")
-        
-        # Don't call start_key_verification() here as it would block the receive thread
-        # The GUI monitoring thread will detect key_exchange_complete and show the dialogue
-        
-        # Update debug info after key exchange completion
-        if self.gui:
-            self.gui.root.after(0, lambda: self.gui.update_debug_info())
-    
-    def initiate_key_exchange(self):
-        """Initiate key exchange as the first client - override to add GUI status update."""
-        if self.gui:
-            self.gui.root.after(0, lambda: self.gui.update_status("Processing key exchange", "#ffa500"))
-        super().initiate_key_exchange()
-        
-        # Update debug info after initiating key exchange
-        if self.gui:
-            self.gui.root.after(0, lambda: self.gui.update_debug_info())
-    
-    def start_key_verification(self):
-        """Start the key verification process - override to prevent blocking."""
-        # This method is overridden to prevent the base class from blocking
-        # the receive thread with console input. The GUI handles verification
-        # through the monitoring thread and verification dialogue.
-        pass
-    
-    def handle_key_exchange_reset(self, message_data: bytes):
-        """Handle key exchange reset message - override to provide GUI feedback."""
-        try:
-            
-            message = json.loads(message_data.decode('utf-8'))
-            reset_message = message.get("message", "Key exchange reset")
-            
-            # Reset client state
-            self.key_exchange_complete = False
-            self.verification_complete = False
-            self.protocol.reset_key_exchange()
-            
-            # Reset GUI-specific verification flags
-            if hasattr(self, 'verification_started'):
-                delattr(self, 'verification_started')
-            
-            # Clear any pending file transfers
-            self.pending_file_transfers.clear()
-            self.active_file_metadata.clear()
-            
-            # Update GUI
-            if self.gui:
-                self.gui.root.after(0, lambda: self.gui.update_status("Key exchange reset - waiting for new client",
-                                                                      "#ff6b6b"))
-                self.gui.root.after(0, lambda: self.gui.append_to_chat("⚠️ KEY EXCHANGE RESET"))
-                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Reason: {reset_message}"))
-                # Update debug info after key exchange reset
-                self.gui.root.after(0, lambda: self.gui.update_debug_info())
-                self.gui.root.after(0, lambda: self.gui.append_to_chat("The secure session has been terminated."))
-                self.gui.root.after(0, lambda: self.gui.append_to_chat("Waiting for a new client to connect..."))
-                self.gui.root.after(0, lambda: self.gui.append_to_chat("A new key exchange will start automatically."))
-            else:
-                # Fallback to console behavior
-                super().handle_key_exchange_reset(message_data)
-        
-        except Exception as e:
-            if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error handling key exchange reset: {e}"))
-            else:
-                print(f"Error handling key exchange reset: {e}")
-    
-    def handle_file_metadata(self, decrypted_message: str):
-        """Handle incoming file metadata with GUI dialog."""
-        try:
-            metadata = self.protocol.process_file_metadata(decrypted_message)
-            transfer_id = metadata["transfer_id"]
-            
-            # Store metadata for potential acceptance
-            self.active_file_metadata[transfer_id] = metadata
-            
-            # Show file acceptance dialog in GUI thread
-            if self.gui:
-                def show_file_dialog():
-                    result = messagebox.askyesno(
-                            "Incoming File Transfer",
-                            f"Accept file transfer?\n\n"
-                            f"Filename: {metadata['filename']}\n"
-                            f"Size: {bytes_to_human_readable(metadata['file_size'])}\n"
-                            f"Chunks: {metadata['total_chunks']}"
-                    )
-                    
-                    if result:
-                        # Send acceptance
-                        
-                        accept_msg = self.protocol.create_file_accept_message(transfer_id)
-                        send_message(self.socket, accept_msg)
-                        self.gui.file_transfer_window.add_transfer_message(
-                            f"File transfer accepted: {metadata['filename']}", transfer_id)
-                    else:
-                        # Send rejection
-                        
-                        reject_msg = self.protocol.create_file_reject_message(transfer_id)
-                        send_message(self.socket, reject_msg)
-                        self.gui.file_transfer_window.add_transfer_message("File transfer rejected.")
-                        del self.active_file_metadata[transfer_id]
-                
-                self.gui.root.after(0, show_file_dialog)
-            else:
-                # Fallback to console behavior
-                super().handle_file_metadata(decrypted_message)
-        
-        except Exception as e:
-            if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error handling file metadata: {e}"))
-            else:
-                print(f"Error handling file metadata: {e}")
-    
-    def handle_file_accept(self, decrypted_message: str):
-        """Handle file acceptance from peer with GUI updates."""
-        try:
-            
-            message = json.loads(decrypted_message)
-            transfer_id = message["transfer_id"]
-            
-            if transfer_id not in self.pending_file_transfers:
-                if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
-                        "Received acceptance for unknown file transfer"))
-                return
-            
-            transfer_info = self.pending_file_transfers[transfer_id]
-            filename = transfer_info["metadata"]["filename"]
-            
-            if self.gui:
-                self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
-                    f"File transfer accepted. Sending {filename}...", transfer_id))
-            
-            # Start sending file chunks
-            self._send_file_chunks(transfer_id, transfer_info["file_path"])
-        
-        except Exception as e:
-            if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error handling file acceptance: {e}"))
-            else:
-                print(f"Error handling file acceptance: {e}")
-    
-    def handle_file_reject(self, decrypted_message: str):
-        """Handle file rejection from peer with GUI updates."""
-        try:
-            
-            message = json.loads(decrypted_message)
-            transfer_id = message["transfer_id"]
-            reason = message.get("reason", "Unknown reason")
-            
-            if transfer_id in self.pending_file_transfers:
-                filename = self.pending_file_transfers[transfer_id]["metadata"]["filename"]
-                if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
-                        f"File transfer rejected: {filename} - {reason}", transfer_id))
-                del self.pending_file_transfers[transfer_id]
-        
-        except Exception as e:
-            if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error handling file rejection: {e}"))
-            else:
-                print(f"Error handling file rejection: {e}")
-    
-    def handle_file_chunk(self, decrypted_message: str):
-        """Handle incoming file chunk with GUI progress updates."""
-        try:
-            chunk_info = self.protocol.process_file_chunk(decrypted_message)
-            transfer_id = chunk_info["transfer_id"]
-            
-            if transfer_id not in self.active_file_metadata:
-                if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
-                        "Received chunk for unknown file transfer"))
-                return
-            
-            metadata = self.active_file_metadata[transfer_id]
-            
-            # Add chunk to protocol buffer
-            is_complete = self.protocol.add_file_chunk(
-                transfer_id,
-                chunk_info["chunk_index"],
-                chunk_info["chunk_data"],
-                metadata["total_chunks"]
-            )
-            
-            # Show progress in GUI
-            if self.gui:
-                received_chunks = len(self.protocol.received_chunks.get(transfer_id, set()))
-                # Calculate bytes transferred for speed tracking
-                # For most chunks, use SEND_CHUNK_SIZE, but for the last chunk use actual size
-                if metadata["total_chunks"] == 1:
-                    # Only one chunk, use actual size
-                    bytes_transferred = len(chunk_info["chunk_data"])
-                else:
-                    # Multiple chunks - calculate based on complete chunks and current chunk
-                    complete_chunks = received_chunks - 1  # Exclude current chunk
-                    bytes_transferred = (complete_chunks * SEND_CHUNK_SIZE) + len(chunk_info["chunk_data"])
-                
-                # Update GUI with transfer progress every 50 chunks OR for the first chunk
-                if received_chunks % 50 == 0 or received_chunks == 1:
-                    self.gui.root.after(0, lambda rc=received_chunks, tc=metadata['total_chunks'], bt=bytes_transferred, fn=metadata['filename']:
-                        self.gui.file_transfer_window.update_transfer_progress(transfer_id, fn, rc, tc, bt)
-                    )
-            
-            if is_complete:
-                # Reassemble file
-                output_path = os.path.join(os.getcwd(), metadata["filename"])
-                
-                # Handle filename conflicts
-                counter = 1
-                base_name, ext = os.path.splitext(metadata["filename"])
-                while os.path.exists(output_path):
-                    output_path = os.path.join(os.getcwd(), f"{base_name}_{counter}{ext}")
-                    counter += 1
-                
-                try:
-                    self.protocol.reassemble_file(transfer_id, output_path, metadata["file_hash"])
-                    if self.gui:
-                        self.gui.root.after(0, lambda op=output_path: self.gui.file_transfer_window.add_transfer_message(
-                            f"File received successfully: {op}", transfer_id))
-                        # Clear speed when transfer completes
-                        self.gui.root.after(0, lambda: self.gui.file_transfer_window.clear_speed())
-                    
-                    # Send completion message
-                    complete_msg = self.protocol.create_file_complete_message(transfer_id)
-                    send_message(self.socket, complete_msg)
-                    
-                except Exception as e:
-                    if self.gui:
-                        self.gui.root.after(0, lambda err=e: self.gui.file_transfer_window.add_transfer_message(
-                            f"File reassembly failed: {err}", transfer_id))
-                
-                # Clean up
-                del self.active_file_metadata[transfer_id]
-            
-        except Exception as e:
-            if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.file_transfer_window.add_transfer_message(
-                    f"Error handling file chunk: {e}"))
-            else:
-                print(f"Error handling file chunk: {e}")
-    
-    def handle_file_chunk_binary(self, chunk_info: dict):
-        """Handle incoming file chunk (optimized binary format) with GUI progress updates."""
-        try:
-            transfer_id = chunk_info["transfer_id"]
-            
-            if transfer_id not in self.active_file_metadata:
-                if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
-                        "Received chunk for unknown file transfer"))
-                return
-            
-            metadata = self.active_file_metadata[transfer_id]
-            
-            # Add chunk to protocol buffer
-            is_complete = self.protocol.add_file_chunk(
-                transfer_id,
-                chunk_info["chunk_index"],
-                chunk_info["chunk_data"],
-                metadata["total_chunks"]
-            )
-            
-            # Show progress in GUI
-            if self.gui:
-                received_chunks = len(self.protocol.received_chunks.get(transfer_id, set()))
-                # Calculate bytes transferred for speed tracking
-                # For most chunks, use SEND_CHUNK_SIZE, but for the last chunk use actual size
-                if metadata["total_chunks"] == 1:
-                    # Only one chunk, use actual size
-                    bytes_transferred = len(chunk_info["chunk_data"])
-                else:
-                    # Multiple chunks - calculate based on complete chunks and current chunk
-                    complete_chunks = received_chunks - 1  # Exclude current chunk
-                    bytes_transferred = (complete_chunks * SEND_CHUNK_SIZE) + len(chunk_info["chunk_data"])
-                
-                # Update GUI with transfer progress every 50 chunks OR for the first chunk
-                if received_chunks % 50 == 0 or received_chunks == 1:
-                    self.gui.root.after(0, lambda rc=received_chunks, tc=metadata['total_chunks'], bt=bytes_transferred, fn=metadata['filename']:
-                        self.gui.file_transfer_window.update_transfer_progress(transfer_id, fn, rc, tc, bt)
-                    )
-            
-            if is_complete:
-                # Reassemble file
-                output_path = os.path.join(os.getcwd(), metadata["filename"])
-                
-                # Handle filename conflicts
-                counter = 1
-                base_name, ext = os.path.splitext(metadata["filename"])
-                while os.path.exists(output_path):
-                    output_path = os.path.join(os.getcwd(), f"{base_name}_{counter}{ext}")
-                    counter += 1
-                
-                try:
-                    self.protocol.reassemble_file(transfer_id, output_path, metadata["file_hash"])
-                    if self.gui:
-                        self.gui.root.after(0, lambda op=output_path: self.gui.file_transfer_window.add_transfer_message(
-                            f"File received successfully: {op}", transfer_id))
-                        # Clear speed when transfer completes
-                        self.gui.root.after(0, lambda: self.gui.file_transfer_window.clear_speed())
-                    
-                    # Send completion message
-                    complete_msg = self.protocol.create_file_complete_message(transfer_id)
-                    send_message(self.socket, complete_msg)
-                    
-                except Exception as e:
-                    if self.gui:
-                        self.gui.root.after(0, lambda err=e: self.gui.file_transfer_window.add_transfer_message(
-                            f"File reassembly failed: {err}", transfer_id))
-                
-                # Clean up
-                del self.active_file_metadata[transfer_id]
-            
-        except Exception as e:
-            if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.file_transfer_window.add_transfer_message(
-                    f"Error handling binary file chunk: {e}"))
-            else:
-                print(f"Error handling binary file chunk: {e}")
-    
-    def handle_file_complete(self, decrypted_message: str):
-        """Handle file transfer completion notification with GUI updates."""
-        try:
-            
-            message = json.loads(decrypted_message)
-            transfer_id = message["transfer_id"]
-            
-            if transfer_id in self.pending_file_transfers:
-                filename = self.pending_file_transfers[transfer_id]["metadata"]["filename"]
-                if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
-                        f"File transfer completed: {filename}", transfer_id))
-                    # Clear speed when transfer completes
-                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.clear_speed())
-                del self.pending_file_transfers[transfer_id]
-        
-        except Exception as e:
-            if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.file_transfer_window.add_transfer_message(
-                    f"Error handling file completion: {e}"))
-            else:
-                print(f"Error handling file completion: {e}")
-    
     def handle_keepalive(self, message_data: bytes) -> None:
-        """Handle keepalive messages from the server with GUI updates.
-        
-        Args:
-            message_data (bytes): The raw keepalive message data.
-        """
+        """Handle keepalive messages from the server with GUI updates."""
         try:
-            # Update the last keepalive received time
-            self.last_keepalive_received = time.time()
-            
-            # Update debug info if GUI exists
-            if self.gui:
-                self.gui.root.after(0, lambda: self.gui.update_debug_info())
-            
-            # Only respond if the flag is set
+            # Call parent method to handle the keepalive
             if self.respond_to_keepalive:
-                # Create keepalive response message
-                response_message = {
-                    "version": PROTOCOL_VERSION,
-                    "type": MSG_TYPE_KEEP_ALIVE_RESPONSE
-                }
-                response_data = json.dumps(response_message).encode('utf-8')
-                
-                # Send response to server with socket lock to prevent conflicts with file uploads
-                with self.socket_lock:
-                    send_message(self.socket, response_data)
-                
-                # Update the last keepalive sent time
+                super().handle_keepalive(message_data)
                 self.last_keepalive_sent = time.time()
             
+            # Update last keepalive received time
+            self.last_keepalive_received = time.time()
+            
+            # Debug logging
+            if self.gui:
+                self.gui.root.after(0, lambda: self.gui.append_to_chat(
+                    "DEBUG: Keepalive received from server", is_message=False))
+                
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error handling keepalive: {e}"))
+                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Keepalive error: {e}"))
             else:
-                print(f"\nError handling keepalive: {e}")
-    
-    def _send_file_chunks(self, transfer_id: str, file_path: str):
-        """Send file chunks to peer with GUI progress updates."""
-        try:
-            # Get total chunks from metadata (already calculated during file_metadata creation)
-            total_chunks = self.pending_file_transfers[transfer_id]["metadata"]["total_chunks"]
-            chunk_generator = self.protocol.chunk_file(file_path)
-            bytes_transferred = 0
-            
-            # Pause interval to allow keepalive responses
-            pause_interval = 10  # Pause after every 10 chunks
-            
-            for i, chunk in enumerate(chunk_generator):
-                chunk_msg = self.protocol.create_file_chunk_message(transfer_id, i, chunk)
-                
-                # Use socket lock to prevent conflicts with keepalive responses
-                with self.socket_lock:
-                    send_message(self.socket, chunk_msg)
-                
-                # Update bytes transferred
-                bytes_transferred += len(chunk)
-                
-                # Show progress in GUI every 10 chunks
-                if self.gui:
-                    if (i + 1) % 50 == 0:  # Update every 50 chunks
-                        filename = os.path.basename(file_path)
-                        self.gui.root.after(0, lambda curr=i + 1, total=total_chunks, bytes_sent=bytes_transferred,
-                                              fn=filename:
-                        self.gui.file_transfer_window.update_transfer_progress(transfer_id, fn, curr, total,
-                                                                               bytes_sent)
-                                    )
-                
-                # Periodically pause to allow keepalive responses to be sent
-                if (i + 1) % pause_interval == 0:
-                    time.sleep(0.01)  # Short pause (10ms) to allow other threads to run
-            
-            # Final update to ensure 100% progress is shown
+                print(f"Keepalive error: {e}")
+
+    def _send_delivery_confirmation(self, confirmed_counter: int):
+        """Send delivery confirmation - override to add debug control."""
+        if self.send_delivery_confirmations:
+            super()._send_delivery_confirmation(confirmed_counter)
+        else:
+            # Debug flag is False, skip sending confirmation for debugging
             if self.gui:
-                filename = os.path.basename(file_path)
-                self.gui.root.after(0, lambda curr=total_chunks, total=total_chunks, bytes_sent=bytes_transferred,
-                                              fn=filename:
-                self.gui.file_transfer_window.update_transfer_progress(transfer_id, fn, curr, total,
-                                                                       bytes_sent)
-                                    )
-                self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
-                    "File chunks sent successfully.", transfer_id))
-                # Clear speed when transfer completes
-                self.gui.root.after(0, lambda: self.gui.file_transfer_window.clear_speed())
-        
-        except Exception as e:
-            if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.file_transfer_window.add_transfer_message(
-                    f"Error sending file chunks: {e}", transfer_id))
-            else:
-                print(f"Error sending file chunks: {e}")
-    
+                self.gui.root.after(0, lambda: self.gui.append_to_chat(
+                    f"Delivery confirmation suppressed", is_message=False))
+
     def send_message(self, text: str) -> bool | None:
         """Encrypt and send a chat message with optional simulated latency and packet loss."""
-        if not self.key_exchange_complete:
-            if self.gui:
-                self.gui.root.after(0, lambda: self.gui.append_to_chat("Cannot send messages - key exchange not complete"))
-            return False
+        if not self.socket:
+            return None
         
-        # Check verification status and warn user
-        allowed, status_msg = self.protocol.should_allow_communication()
-        if not allowed:
-            if self.gui:
-                self.gui.root.after(0, lambda msg=status_msg: self.gui.append_to_chat(f"Cannot send message: {msg}"))
-            return False
-        
-        if not self.protocol.is_peer_key_verified() and self.gui:
-            self.gui.root.after(0, lambda: self.gui.append_to_chat("Sending message to unverified peer", is_message=False))
-            
         try:
-            encrypted_data = self.protocol.encrypt_message(text)
+            # Simulate network latency if configured
+            if self.simulated_latency > 0:
+                time.sleep(self.simulated_latency)
             
-            # Check for simulated packet loss
-            if hasattr(self, 'packet_loss_percentage') and self.packet_loss_percentage > 0:
-                import random
-                if random.random() * 100 < self.packet_loss_percentage:
-                    # Simulate packet loss by not sending the message
+            # Simulate packet loss
+            if self.packet_loss_percentage > 0:
+                if random.randint(1, 100) <= self.packet_loss_percentage:
                     if self.gui:
                         self.gui.root.after(0, lambda: self.gui.append_to_chat(
-                            f"Simulated packet loss - message dropped ({self.packet_loss_percentage}% loss rate)", 
-                            is_message=False))
-                    return True  # Return True to indicate "success" even though we dropped the packet
+                            f"DEBUG: Packet loss simulated ({self.packet_loss_percentage}%)", is_message=False))
+                    return None
             
-            # Apply simulated latency if set
-            if hasattr(self, 'simulated_latency') and self.simulated_latency > 0:
-                latency = self.simulated_latency
-                
-                if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.append_to_chat(
-                        f"Simulating {latency}ms network latency...", is_message=False))
-                
-                # Create a thread to send the message after the simulated latency
-                def delayed_send():
-                    time.sleep(latency / 1000.0)  # Convert ms to seconds
-                    # Use socket lock to prevent conflicts with keepalive responses and file uploads
-                    with self.socket_lock:
-                        send_message(self.socket, encrypted_data)
-                    
-                    if self.gui:
-                        self.gui.root.after(0, lambda: self.gui.append_to_chat(
-                            f"Message sent after {latency}ms delay", is_message=False))
-                
-                threading.Thread(target=delayed_send, daemon=True).start()
-            else:
-                # Send immediately without delay
-                # Use socket lock to prevent conflicts with keepalive responses and file uploads
-                with self.socket_lock:
-                    send_message(self.socket, encrypted_data)
-                
-            return True
-            
+            # Call parent method to send the message
+            return super().send_message(text)
+        
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Failed to send message: {e}"))
-            return False
+                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error sending message: {e}"))
+            else:
+                print(f"Error sending message: {e}")
+            return None
 
 
 def main():
     """Main function to run the GUI chat client."""
     root = TkinterDnD.Tk()
-
+    root.title("Secure Chat Client (DEBUG)")
+    
+    # Load theme colors
+    theme_colors = load_theme_colors()
+    
     # Create GUI
-    gui = ChatGUI(root)
-
+    gui = DebugChatGUI(root, theme_colors)
+    
     # Override the client creation to use our GUI-aware version
-    original_connect = gui.connect_to_server
-
     def gui_connect():
         try:
             host = gui.host_entry.get().strip() or "localhost"
             port = int(gui.port_entry.get().strip() or "16384")
-
+            
             gui.append_to_chat(f"Connecting to {host}:{port}...")
-
-            # Create GUI-aware client instance
-            gui.client = GUISecureChatClient(host, port, gui)
-
+            
+            # Create Debug GUI-aware client instance
+            gui.client = DebugGUISecureChatClient(host, port, gui)
+            
             # Start connection in a separate thread
             def connect_thread():
                 try:
@@ -3101,18 +1722,18 @@ def main():
                         gui.start_chat_monitoring()
                     else:
                         gui.root.after(0, lambda: gui.append_to_chat("Failed to connect to server"))
-                except Exception as e:
-                    gui.root.after(0, lambda e=e: gui.append_to_chat(f"Connection error: {e}"))
-
+                except Exception as er:
+                    gui.root.after(0, lambda error=er: gui.append_to_chat(f"Connection error: {error}"))
+            
             threading.Thread(target=connect_thread, daemon=True).start()
-
+        
         except ValueError:
             messagebox.showerror("Error", "Invalid port number")
         except Exception as e:
             gui.append_to_chat(f"Connection error: {e}")
-
+    
     gui.connect_to_server = gui_connect
-
+    
     # Start the GUI
     root.mainloop()
 

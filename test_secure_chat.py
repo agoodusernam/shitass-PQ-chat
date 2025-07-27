@@ -61,7 +61,7 @@ class TestSecureChatProtocol(unittest.TestCase):
         response_message_bytes = self.protocol2.create_key_exchange_response(ciphertext)
         
         # Client 1 processes response message
-        shared_secret1 = self.protocol1.process_key_exchange_response(response_message_bytes, private_key1)
+        shared_secret1, _ = self.protocol1.process_key_exchange_response(response_message_bytes, private_key1)
         
         # Both clients should have the same shared secret
         self.assertEqual(shared_secret1, shared_secret2)

@@ -9,6 +9,8 @@ import time
 import winsound
 from client import SecureChatClient
 import json
+import tempfile
+import uuid
 from plyer import notification
 from PIL import Image, ImageTk, ImageGrab
 from shared import bytes_to_human_readable, send_message, MSG_TYPE_FILE_METADATA, MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT,\
@@ -436,12 +438,12 @@ class ChatGUI:
         self.chat_display.dnd_bind('<<Drop>>', self.handle_drop)
 
         # Input frame
-        input_frame = tk.Frame(main_frame, bg=self.BG_COLOR)
-        input_frame.pack(fill=tk.X) # type: ignore
+        self.input_frame = tk.Frame(main_frame, bg=self.BG_COLOR)
+        self.input_frame.pack(fill=tk.X) # type: ignore
 
         # Message input
         self.message_entry = tk.Text(
-            input_frame, height=1, font=("Consolas", 10), bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR, width=15,
+            self.input_frame, height=1, font=("Consolas", 10), bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR, width=15,
             insertbackground=self.FG_COLOR, relief=tk.FLAT, wrap=tk.NONE # type: ignore
         )
         self.message_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10)) # type: ignore
@@ -451,7 +453,7 @@ class ChatGUI:
 
         # Ephemeral mode button (with gap before Send File)
         self.ephemeral_btn = tk.Button(
-            input_frame, text="Ephemeral", command=self.toggle_ephemeral_mode,
+            self.input_frame, text="Ephemeral", command=self.toggle_ephemeral_mode,
             bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT, # type: ignore
             activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
             font=("Consolas", 9)
@@ -460,7 +462,7 @@ class ChatGUI:
 
         # File Transfer window button
         self.file_transfer_btn = tk.Button(
-            input_frame, text="Transfers", command=self.show_file_transfer_window,
+            self.input_frame, text="Transfers", command=self.show_file_transfer_window,
             bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT, # type: ignore
             activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
             font=("Consolas", 9)
@@ -469,7 +471,7 @@ class ChatGUI:
 
         # Send File button
         self.send_file_btn = tk.Button(
-            input_frame, text="Send File", command=self.send_file,
+            self.input_frame, text="Send File", command=self.send_file,
             bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT, # type: ignore
             activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR
         )
@@ -477,7 +479,7 @@ class ChatGUI:
 
         # Send button
         self.send_btn = tk.Button(
-            input_frame, text="Send", command=self.send_message,
+            self.input_frame, text="Send", command=self.send_message,
             bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT, # type: ignore
             activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR
         )
@@ -941,8 +943,7 @@ Do the fingerprints match?"""
     def handle_clipboard_image(self, image):
         """Handle pasted clipboard image by saving to temp file and sending."""
         try:
-            import tempfile
-            import uuid
+
             
             # Create a temporary file with a unique name
             temp_dir = tempfile.gettempdir()

@@ -4,6 +4,7 @@ import os
 import json
 import struct
 import hashlib
+import shutil
 
 from kyber_py.ml_kem import ML_KEM_1024
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -222,8 +223,8 @@ class SecureChatProtocol:
         # Load the wordlist
         wordlist = self._load_wordlist()
         
-        # Convert hash to word-based fingerprint (10 words for usability)
-        words = self._hash_to_words(key_hash, wordlist, num_words=15)
+        # Convert hash to word-based fingerprint
+        words = self._hash_to_words(key_hash, wordlist, num_words=20)
         
         # Format the words in a user-friendly way
         # Display 5 words per line for better readability
@@ -235,8 +236,8 @@ class SecureChatProtocol:
         
     
         
-    
-    def _load_wordlist(self) -> list:
+    @staticmethod
+    def _load_wordlist() -> list:
         """Load the EFF large wordlist."""
         try:
             wordlist_path = os.path.join(os.path.dirname(__file__), 'eff_large_wordlist.txt')
@@ -246,7 +247,8 @@ class SecureChatProtocol:
             # Fallback if wordlist file is not found
             raise FileNotFoundError("eff_large_wordlist.txt not found. Please ensure the wordlist file is in the same directory as shared.py")
     
-    def _hash_to_words(self, hash_bytes: bytes, wordlist: list, num_words: int = 10) -> list:
+    @staticmethod
+    def _hash_to_words(hash_bytes: bytes, wordlist: list, num_words: int = 10) -> list:
         """Convert hash bytes to a list of words from the wordlist."""
         # Convert hash to integer for easier manipulation
         hash_int = int.from_bytes(hash_bytes, byteorder='big')
@@ -312,7 +314,8 @@ class SecureChatProtocol:
         }
         return json.dumps(message).encode('utf-8')
     
-    def process_key_verification_message(self, data: bytes) -> dict:
+    @staticmethod
+    def process_key_verification_message(data: bytes) -> dict:
         """Process a key verification message from peer."""
         try:
             message = json.loads(data.decode('utf-8'))
@@ -336,7 +339,8 @@ class SecureChatProtocol:
         
         return True, "Secure communication established with verified peer"
     
-    def create_key_exchange_init(self, public_key: bytes) -> bytes:
+    @staticmethod
+    def create_key_exchange_init(public_key: bytes) -> bytes:
         """Create initial key exchange message."""
         message = {
             "version": PROTOCOL_VERSION,
@@ -438,10 +442,18 @@ class SecureChatProtocol:
         # Ratchet the send chain key forward for the next message
         self.send_chain_key = self._ratchet_chain_key(self.send_chain_key, self.message_counter)
         
-        # Encrypt with AES-GCM using the unique message key
+        # Create AAD from message metadata for authentication
+        aad_data = {
+            "version": PROTOCOL_VERSION,
+            "type": MSG_TYPE_ENCRYPTED_MESSAGE,
+            "counter": self.message_counter
+        }
+        aad = json.dumps(aad_data, sort_keys=True).encode('utf-8')
+        
+        # Encrypt with AES-GCM using the unique message key and AAD
         aesgcm: AESGCM = AESGCM(message_key)
         nonce: bytes = os.urandom(12)
-        ciphertext: bytes = aesgcm.encrypt(nonce, plaintext.encode('utf-8'), None)
+        ciphertext: bytes = aesgcm.encrypt(nonce, plaintext.encode('utf-8'), aad)
         
         # Securely delete the message key
         message_key = b'\x00' * len(message_key)
@@ -459,58 +471,63 @@ class SecureChatProtocol:
         return json.dumps(encrypted_message).encode('utf-8')
     
     def decrypt_message(self, data: bytes) -> str:
-        """Decrypt and authenticate a message using perfect forward secrecy."""
+        """Decrypt and authenticate a message using perfect forward secrecy with proper state management."""
         if not self.shared_key or not self.receive_chain_key:
             raise ValueError("No shared key or receive chain key established")
-
+        
         try:
             message = json.loads(data.decode('utf-8'))
             if message["type"] != MSG_TYPE_ENCRYPTED_MESSAGE:
                 raise ValueError("Invalid message type")
-
+            
             nonce = base64.b64decode(message["nonce"])
             ciphertext = base64.b64decode(message["ciphertext"])
             counter = message["counter"]
-
+            version = message["version"]
+            
             # Check for replay attacks or very old messages
             if counter <= self.peer_counter:
-                raise ValueError("Replay attack or out-of-order message detected")
-
-            # Optimized chain key ratcheting - avoid expensive loops
-            # Calculate how many steps we need to advance
+                raise ValueError(
+                    f"Replay attack or out-of-order message detected. Expected > {self.peer_counter}, got {counter}")
+            
+            # IMPORTANT: Don't modify state until decryption succeeds
+            # Calculate chain key state WITHOUT modifying current state
             steps_to_advance = counter - self.peer_counter
             
             if steps_to_advance > 100:
-                # For large gaps, use a more efficient approach
-                # We'll compute the chain key state directly using repeated squaring
-                derivation_chain_key = self._fast_ratchet_chain_key(self.receive_chain_key, self.peer_counter, counter - 1)
+                temp_chain_key = self._fast_ratchet_chain_key(self.receive_chain_key, self.peer_counter, counter - 1)
             else:
-                # For small gaps, use the original approach
-                derivation_chain_key = self.receive_chain_key
+                temp_chain_key = self.receive_chain_key
                 for i in range(self.peer_counter + 1, counter):
-                    derivation_chain_key = self._ratchet_chain_key(derivation_chain_key, i)
-
+                    temp_chain_key = self._ratchet_chain_key(temp_chain_key, i)
+            
             # Derive the message key for the current message
-            message_key = self._derive_message_key(derivation_chain_key, counter)
-
-            # Ratchet the chain key forward to the new state
-            temp_chain_key = self._ratchet_chain_key(derivation_chain_key, counter)
-
-
-            # Decrypt with the derived message key
+            message_key = self._derive_message_key(temp_chain_key, counter)
+            
+            # Calculate what the new chain key state WOULD be
+            new_chain_key = self._ratchet_chain_key(temp_chain_key, counter)
+            
+            # Create AAD from message metadata for authentication verification
+            aad_data = {
+                "version": version,
+                "type": MSG_TYPE_ENCRYPTED_MESSAGE,
+                "counter": counter
+            }
+            aad = json.dumps(aad_data, sort_keys=True).encode('utf-8')
+            
+            # Decrypt with the derived message key and verify AAD
             aesgcm = AESGCM(message_key)
-            decrypted_data = aesgcm.decrypt(nonce, ciphertext, None)
-
-            # If decryption is successful, commit the new state
-            self.receive_chain_key = temp_chain_key
+            decrypted_data = aesgcm.decrypt(nonce, ciphertext, aad)
+            
+            self.receive_chain_key = new_chain_key
             self.peer_counter = counter
-
+            
             # Securely delete the message key
             message_key = b'\x00' * len(message_key)
             del message_key
-
+            
             return decrypted_data.decode('utf-8')
-
+        
         except ValueError as e:
             raise e
         except Exception as e:
@@ -904,7 +921,6 @@ class SecureChatProtocol:
         except Exception as e:
             # If moving fails, try copying instead
             try:
-                import shutil
                 shutil.copy2(temp_file_path, output_path)
                 os.remove(temp_file_path)
             except Exception as copy_error:
