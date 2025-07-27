@@ -8,11 +8,13 @@ import time
 import winsound
 from client import SecureChatClient
 import json
+from plyer import notification
 from PIL import Image, ImageTk, ImageGrab
 from shared import bytes_to_human_readable, send_message, MSG_TYPE_FILE_METADATA, MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT,\
     MSG_TYPE_FILE_COMPLETE, MSG_TYPE_FILE_CHUNK, MSG_TYPE_DELIVERY_CONFIRMATION, SEND_CHUNK_SIZE
 
-GUI_VERSION = 14
+
+GUI_VERSION = 16
 
 def get_image_from_clipboard() -> Image.Image | None:
     """Get an image from the clipboard."""
@@ -275,6 +277,9 @@ class ChatGUI:
         # Notification sound settings
         self.notification_enabled = True
         self.window_focused = True  # Track if window is focused
+        
+        # Windows system notification settings
+        self.windows_notifications_enabled = True
 
         # File transfer window with theme colors
         self.file_transfer_window = FileTransferWindow(self.root)
@@ -324,6 +329,32 @@ class ChatGUI:
         except Exception:
             pass
 
+    def show_windows_notification(self, message_text):
+        """Show a Windows system notification if the window is not focused."""
+        if not self.windows_notifications_enabled or self.window_focused:
+            return
+            
+        try:
+            # Extract the actual message content (remove "Other user: " prefix)
+            display_message = message_text.replace("Other user: ", "")
+            
+            # Show notification in a separate thread to avoid blocking
+            def show_notification():
+                try:
+                    notification.notify(
+                        title="Secure Chat Notification",
+                        message=display_message,
+                        app_name="Secure Chat Client",
+                        timeout=5,  # Notification will disappear after 5 seconds
+                        app_icon=None  # You can specify an icon file if desired
+                    )
+                except Exception:
+                    pass
+            
+            threading.Thread(target=show_notification, daemon=True).start()
+        except Exception:
+            pass
+
     def create_widgets(self):
         """Create the GUI widgets."""
         # Main frame
@@ -358,6 +389,24 @@ class ChatGUI:
             activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR
         )
         self.connect_btn.pack(side=tk.LEFT, padx=(10, 0)) # type: ignore
+
+        # Sound toggle button
+        self.sound_btn = tk.Button(
+            conn_frame, text="Notif sounds ON", command=self.toggle_sound_notifications,
+            bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT, # type: ignore
+            activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
+            font=("Consolas", 10)
+        )
+        self.sound_btn.pack(side=tk.LEFT, padx=(10, 0)) # type: ignore
+
+        # Windows notifications toggle button
+        self.windows_notif_btn = tk.Button(
+            conn_frame, text="System notifs ON", command=self.toggle_windows_notifications,
+            bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT, # type: ignore
+            activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
+            font=("Consolas", 10)
+        )
+        self.windows_notif_btn.pack(side=tk.LEFT, padx=(10, 0)) # type: ignore
 
         # Status indicator (top right)
         self.status_label = tk.Label(
@@ -462,9 +511,10 @@ class ChatGUI:
         else:
             self.chat_display.insert(tk.END, f"[{formatted_time}] {text}\n")
         
-        # Play notification sound if this is a message from another user
+        # Play notification sound and show Windows notification if this is a message from another user
         if is_message and text.startswith("Other user:"):
             self.play_notification_sound()
+            self.show_windows_notification(text)
         
         self.chat_display.see(tk.END)
         self.chat_display.config(state=tk.DISABLED) # type: ignore
@@ -506,9 +556,10 @@ class ChatGUI:
             if self.ephemeral_mode and is_message:
                 self.ephemeral_messages[tag_id] = time.time()
         
-        # Play notification sound if this is a message from another user
+        # Play notification sound and show Windows notification if this is a message from another user
         if is_message and text.startswith("Other user:"):
             self.play_notification_sound()
+            self.show_windows_notification(text)
         
         self.chat_display.see(tk.END)
         self.chat_display.config(state=tk.DISABLED) # type: ignore
@@ -583,6 +634,23 @@ class ChatGUI:
             self.connect_to_server()
         else:
             self.disconnect_from_server()
+
+    def toggle_sound_notifications(self):
+        """Toggle sound notifications on/off."""
+        self.notification_enabled = not self.notification_enabled
+        if self.notification_enabled:
+            self.sound_btn.config(text="Notif sounds ON")
+        else:
+            self.sound_btn.config(text="Notif sounds OFF")
+
+    def toggle_windows_notifications(self):
+        """Toggle Windows system notifications on/off."""
+        self.windows_notifications_enabled = not self.windows_notifications_enabled
+        if hasattr(self, 'windows_notif_btn'):
+            if self.windows_notifications_enabled:
+                self.windows_notif_btn.config(text="Win notifs ON")
+            else:
+                self.windows_notif_btn.config(text="Win notifs OFF")
 
     def connect_to_server(self):
         """Connect to the chat server."""
