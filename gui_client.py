@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import scrolledtext, messagebox, filedialog
+from tkinterdnd2 import DND_FILES, TkinterDnD
 import threading
 import sys
 import io
@@ -14,7 +15,7 @@ from shared import bytes_to_human_readable, send_message, MSG_TYPE_FILE_METADATA
     MSG_TYPE_FILE_COMPLETE, MSG_TYPE_FILE_CHUNK, MSG_TYPE_DELIVERY_CONFIRMATION, SEND_CHUNK_SIZE
 
 
-GUI_VERSION = 16
+GUI_VERSION = 17
 
 def get_image_from_clipboard() -> Image.Image | None:
     """Get an image from the clipboard."""
@@ -428,6 +429,8 @@ class ChatGUI:
             relief=tk.FLAT
         )
         self.chat_display.pack(fill=tk.BOTH, expand=True, pady=(0, 10)) # type: ignore
+        self.chat_display.drop_target_register(DND_FILES)
+        self.chat_display.dnd_bind('<<Drop>>', self.handle_drop)
 
         # Input frame
         input_frame = tk.Frame(main_frame, bg=self.BG_COLOR)
@@ -486,6 +489,46 @@ class ChatGUI:
         
         # Start ephemeral message cleanup thread
         self.start_ephemeral_cleanup()
+
+    def handle_drop(self, event):
+        """Handle file drop events."""
+        if not self.connected or not self.client:
+            return
+
+        if not hasattr(self.client, 'verification_complete') or not self.client.verification_complete:
+            self.append_to_chat("Cannot send files - verification not complete")
+            return
+
+        # The event.data attribute contains a string of file paths
+        # It can be a single path or multiple paths separated by spaces
+        # File paths with spaces are enclosed in curly braces {}
+        file_paths_str = event.data
+        
+        # Simple parsing for now, assuming single file drop
+        # A more robust parser would be needed for multiple files with spaces
+        file_path = file_paths_str.strip()
+        if file_path.startswith('{') and file_path.endswith('}'):
+            file_path = file_path[1:-1]
+
+        if os.path.exists(file_path):
+            self.confirm_and_send_file(file_path)
+
+    def confirm_and_send_file(self, file_path):
+        """Ask for confirmation and then send the file."""
+        try:
+            file_size = os.path.getsize(file_path)
+            file_name = os.path.basename(file_path)
+            
+            result = messagebox.askyesno(
+                "Send File",
+                f"Send file '{file_name}' ({bytes_to_human_readable(file_size)})?"
+            )
+            
+            if result:
+                self.append_to_chat(f"Sending file: {file_name}")
+                self.client.send_file(file_path)
+        except Exception as e:
+            self.append_to_chat(f"File send error: {e}")
 
     def setup_output_redirection(self):
         """Setup output redirection to capture print statements."""
@@ -856,19 +899,8 @@ Do the fingerprints match?"""
             
             if file_path:
                 # Get file info
-                file_size = os.path.getsize(file_path)
-                file_name = os.path.basename(file_path)
+                self.confirm_and_send_file(file_path)
                 
-                # Confirm file sending
-                result = messagebox.askyesno(
-                    "Send File",
-                    f"Send file '{file_name}' ({bytes_to_human_readable(file_size)})?"
-                )
-                
-                if result:
-                    self.append_to_chat(f"Sending file: {file_name}")
-                    self.client.send_file(file_path)
-                    
         except Exception as e:
             self.append_to_chat(f"File send error: {e}")
 
@@ -1597,7 +1629,8 @@ def load_theme_colors():
 
 def main():
     """Main function to run the GUI chat client."""
-    root = tk.Tk()
+    root = TkinterDnD.Tk()
+    root.title("Secure Chat Client")
     
     # Load theme colors
     theme_colors = load_theme_colors()
