@@ -11,7 +11,7 @@ import os
 import time
 from shared import SecureChatProtocol, send_message, receive_message, MSG_TYPE_FILE_METADATA, \
     MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT, MSG_TYPE_FILE_CHUNK, MSG_TYPE_FILE_COMPLETE, MSG_TYPE_KEY_EXCHANGE_RESET, \
-    MSG_TYPE_KEEP_ALIVE, MSG_TYPE_KEEP_ALIVE_RESPONSE, MSG_TYPE_DELIVERY_CONFIRMATION, MSG_TYPE_EMERGENCY_CLOSE, PROTOCOL_VERSION, SEND_CHUNK_SIZE
+    MSG_TYPE_KEEP_ALIVE, MSG_TYPE_KEEP_ALIVE_RESPONSE, MSG_TYPE_DELIVERY_CONFIRMATION, MSG_TYPE_EMERGENCY_CLOSE, PROTOCOL_VERSION
 
 class SecureChatClient:
     
@@ -163,14 +163,14 @@ class SecureChatClient:
                 elif message_type == MSG_TYPE_KEY_EXCHANGE_RESET:
                     self.handle_key_exchange_reset(message_data)
                 elif message_type == MSG_TYPE_KEEP_ALIVE:
-                    self.handle_keepalive(message_data)
+                    self.handle_keepalive()
                 elif message_type == MSG_TYPE_DELIVERY_CONFIRMATION:
                     if self.key_exchange_complete:
                         self.handle_delivery_confirmation(message_data)
                 elif message_type == MSG_TYPE_EMERGENCY_CLOSE:
                     self.handle_emergency_close(message_data)
                 elif message.get("type") == "key_exchange_complete":
-                    self.handle_key_exchange_complete(message)
+                    self.handle_key_exchange_complete()
                 elif message.get("type") == "initiate_key_exchange":
                     self.initiate_key_exchange()
                 else:
@@ -183,11 +183,8 @@ class SecureChatClient:
         except Exception as e:
             print(f"\nError handling message: {e}")
             
-    def handle_keepalive(self, message_data: bytes) -> None:
+    def handle_keepalive(self) -> None:
         """Handle keepalive messages from the server.
-        
-        Args:
-            message_data (bytes): The raw keepalive message data.
         """
         try:
             # Create keepalive response message
@@ -295,7 +292,7 @@ class SecureChatClient:
         except Exception as e:
             print(f"Key exchange response error: {e}")
     
-    def handle_key_exchange_complete(self, message: dict) -> None:
+    def handle_key_exchange_complete(self) -> None:
         """Handle key exchange completion notification."""
         self.key_exchange_complete = True
         self.start_key_verification()
@@ -473,13 +470,20 @@ class SecureChatClient:
             close_message = message.get("message", "Emergency close received")
             print(f"\n{'='*50}")
             print("EMERGENCY CLOSE RECEIVED")
-            print(f"The other client has activated emergency close.")
+            print("The other client has activated emergency close.")
             print(f"Message: {close_message}")
             print("Connection will be terminated immediately.")
             print(f"{'='*50}")
             
             # Immediately disconnect
             self.disconnect()
+            self.key_exchange_complete = False
+            self.verification_complete = False
+            self.protocol.reset_key_exchange()
+            
+            # Clear any pending file transfers
+            self.pending_file_transfers.clear()
+            self.active_file_metadata.clear()
             
         except Exception as e:
             print(f"Error handling emergency close: {e}")
@@ -506,6 +510,7 @@ class SecureChatClient:
             
         except Exception as e:
             print(f"Failed to send message: {e}")
+            return None
     
     def send_file(self, file_path: str) -> None:
         """Send a file to the other client."""
@@ -541,7 +546,7 @@ class SecureChatClient:
             self.active_file_metadata[transfer_id] = metadata
             
             # Prompt user for acceptance
-            print(f"\nIncoming file transfer:")
+            print("\nIncoming file transfer:")
             print(f"  Filename: {metadata['filename']}")
             print(f"  Size: {metadata['file_size']} bytes")
             print(f"  Chunks: {metadata['total_chunks']}")
@@ -554,14 +559,13 @@ class SecureChatClient:
                         accept_msg = self.protocol.create_file_accept_message(transfer_id)
                         send_message(self.socket, accept_msg)
                         print("File transfer accepted. Waiting for file...")
-                        break
+                        
                     elif response in ['no', 'n']:
                         # Send rejection
                         reject_msg = self.protocol.create_file_reject_message(transfer_id)
                         send_message(self.socket, reject_msg)
                         print("File transfer rejected.")
                         del self.active_file_metadata[transfer_id]
-                        break
                     else:
                         print("Please enter 'yes' or 'no'")
                 except (EOFError, KeyboardInterrupt):
@@ -753,7 +757,7 @@ class SecureChatClient:
                         message = input()
                         if message.lower() == '/quit':
                             break
-                        elif message.lower() == '/verify':
+                        if message.lower() == '/verify':
                             self.start_key_verification()
                         elif message.lower() == '/help':
                             print("Commands:")
