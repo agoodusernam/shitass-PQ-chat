@@ -105,6 +105,7 @@ class SecureChatProtocol:
         self.file_transfers: dict = {}  # Track ongoing file transfers
         self.received_chunks: dict = {}  # Track received chunk indices (set of indices per transfer)
         self.temp_file_paths: dict = {}  # Track temporary file paths for receiving chunks
+        self.open_file_handles: dict = {}  # Track open file handles for active transfers
         
     def reset_key_exchange(self):
         """Reset all cryptographic state to initial values for key exchange restart."""
@@ -120,6 +121,14 @@ class SecureChatProtocol:
         # Clear file transfer state as well
         self.file_transfers = {}
         self.received_chunks = {}
+        
+        # Close any open file handles
+        for file_handle in self.open_file_handles.values():
+            try:
+                file_handle.close()
+            except Exception:
+                pass  # Ignore errors during cleanup
+        self.open_file_handles = {}
         
         # Clean up any temporary files
         for temp_path in self.temp_file_paths.values():
@@ -849,6 +858,7 @@ class SecureChatProtocol:
         
         Instead of storing chunks in memory, this method writes them directly to a temporary file.
         It keeps track of which chunks have been received using a set of indices.
+        Uses persistent file handles to avoid the performance overhead of opening/closing files for each chunk.
         """
         # Initialize tracking structures if this is the first chunk for this transfer
         if transfer_id not in self.received_chunks:
@@ -858,36 +868,51 @@ class SecureChatProtocol:
             temp_file_path = os.path.join(os.getcwd(), f".tmp_transfer_{transfer_id}")
             self.temp_file_paths[transfer_id] = temp_file_path
             
-            # Create an empty file
-            with open(temp_file_path, 'wb'):
-                pass
+            # Create and open the file for writing, keep the handle open
+            self.open_file_handles[transfer_id] = open(temp_file_path, 'w+b')
         
-        # Get the temporary file path
-        temp_file_path = self.temp_file_paths[transfer_id]
+        # Get the open file handle
+        file_handle = self.open_file_handles[transfer_id]
         
         # Write the chunk to the temporary file at the correct position
-        with open(temp_file_path, 'r+b') as f:
-            # Calculate the position based on chunk index and send chunk size
-            position = chunk_index * SEND_CHUNK_SIZE
-            f.seek(position)
-            f.write(chunk_data)
+        # Calculate the position based on chunk index and send chunk size
+        position = chunk_index * SEND_CHUNK_SIZE
+        file_handle.seek(position)
+        file_handle.write(chunk_data)
+        file_handle.flush()  # Ensure data is written to disk
         
         # Mark this chunk as received
         self.received_chunks[transfer_id].add(chunk_index)
         
         # Check if all chunks are received
-        return len(self.received_chunks[transfer_id]) == total_chunks
+        is_complete = len(self.received_chunks[transfer_id]) == total_chunks
+        
+        # If transfer is complete, close the file handle
+        if is_complete:
+            file_handle.close()
+            del self.open_file_handles[transfer_id]
+        
+        return is_complete
     
     def reassemble_file(self, transfer_id: str, output_path: str, expected_hash: str) -> bool:
         """Finalize file transfer and verify integrity.
         
         Since chunks are already written to a temporary file, this method:
-        1. Calculates the hash of the temporary file
-        2. Verifies the hash against the expected hash
-        3. Moves the temporary file to the final output path
+        1. Ensures any open file handle is closed
+        2. Calculates the hash of the temporary file
+        3. Verifies the hash against the expected hash
+        4. Moves the temporary file to the final output path
         """
         if transfer_id not in self.received_chunks or transfer_id not in self.temp_file_paths:
             raise ValueError(f"No data found for transfer {transfer_id}")
+        
+        # Ensure any open file handle is closed before proceeding
+        if transfer_id in self.open_file_handles:
+            try:
+                self.open_file_handles[transfer_id].close()
+            except Exception:
+                pass  # Ignore errors during cleanup
+            del self.open_file_handles[transfer_id]
         
         temp_file_path = self.temp_file_paths[transfer_id]
         

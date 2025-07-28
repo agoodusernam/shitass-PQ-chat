@@ -115,34 +115,38 @@ class SecureChatClient:
     
     def handle_message(self, message_data: bytes) -> None:
         """Handle different types of messages received from the server.
-        
+
         This method acts as a message dispatcher, parsing incoming messages and
         routing them to appropriate handler methods based on the message type.
-        
+
         Args:
             message_data (bytes): Raw message data received from the server.
-            
+
         Note:
             Messages can be either JSON-encoded (for control messages) or binary
-            (for optimized file chunks). The method first checks for keepalive
-            messages to ensure they are processed immediately, then handles other
-            JSON messages, and finally tries binary file chunks.
-            
+            (for optimized file chunks). The method first checks for binary file
+            chunks, then falls back to JSON parsing for other message types.
+
             All exceptions are caught and logged to prevent crashes.
         """
         try:
-            # First, try to parse as JSON to check for keepalive messages
-            # Keepalive messages must be processed immediately to prevent timeouts
+            # First, check if this might be a binary file chunk message
+            # Binary file chunks start with a 12-byte nonce and are not UTF-8 decodable
+            if len(message_data) >= 12 and self.key_exchange_complete:
+                try:
+                    # Try to process as binary file chunk first
+                    result = self.protocol.process_file_chunk(message_data)
+                    self.handle_file_chunk_binary(result)
+                    return
+                except Exception:
+                    # Not a binary file chunk, continue with JSON parsing
+                    pass
+            
+            # Try to parse as JSON (for control messages and regular encrypted messages)
             try:
                 message = json.loads(message_data.decode('utf-8'))
                 message_type = message.get("type")
                 
-                # Handle keepalive messages with highest priority
-                if message_type == MSG_TYPE_KEEP_ALIVE:
-                    self.handle_keepalive()
-                    return
-                
-                # Handle other JSON-based control messages
                 if message_type == 1:  # MSG_TYPE_KEY_EXCHANGE_INIT
                     self.handle_key_exchange_init(message_data)
                 elif message_type == 2:  # MSG_TYPE_KEY_EXCHANGE_RESPONSE
@@ -158,6 +162,8 @@ class SecureChatClient:
                     self.handle_key_verification_message(message_data)
                 elif message_type == MSG_TYPE_KEY_EXCHANGE_RESET:
                     self.handle_key_exchange_reset(message_data)
+                elif message_type == MSG_TYPE_KEEP_ALIVE:
+                    self.handle_keepalive()
                 elif message_type == MSG_TYPE_DELIVERY_CONFIRMATION:
                     if self.key_exchange_complete:
                         self.handle_delivery_confirmation(message_data)
@@ -169,21 +175,11 @@ class SecureChatClient:
                     self.initiate_key_exchange()
                 else:
                     print(f"\nUnknown message type: {message_type}")
-                    
+            
             except (json.JSONDecodeError, UnicodeDecodeError):
-                # Not a JSON message, check if it's a binary file chunk
-                if len(message_data) >= 12 and self.key_exchange_complete:
-                    try:
-                        # Try to process as binary file chunk
-                        result = self.protocol.process_file_chunk(message_data)
-                        self.handle_file_chunk_binary(result)
-                        return
-                    except Exception:
-                        # Not a binary file chunk either
-                        print("\nReceived a message that could not be decoded as JSON or binary file chunk.")
-                else:
-                    print("\nReceived a message that could not be decoded.")
-                
+                # This case should ideally not be hit for valid protocol messages
+                print("\nReceived a message that could not be decoded.")
+        
         except Exception as e:
             print(f"\nError handling message: {e}")
             
