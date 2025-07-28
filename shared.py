@@ -5,6 +5,7 @@ import json
 import struct
 import hashlib
 import shutil
+from typing import Generator
 
 from kyber_py.ml_kem import ML_KEM_1024
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -30,7 +31,6 @@ MSG_TYPE_DELIVERY_CONFIRMATION = 14
 MSG_TYPE_EMERGENCY_CLOSE = 15
 
 # File transfer constants
-FILE_CHUNK_SIZE = 128 * 1024 * 1024  # 128 MiB chunks for loading
 SEND_CHUNK_SIZE = 64 * 1024  # 64 KiB chunks for sending
 
 # Protocol compatibility mapping, not used in this version but kept for future compatibility
@@ -737,21 +737,16 @@ class SecureChatProtocol:
         }
         return self.encrypt_message(json.dumps(message))
     
-    def chunk_file(self, file_path: str):
+    def chunk_file(self, file_path: str) -> Generator[bytes, None, None]:
         """Generate file chunks for transmission one at a time.
-        
+
         This is a generator function that yields one chunk at a time
-        to avoid loading the entire file into memory.
-        
-        The file is read in large chunks (FILE_CHUNK_SIZE) to minimize disk I/O,
-        but each large chunk is then split into smaller chunks (SEND_CHUNK_SIZE)
-        for network transmission.
+        to avoid loading the entire file into memory and to provide a
+        steady stream of data for network transmission.
         """
         with open(file_path, 'rb') as f:
-            while large_chunk := f.read(FILE_CHUNK_SIZE):
-                # Split the large chunk into smaller chunks for sending
-                for i in range(0, len(large_chunk), SEND_CHUNK_SIZE):
-                    yield large_chunk[i:i + SEND_CHUNK_SIZE]
+            while chunk := f.read(SEND_CHUNK_SIZE):
+                yield chunk
     
     def process_file_metadata(self, decrypted_data: str) -> dict:
         """Process a file metadata message."""
