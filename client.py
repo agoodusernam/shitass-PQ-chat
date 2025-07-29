@@ -10,7 +10,7 @@ import sys
 import os
 import time
 from shared import SecureChatProtocol, send_message, receive_message, MSG_TYPE_FILE_METADATA, \
-    MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT, MSG_TYPE_FILE_CHUNK, MSG_TYPE_FILE_COMPLETE, MSG_TYPE_KEY_EXCHANGE_RESET, \
+    MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT, MSG_TYPE_FILE_COMPLETE, MSG_TYPE_KEY_EXCHANGE_RESET, \
     MSG_TYPE_KEEP_ALIVE, MSG_TYPE_KEEP_ALIVE_RESPONSE, MSG_TYPE_DELIVERY_CONFIRMATION, MSG_TYPE_EMERGENCY_CLOSE, PROTOCOL_VERSION
 
 class SecureChatClient:
@@ -67,7 +67,6 @@ class SecureChatClient:
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.socket.connect((self.host, self.port))
-            self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             self.connected = True
             
             print(f"Connected to secure chat server at {self.host}:{self.port}")
@@ -394,8 +393,6 @@ class SecureChatClient:
                     self.handle_file_accept(decrypted_text)
                 elif message_type == MSG_TYPE_FILE_REJECT:
                     self.handle_file_reject(decrypted_text)
-                elif message_type == MSG_TYPE_FILE_CHUNK:
-                    self.handle_file_chunk(decrypted_text)
                 elif message_type == MSG_TYPE_FILE_COMPLETE:
                     self.handle_file_complete(decrypted_text)
                 elif message_type == MSG_TYPE_DELIVERY_CONFIRMATION:
@@ -621,14 +618,6 @@ class SecureChatClient:
         except Exception as e:
             print(f"Error handling file rejection: {e}")
     
-    def handle_file_chunk(self, decrypted_message: str) -> None:
-        """Handle incoming file chunk (legacy JSON format)."""
-        try:
-            chunk_info = self.protocol.process_file_chunk(decrypted_message)
-            self._process_file_chunk_common(chunk_info)
-            
-        except Exception as e:
-            print(f"Error handling file chunk: {e}")
     
     def handle_file_chunk_binary(self, chunk_info: dict) -> None:
         """Handle incoming file chunk (optimized binary format)."""

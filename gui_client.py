@@ -18,8 +18,7 @@ from tkinterdnd2 import DND_FILES, TkinterDnD
 
 from client import SecureChatClient
 from shared import bytes_to_human_readable, send_message, MSG_TYPE_FILE_METADATA, MSG_TYPE_FILE_ACCEPT, \
-    MSG_TYPE_FILE_REJECT, \
-    MSG_TYPE_FILE_COMPLETE, MSG_TYPE_FILE_CHUNK, MSG_TYPE_DELIVERY_CONFIRMATION, SEND_CHUNK_SIZE
+    MSG_TYPE_FILE_REJECT, MSG_TYPE_FILE_COMPLETE, MSG_TYPE_DELIVERY_CONFIRMATION, SEND_CHUNK_SIZE
 
 GUI_VERSION = 17
 
@@ -1130,8 +1129,6 @@ class GUISecureChatClient(SecureChatClient):
                     self.handle_file_accept(decrypted_text)
                 elif message_type == MSG_TYPE_FILE_REJECT:
                     self.handle_file_reject(decrypted_text)
-                elif message_type == MSG_TYPE_FILE_CHUNK:
-                    self.handle_file_chunk(decrypted_text)
                 elif message_type == MSG_TYPE_FILE_COMPLETE:
                     self.handle_file_complete(decrypted_text)
                 elif message_type == MSG_TYPE_DELIVERY_CONFIRMATION:
@@ -1419,88 +1416,6 @@ class GUISecureChatClient(SecureChatClient):
             else:
                 print(f"Error handling file rejection: {e}")
     
-    def handle_file_chunk(self, decrypted_message: str):
-        """Handle incoming file chunk with GUI progress updates."""
-        try:
-            chunk_info = self.protocol.process_file_chunk(decrypted_message)
-            transfer_id = chunk_info["transfer_id"]
-            
-            if transfer_id not in self.active_file_metadata:
-                if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
-                        "Received chunk for unknown file transfer"))
-                return
-            
-            metadata = self.active_file_metadata[transfer_id]
-            
-            # Add chunk to protocol buffer
-            is_complete = self.protocol.add_file_chunk(
-                    transfer_id,
-                    chunk_info["chunk_index"],
-                    chunk_info["chunk_data"],
-                    metadata["total_chunks"]
-            )
-            
-            # Show progress in GUI
-            if self.gui:
-                received_chunks = len(self.protocol.received_chunks.get(transfer_id, set()))
-                # Calculate bytes transferred for speed tracking
-                # For most chunks, use FILE_CHUNK_SIZE, but for the last chunk use actual size
-                if metadata["total_chunks"] == 1:
-                    # Only one chunk, use actual size
-                    bytes_transferred = len(chunk_info["chunk_data"])
-                else:
-                    # Multiple chunks - calculate based on complete chunks and current chunk
-                    complete_chunks = received_chunks - 1  # Exclude current chunk
-                    bytes_transferred = (complete_chunks * SEND_CHUNK_SIZE) + len(chunk_info["chunk_data"])
-                
-                # Update GUI with transfer progress every 50 chunks
-                if self.gui and received_chunks % 50 == 0:
-                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.update_transfer_progress(
-                            transfer_id, metadata['filename'], received_chunks, metadata['total_chunks'],
-                            bytes_transferred
-                    ))
-            
-            if is_complete:
-                # Reassemble file
-                output_path = os.path.join(os.getcwd(), metadata["filename"])
-                
-                # Handle filename conflicts
-                counter = 1
-                base_name, ext = os.path.splitext(metadata["filename"])
-                while os.path.exists(output_path):
-                    output_path = os.path.join(os.getcwd(), f"{base_name}_{counter}{ext}")
-                    counter += 1
-                
-                try:
-                    self.protocol.reassemble_file(transfer_id, output_path, metadata["file_hash"])
-                    if self.gui:
-                        self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
-                            f"File received successfully: {output_path}", transfer_id))
-                        # Clear speed when transfer completes
-                        self.gui.root.after(0, lambda: self.gui.file_transfer_window.clear_speed())
-                    
-                    # Display image if it's an image file
-                    self._display_received_image(output_path)
-                    
-                    # Send completion message
-                    complete_msg = self.protocol.create_file_complete_message(transfer_id)
-                    send_message(self.socket, complete_msg)
-                
-                except Exception as e:
-                    if self.gui:
-                        self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
-                            f"File reassembly failed: {e}", transfer_id))
-                
-                # Clean up
-                del self.active_file_metadata[transfer_id]
-        
-        except Exception as e:
-            if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.file_transfer_window.add_transfer_message(
-                    f"Error handling file chunk: {e}"))
-            else:
-                print(f"Error handling file chunk: {e}")
     
     def handle_file_chunk_binary(self, chunk_info: dict):
         """Handle incoming file chunk (optimized binary format) with GUI progress updates."""

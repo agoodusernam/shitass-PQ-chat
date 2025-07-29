@@ -76,7 +76,6 @@ class SecureChatServer:
                     if len(self.clients) < 2:
                         try:
                             client_socket, address = self.server_socket.accept()
-                            client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                             client_id = f"client_{len(self.clients) + 1}"
                             
                             print(f"Client {client_id} connected from {address}")
