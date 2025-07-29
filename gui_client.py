@@ -1437,7 +1437,6 @@ class GUISecureChatClient(SecureChatClient):
                     chunk_info["chunk_data"],
                     metadata["total_chunks"]
             )
-            
             # Show progress in GUI
             if self.gui:
                 received_chunks = len(self.protocol.received_chunks.get(transfer_id, set()))

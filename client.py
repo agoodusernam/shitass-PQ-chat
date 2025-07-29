@@ -124,25 +124,15 @@ class SecureChatClient:
 
         Note:
             Messages can be either JSON-encoded (for control messages) or binary
-            (for optimized file chunks). The method first checks for binary file
-            chunks, then falls back to JSON parsing for other message types.
+            (for optimized file chunks). The method first tries JSON parsing for
+            control messages (including keepalives), then falls back to binary
+            file chunk processing if JSON parsing fails.
 
             All exceptions are caught and logged to prevent crashes.
         """
         try:
-            # First, check if this might be a binary file chunk message
-            # Binary file chunks start with a 12-byte nonce and are not UTF-8 decodable
-            if len(message_data) >= 12 and self.key_exchange_complete:
-                try:
-                    # Try to process as binary file chunk first
-                    result = self.protocol.process_file_chunk(message_data)
-                    self.handle_file_chunk_binary(result)
-                    return
-                except Exception:
-                    # Not a binary file chunk, continue with JSON parsing
-                    pass
-            
-            # Try to parse as JSON (for control messages and regular encrypted messages)
+            # First, try to parse as JSON (for control messages including keepalive)
+            # This is more efficient for frequent messages like keepalives
             try:
                 message = json.loads(message_data.decode('utf-8'))
                 message_type = message.get("type")
@@ -175,10 +165,26 @@ class SecureChatClient:
                     self.initiate_key_exchange()
                 else:
                     print(f"\nUnknown message type: {message_type}")
+                return  # Successfully processed as JSON message
             
             except (json.JSONDecodeError, UnicodeDecodeError):
-                # This case should ideally not be hit for valid protocol messages
-                print("\nReceived a message that could not be decoded.")
+                # Not a JSON message, try binary file chunk processing
+                pass
+            
+            # If JSON parsing failed, check if this might be a binary file chunk message
+            # Binary file chunks start with a 12-byte nonce and are not UTF-8 decodable
+            if len(message_data) >= 12 and self.key_exchange_complete:
+                try:
+                    # Try to process as binary file chunk
+                    result = self.protocol.process_file_chunk(message_data)
+                    self.handle_file_chunk_binary(result)
+                    return
+                except Exception:
+                    # Not a binary file chunk either
+                    pass
+            
+            # If we reach here, the message could not be processed
+            print("\nReceived a message that could not be decoded.")
         
         except Exception as e:
             print(f"\nError handling message: {e}")

@@ -1,14 +1,14 @@
+#!/usr/bin/env python3
 """
-Secure Chat Server that handles two-client connections with end-to-end encryption.
-This server accepts two clients, initiates a key exchange, and routes encrypted messages; it cannot read the messages.
+Secure chat server using socketserver.ThreadingTCPServer.
+Rewritten to use proper socketserver architecture instead of manual socket handling.
 """
-# server.py - Secure chat server
-# pylint: disable=trailing-whitespace
-import socket
+
+import socketserver
 import threading
 import json
-from typing import Optional
 import time
+from typing import Optional, Dict
 
 from shared import SecureChatProtocol, send_message, receive_message, create_error_message, create_reset_message, \
     MSG_TYPE_KEY_EXCHANGE_RESPONSE, MSG_TYPE_KEY_VERIFICATION, MSG_TYPE_KEEP_ALIVE, MSG_TYPE_KEEP_ALIVE_RESPONSE, \
@@ -16,208 +16,148 @@ from shared import SecureChatProtocol, send_message, receive_message, create_err
 
 SERVER_VERSION = 3
 
-class SecureChatServer:
+class SecureChatServer(socketserver.ThreadingTCPServer):
     """Secure chat server that handles two-client connections with end-to-end encryption."""
     
-    def __init__(self, host='localhost', port=16384):
+    # Allow address reuse
+    allow_reuse_address = True
+    
+    def __init__(self, host='0.0.0.0', port=16384):
         """Initialize the secure chat server.
         
         Args:
             host (str, optional): The hostname or IP address to bind the server to.
                 Defaults to 'localhost'.
             port (int, optional): The port number to listen on. Defaults to 16384.
-                
-        Attributes:
-            host (str): Server hostname or IP address.
-            port (int): Server port number.
-            clients (dict[str, ClientHandler]): Dictionary mapping client IDs to 
-                their handler instances.
-            server_socket (socket.socket): The main server socket for accepting connections.
-            running (bool): Flag indicating whether the server is currently running.
         """
-        self.host = host
-        self.port = port
-        self.clients: dict[str, 'ClientHandler'] = {}
-        self.server_socket = None
+        self.clients: Dict[str, 'SecureChatRequestHandler'] = {}
+        self.clients_lock = threading.Lock()
         self.running = False
         
-    def start(self):
-        """Start the server and listen for client connections.
+        super().__init__((host, port), SecureChatRequestHandler)
         
-        Creates a server socket, binds it to the configured host and port, and enters
-        the main server loop to accept up to 2 client connections. When exactly 2
-        clients are connected, automatically initiates the key exchange process.
-        
-        The server uses a timeout-based accept loop to allow for graceful shutdown
-        and client monitoring. The method blocks until the server is stopped or
-        an error occurs.
-        
-        Note:
-            This method will print status messages to stdout and handles KeyboardInterrupt
-            for graceful shutdown. The server socket is configured with SO_REUSEADDR
-            to allow quick restart after shutdown.
-        """
-        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server_socket.settimeout(1.0)  # Set timeout for non-blocking accept
-        
-        try:
-            self.server_socket.bind((self.host, self.port))
-            self.server_socket.listen(2)  # Only allow 2 clients
-            self.running = True
-            
-            print(f"Secure chat server started on {self.host}:{self.port}")
-            print("Waiting for clients to connect...")
-            
-            # Main server loop - continuously accept new connections and monitor clients
-            while self.running:
-                try:
-                    # Try to accept new connections if we have less than 2 clients
-                    if len(self.clients) < 2:
-                        try:
-                            client_socket, address = self.server_socket.accept()
-                            client_id = f"client_{len(self.clients) + 1}"
-                            
-                            print(f"Client {client_id} connected from {address}")
-                            
-                            # Create client handler
-                            client_handler = ClientHandler(client_socket, client_id, self)
-                            self.clients[client_id] = client_handler
-                            
-                            # Start client thread
-                            client_thread = threading.Thread(target=client_handler.handle)
-                            client_thread.daemon = True
-                            client_thread.start()
-                            
-                            # If we now have exactly 2 clients, start key exchange
-                            if len(self.clients) == 2:
-                                print("Two clients connected. Starting key exchange...")
-                                self.initiate_key_exchange()
-                                
-                        except socket.timeout:
-                            # Timeout is expected, continue to client monitoring
-                            pass
-                        except socket.error as e:
-                            if self.running:
-                                print(f"Error accepting connection: {e}")
-                    
-                    
-                    # Sleep briefly to avoid busy waiting
-                    time.sleep(0.1)
-                    
-                except KeyboardInterrupt:
-                    print("Server interrupted by user")
-                    break
-                except Exception as e:
-                    print(f"Error in server main loop: {e}")
-                    break
-                        
-        except Exception as e:
-            print(f"Server error: {e}")
-        finally:
-            self.stop()
+        print(f"Secure chat server started on {host}:{port}")
+        print("Waiting for clients to connect...")
     
-    def initiate_key_exchange(self):
-        """Initiate the key exchange process between two connected clients.
-        
-        This method is called automatically when exactly 2 clients are connected.
-        It sends a key exchange initiation message to the first client, which
-        will then start the ML-KEM-1024 key exchange protocol.
-        
-        The method ensures that exactly 2 clients are connected before proceeding.
-        If the initiation fails, an error is broadcast to all clients.
-        
-        Note:
-            This method only sends the initiation signal. The actual key exchange
-            protocol is handled by the SecureChatProtocol class in the clients.
-            The server acts as a message router and cannot decrypt the exchanged keys.
-        """
-        if len(self.clients) != 2:
-            return
+    def add_client(self, client_handler: 'SecureChatRequestHandler') -> bool:
+        """Add a client to the server. Returns True if added, False if server is full."""
+        with self.clients_lock:
+            if len(self.clients) >= 2:
+                return False
             
-        client_handlers = list(self.clients.values())
-        client1 = client_handlers[0]
-        
-        # Tell first client to start key exchange
-        try:
-            initiate_message = {
-                "type": "initiate_key_exchange",
-                "message": "Starting key exchange..."
-            }
-            message_data = json.dumps(initiate_message).encode('utf-8')
-            send_message(client1.socket, message_data)
-            print(f"Key exchange initiation sent to {client1.client_id}")
+            client_id = f"client_{len(self.clients) + 1}"
+            client_handler.client_id = client_id
+            self.clients[client_id] = client_handler
             
-        except Exception as e:
-            print(f"Key exchange initiation failed: {e}")
-            self.broadcast_error("Key exchange failed")
-    
-    def route_message(self, sender_id: str, message_data: bytes):
-        """Route encrypted message from sender to the other client."""
-        for client_id, client_handler in self.clients.items():
-            if client_id != sender_id and client_handler.is_connected():
-                try:
-                    send_message(client_handler.socket, message_data)
-                except Exception as e:
-                    print(f"Failed to route message to {client_id}: {e}")
-                    client_handler.disconnect()
+            print(f"Client {client_id} connected from {client_handler.client_address}")
+            
+        # If we now have exactly 2 clients, start key exchange
+        if len(self.clients) == 2:
+            print("Two clients connected. Starting key exchange...")
+            self.initiate_key_exchange()
+        
+        return True
     
     def remove_client(self, client_id: str):
         """Remove a client from the server."""
-        if client_id in self.clients:
-            del self.clients[client_id]
-            print(f"Client {client_id} removed")
+        with self.clients_lock:
+            if client_id in self.clients:
+                del self.clients[client_id]
+                print(f"Client {client_id} removed")
+                
+                # Notify remaining client to reset key exchange
+                if self.clients:
+                    remaining_client = list(self.clients.values())[0]
+                    try:
+                        # Send key exchange reset message
+                        reset_msg = create_reset_message()
+                        send_message(remaining_client.request, reset_msg)
+                        
+                        # Reset the remaining client's key exchange state
+                        remaining_client.key_exchange_complete = False
+                        remaining_client.protocol.reset_key_exchange()
+                        
+                        print(f"Key exchange reset sent to remaining client {remaining_client.client_id}")
+                    except: # pylint: disable=bare-except
+                        pass
+    
+    def initiate_key_exchange(self):
+        """Initiate the key exchange process between two connected clients."""
+        print("Running key exchange initiation...")
+        with self.clients_lock:
             
-            # Notify remaining client to reset key exchange
-            if self.clients:
-                remaining_client = list(self.clients.values())[0]
-                try:
-                    # Send key exchange reset message
-                    reset_msg = create_reset_message()
-                    send_message(remaining_client.socket, reset_msg)
-                    
-                    # Reset the remaining client's key exchange state
-                    remaining_client.key_exchange_complete = False
-                    remaining_client.protocol.reset_key_exchange()
-                    
-                    print(f"Key exchange reset sent to remaining client {remaining_client.client_id}")
-                except: # pylint: disable=bare-except
-                    pass
+            if len(self.clients) != 2:
+                return
+                
+            client_handlers = list(self.clients.values())
+            client1 = client_handlers[0]
+            
+            # Tell first client to start key exchange
+            try:
+                initiate_message = {
+                    "type": "initiate_key_exchange",
+                    "message": "Starting key exchange..."
+                }
+                message_data = json.dumps(initiate_message).encode('utf-8')
+                send_message(client1.request, message_data)
+                print(f"Key exchange initiation sent to {client1.client_id}")
+                
+            except Exception as e:
+                print(f"Key exchange initiation failed: {e}")
+                self.broadcast_error("Key exchange failed")
+    
+    def route_message(self, sender_id: str, message_data: bytes):
+        """Route encrypted message from sender to the other client."""
+        with self.clients_lock:
+            for client_id, client_handler in self.clients.items():
+                if client_id != sender_id and client_handler.is_connected():
+                    try:
+                        send_message(client_handler.request, message_data)
+                    except Exception as e:
+                        print(f"Failed to route message to {client_id}: {e}")
+                        client_handler.disconnect()
     
     def broadcast_error(self, error_text: str):
-        """Send error message to all connected clients."""
+        """Broadcast an error message to all connected clients."""
         error_msg = create_error_message(error_text)
-        for client_handler in self.clients.values():
-            if client_handler.is_connected():
+        with self.clients_lock:
+            for client_handler in self.clients.values():
                 try:
-                    send_message(client_handler.socket, error_msg)
+                    send_message(client_handler.request, error_msg)
                 except: # pylint: disable=bare-except
                     pass
     
-    def stop(self):
-        """Stop the server and close all connections."""
+    def start_server(self):
+        """Start the server and serve forever."""
+        self.running = True
+        try:
+            self.serve_forever()
+        except KeyboardInterrupt:
+            print("Server interrupted by user")
+        finally:
+            self.stop_server()
+    
+    def stop_server(self):
+        """Stop the server and clean up."""
         self.running = False
-        
-        # Close all client connections
-        for client_handler in list(self.clients.values()):
-            client_handler.disconnect()
-        
-        # Close server socket
-        if self.server_socket:
-            try:
-                self.server_socket.close()
-            except: # pylint: disable=bare-except
-                pass
-        
+        self.shutdown()
+        self.server_close()
         print("Server stopped")
+    
+    def start(self):
+        """Compatibility method for existing tests."""
+        return self.start_server()
+    
+    def stop(self):
+        """Compatibility method for existing tests."""
+        return self.stop_server()
 
-class ClientHandler:
+
+class SecureChatRequestHandler(socketserver.BaseRequestHandler):
     """Handles individual client connections."""
     
-    def __init__(self, socket: socket.socket, client_id: str, server: SecureChatServer):
-        self.socket = socket
-        self.client_id = client_id
-        self.server = server
+    def __init__(self, request, client_address, server):
+        self.client_id = None
         self.protocol = SecureChatProtocol()
         self.connected = True
         self.key_exchange_complete = False
@@ -228,13 +168,42 @@ class ClientHandler:
         self.waiting_for_keepalive_response = False
         self.keepalive_thread = None
         
+        super().__init__(request, client_address, server)
+    
+    def setup(self):
+        """Called before handle() to perform initialization."""
+        # Try to add this client to the server
+        if not self.server.add_client(self):
+            # Server is full, send rejection message and disconnect
+            try:
+                rejection_message = {
+                    "type": "server_full",
+                    "message": "Server only supports 2 clients. Connection rejected."
+                }
+                message_data = json.dumps(rejection_message).encode('utf-8')
+                send_message(self.request, message_data)
+                print(f"Rejected connection from {self.client_address} - server full")
+            except:
+                pass
+            # Don't call super().setup() to prevent further processing
+            return
+        
+        super().setup()
+    
     def handle(self):
         """Main client handling loop."""
+        # If client wasn't added (server full), don't process
+        if self.client_id is None:
+            return
+        
         try:
+            # Start keepalive thread after key exchange is complete
+            self.start_keepalive()
+            
             while self.connected:
                 try:
                     # Receive message from client
-                    message_data = receive_message(self.socket)
+                    message_data = receive_message(self.request)
                     
                     if not self.key_exchange_complete:
                         # Handle key exchange messages
@@ -267,7 +236,6 @@ class ClientHandler:
         finally:
             self.disconnect()
     
-    
     def handle_key_exchange(self, message_data: bytes):
         """Handle key exchange messages by routing them to the other client."""
         try:
@@ -291,7 +259,7 @@ class ClientHandler:
             # Route the message to the other client
             other_client = self.get_other_client()
             if other_client:
-                send_message(other_client.socket, message_data)
+                send_message(other_client.request, message_data)
                 print(f"Key exchange message (type {message_type}) routed from {self.client_id} to {other_client.client_id}")
                 
                 # If this is a key exchange response, the key exchange is complete
@@ -317,46 +285,48 @@ class ClientHandler:
             # Route the verification message to the other client
             other_client = self.get_other_client()
             if other_client:
-                send_message(other_client.socket, message_data)
+                send_message(other_client.request, message_data)
                 print(f"Key verification message routed from {self.client_id} to {other_client.client_id}")
             else:
                 print(f"No other client available to route verification message from {self.client_id}")
                 self.server.broadcast_error("Verification failed - no other client")
                 
         except Exception as e:
-            print(f"Verification message routing error for {self.client_id}: {e}")
-            self.server.broadcast_error("Verification message routing failed")
+            print(f"Verification routing error for {self.client_id}: {e}")
+            self.server.broadcast_error("Verification failed")
     
     def notify_key_exchange_complete(self):
         """Notify both clients that key exchange is complete."""
-        success_message = {
-            "type": "key_exchange_complete",
-            "message": "Secure connection established. You can now send messages.",
-            "version": PROTOCOL_VERSION  # Include server's protocol version
-        }
-        message_data = json.dumps(success_message).encode('utf-8')
-        
-        # Send to both clients
-        for client_handler in self.server.clients.values():
-            if client_handler.is_connected():
-                try:
-                    send_message(client_handler.socket, message_data)
-                    client_handler.key_exchange_complete = True
-                    
-                    # Start keepalive for this client
-                    client_handler.start_keepalive()
-                except: # pylint: disable=bare-except
-                    pass
+        try:
+            complete_message = {
+                "type": "key_exchange_complete",
+                "message": "Key exchange completed successfully"
+            }
+            message_data = json.dumps(complete_message).encode('utf-8')
+            
+            # Send to both clients
+            with self.server.clients_lock:
+                for client_handler in self.server.clients.values():
+                    try:
+                        send_message(client_handler.request, message_data)
+                    except: # pylint: disable=bare-except
+                        pass
+                        
+            print("Key exchange completion notification sent to all clients")
+            
+        except Exception as e:
+            print(f"Failed to notify key exchange completion: {e}")
     
-    def get_other_client(self) -> Optional['ClientHandler']:
+    def get_other_client(self) -> Optional['SecureChatRequestHandler']:
         """Get the other connected client."""
-        for client_id, client_handler in self.server.clients.items():
-            if client_id != self.client_id and client_handler.is_connected():
-                return client_handler
+        with self.server.clients_lock:
+            for client_id, client_handler in self.server.clients.items():
+                if client_id != self.client_id:
+                    return client_handler
         return None
     
     def is_connected(self) -> bool:
-        """Check if client is still connected."""
+        """Check if the client is still connected."""
         return self.connected
     
     def start_keepalive(self):
@@ -365,96 +335,82 @@ class ClientHandler:
             self.keepalive_thread = threading.Thread(target=self.keepalive_loop)
             self.keepalive_thread.daemon = True
             self.keepalive_thread.start()
-            print(f"Started keepalive for client {self.client_id}")
     
     def keepalive_loop(self):
-        """Send keepalive messages every minute and track responses."""
+        """Keepalive loop to monitor client connection."""
         while self.connected:
-            # Send a keepalive message
-            self.send_keepalive()
-            
-            # Wait for 20 seconds for a response
-            response_wait_start = time.time()
-            while self.waiting_for_keepalive_response and (time.time() - response_wait_start) < 20:
-                time.sleep(0.1)  # Short sleep to avoid busy waiting
+            try:
+                time.sleep(60)  # Send keepalive every 60 ish seconds
                 
                 if not self.connected:
                     break
-            
-            # If we're still waiting for a response after 20 seconds, count it as a failure
-            if self.waiting_for_keepalive_response:
-                self.keepalive_failures += 1
-                print(f"Keepalive failure for client {self.client_id} (failure {self.keepalive_failures}/3)")
                 
-                # Disconnect after 3 failures
-                if self.keepalive_failures >= 3:
-                    print(f"Client {self.client_id} failed 3 keepalives, disconnecting")
-                    self.disconnect()
-                    break
             
-            # Wait for the remainder of the minute before sending the next keepalive
-            # Total cycle should be 60 seconds (1 minute)
-            elapsed = time.time() - self.last_keepalive_time
-            if elapsed < 60:
-                time.sleep(60 - elapsed)
-            
-            if not self.connected:
+                self.send_keepalive()
+                    
+            except Exception as e:
+                print(f"Keepalive error for {self.client_id}: {e}")
                 break
     
     def send_keepalive(self):
         """Send a keepalive message to the client."""
-        if not self.connected or not self.key_exchange_complete:
-            return
-            
         try:
-            # Create keepalive message
+            if self.waiting_for_keepalive_response:
+                self.keepalive_failures += 1
+                if self.keepalive_failures >= 3:
+                    print(f"Client {self.client_id} failed to respond to keepalive. Disconnecting.")
+                    self.disconnect()
+                    return
+            
             keepalive_message = {
-                "version": PROTOCOL_VERSION,
-                "type": MSG_TYPE_KEEP_ALIVE
+                "type": MSG_TYPE_KEEP_ALIVE,
+                "timestamp": time.time()
             }
             message_data = json.dumps(keepalive_message).encode('utf-8')
+            send_message(self.request, message_data)
             
-            # Send to client
-            send_message(self.socket, message_data)
-            print("Sent keepalive to client", self.client_id)
-            
-            # Update tracking
-            self.last_keepalive_time = time.time()
             self.waiting_for_keepalive_response = True
+            self.last_keepalive_time = time.time()
             
         except Exception as e:
-            print(f"Error sending keepalive to client {self.client_id}: {e}")
+            print(f"Failed to send keepalive to {self.client_id}: {e}")
             self.disconnect()
     
     def handle_keepalive_response(self, message_data: bytes):
-        """Handle a keepalive response from the client."""
+        """Handle keepalive response from client."""
         try:
-            # Parse message to verify it's a keepalive response
             message = json.loads(message_data.decode('utf-8'))
             if message.get("type") == MSG_TYPE_KEEP_ALIVE_RESPONSE:
-                # Reset tracking
                 self.waiting_for_keepalive_response = False
                 self.keepalive_failures = 0
                 
         except Exception as e:
-            print(f"Error handling keepalive response from client {self.client_id}: {e}")
+            print(f"Error handling keepalive response from {self.client_id}: {e}")
     
     def disconnect(self):
-        """Disconnect the client."""
-        # pylint: disable=
+        """Disconnect the client and clean up."""
         if self.connected:
             self.connected = False
+            
+            if self.client_id:
+                self.server.remove_client(self.client_id)
+            
             try:
-                self.socket.close()
+                self.request.close()
             except: # pylint: disable=bare-except
                 pass
             
-            self.server.remove_client(self.client_id)
+            if self.client_id:
+                print(f"Client {self.client_id} disconnected")
+
+
+def main():
+    try:
+        server = SecureChatServer()
+        server.start_server()
+    except Exception as e:
+        print(f"Server error: {e}")
+
 
 if __name__ == "__main__":
-    server = SecureChatServer("0.0.0.0", 16384)
-    try:
-        server.start()
-    except KeyboardInterrupt:
-        print("\nShutting down server...")
-        server.stop()
+    main()

@@ -31,7 +31,7 @@ MSG_TYPE_DELIVERY_CONFIRMATION = 14
 MSG_TYPE_EMERGENCY_CLOSE = 15
 
 # File transfer constants
-SEND_CHUNK_SIZE = 64 * 1024  # 64 KiB chunks for sending
+SEND_CHUNK_SIZE = 1024 * 1024  # 1 MiB chunks for sending
 
 # Protocol compatibility mapping, not used in this version but kept for future compatibility
 # Maps protocol versions to compatible versions for key exchange and message processing
@@ -704,9 +704,8 @@ class SecureChatProtocol:
         
         # Create compact header (no JSON, no base64 for chunk data)
         header = {
-            "version": PROTOCOL_VERSION,
-            "type": MSG_TYPE_FILE_CHUNK,
-            "counter": self.message_counter,
+            "version":     PROTOCOL_VERSION,
+            "type":        MSG_TYPE_FILE_CHUNK,
             "transfer_id": transfer_id,
             "chunk_index": chunk_index
         }
@@ -725,8 +724,9 @@ class SecureChatProtocol:
         message_key = b'\x00' * len(message_key)
         del message_key
         
-        # Return: nonce (12 bytes) + ciphertext
-        return nonce + ciphertext
+        # Pack counter (4 bytes) + nonce (12 bytes) + ciphertext
+        counter_bytes = struct.pack('!I', self.message_counter)
+        return counter_bytes + nonce + ciphertext
     
     def create_file_complete_message(self, transfer_id: str) -> bytes:
         """Create a file transfer completion message."""
@@ -780,76 +780,68 @@ class SecureChatProtocol:
             raise ValueError("No shared key or receive chain key established")
         
         try:
-            # Extract nonce (first 12 bytes) and ciphertext
-            if len(encrypted_data) < 12:
+            # Extract counter, nonce, and ciphertext from the message
+            if len(encrypted_data) < 16:  # 4 bytes for counter + 12 for nonce
                 raise ValueError("Invalid chunk message format")
             
-            nonce = encrypted_data[:12]
-            ciphertext = encrypted_data[12:]
+            counter = struct.unpack('!I', encrypted_data[:4])[0]
+            nonce = encrypted_data[4:16]
+            ciphertext = encrypted_data[16:]
             
-            # We need to determine the counter from the message, but we can't without decrypting
-            # For now, try sequential counters (this is a limitation we'll address)
-            temp_counter = self.peer_counter + 1
-            max_attempts = 100  # Prevent infinite loops
+            # Check for replay attacks or very old messages
+            if counter <= self.peer_counter:
+                raise ValueError(
+                        f"Replay attack or out-of-order message detected. Expected > {self.peer_counter}, got {counter}")
             
-            for attempt in range(max_attempts):
-                try:
-                    # Derive message key for this counter using optimized ratcheting
-                    steps_to_advance = temp_counter - self.peer_counter - 1
-                    if steps_to_advance > 100:
-                        temp_chain_key = self._fast_ratchet_chain_key(self.receive_chain_key, self.peer_counter, temp_counter - 1)
-                    else:
-                        temp_chain_key = self.receive_chain_key
-                        for i in range(self.peer_counter + 1, temp_counter):
-                            temp_chain_key = self._ratchet_chain_key(temp_chain_key, i)
-                    
-                    message_key = self._derive_message_key(temp_chain_key, temp_counter)
-                    
-                    # Try to decrypt
-                    aesgcm = AESGCM(message_key)
-                    plaintext = aesgcm.decrypt(nonce, ciphertext, None)
-                    
-                    # Parse the decrypted data
-                    if len(plaintext) < 2:
-                        raise ValueError("Invalid decrypted data")
-                    
-                    header_len = struct.unpack('!H', plaintext[:2])[0]
-                    if len(plaintext) < 2 + header_len:
-                        raise ValueError("Invalid header length")
-                    
-                    header_json = plaintext[2:2+header_len]
-                    chunk_data = plaintext[2+header_len:]
-                    
-                    header = json.loads(header_json.decode('utf-8'))
-                    
-                    if header["type"] != MSG_TYPE_FILE_CHUNK:
-                        raise ValueError("Invalid message type")
-                    
-                    # Verify counter matches
-                    if header["counter"] != temp_counter:
-                        temp_counter = header["counter"]
-                        continue  # Try again with correct counter
-                    
-                    # Success! Update state
-                    self.receive_chain_key = self._ratchet_chain_key(temp_chain_key, temp_counter)
-                    self.peer_counter = temp_counter
-                    
-                    # Securely delete the message key
-                    message_key = b'\x00' * len(message_key)
-                    del message_key
-                    
-                    return {
-                        "transfer_id": header["transfer_id"],
-                        "chunk_index": header["chunk_index"],
-                        "chunk_data": chunk_data
-                    }
-                    
-                except Exception:
-                    temp_counter += 1
-                    continue
+            # Advance the chain key to the correct state for this message
+            steps_to_advance = counter - self.peer_counter
             
-            raise ValueError("Could not decrypt chunk after maximum attempts")
+            if steps_to_advance > 100:  # Use fast ratcheting for large gaps
+                temp_chain_key = self._fast_ratchet_chain_key(self.receive_chain_key, self.peer_counter, counter - 1)
+            else:  # Ratchet forward one by one for smaller gaps
+                temp_chain_key = self.receive_chain_key
+                for i in range(self.peer_counter + 1, counter):
+                    temp_chain_key = self._ratchet_chain_key(temp_chain_key, i)
             
+            # Derive the message key for the current message
+            message_key = self._derive_message_key(temp_chain_key, counter)
+            
+            # Decrypt the chunk payload
+            aesgcm = AESGCM(message_key)
+            plaintext = aesgcm.decrypt(nonce, ciphertext, None)
+            
+            # Parse the decrypted header and extract chunk data
+            if len(plaintext) < 2:
+                raise ValueError("Invalid decrypted data: too short")
+            
+            header_len = struct.unpack('!H', plaintext[:2])[0]
+            if len(plaintext) < 2 + header_len:
+                raise ValueError("Invalid decrypted data: header length mismatch")
+            
+            header_json = plaintext[2:2 + header_len]
+            chunk_data = plaintext[2 + header_len:]
+            header = json.loads(header_json.decode('utf-8'))
+            
+            if header["type"] != MSG_TYPE_FILE_CHUNK:
+                raise ValueError("Invalid message type in decrypted chunk")
+            
+            # Decryption successful, update the state
+            self.receive_chain_key = self._ratchet_chain_key(temp_chain_key, counter)
+            self.peer_counter = counter
+            
+            # Securely delete the message key
+            message_key = b'\x00' * len(message_key)
+            del message_key
+            
+            return {
+                "transfer_id": header["transfer_id"],
+                "chunk_index": header["chunk_index"],
+                "chunk_data":  chunk_data
+            }
+        
+        except ValueError as e:
+            # Re-raise specific value errors to be handled by the caller
+            raise e
         except Exception as e:
             raise ValueError(f"File chunk processing failed: {e}")
     
@@ -879,7 +871,6 @@ class SecureChatProtocol:
         position = chunk_index * SEND_CHUNK_SIZE
         file_handle.seek(position)
         file_handle.write(chunk_data)
-        file_handle.flush()  # Ensure data is written to disk
         
         # Mark this chunk as received
         self.received_chunks[transfer_id].add(chunk_index)
@@ -973,7 +964,7 @@ def create_reset_message() -> bytes:
 def send_message(sock, data: bytes):
     """Send a length-prefixed message over a socket."""
     length = struct.pack('!I', len(data))
-    sock.sendall(length + data)
+    sock.send(length + data)
 
 def receive_message(sock) -> bytes:
     """Receive a length-prefixed message from a socket."""
