@@ -67,6 +67,7 @@ class SecureChatClient:
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.socket.connect((self.host, self.port))
+            self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             self.connected = True
             
             print(f"Connected to secure chat server at {self.host}:{self.port}")

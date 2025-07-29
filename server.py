@@ -76,6 +76,7 @@ class SecureChatServer:
                     if len(self.clients) < 2:
                         try:
                             client_socket, address = self.server_socket.accept()
+                            client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                             client_id = f"client_{len(self.clients) + 1}"
                             
                             print(f"Client {client_id} connected from {address}")
@@ -373,15 +374,15 @@ class ClientHandler:
             # Send a keepalive message
             self.send_keepalive()
             
-            # Wait for 10 seconds for a response
+            # Wait for 20 seconds for a response
             response_wait_start = time.time()
-            while self.waiting_for_keepalive_response and (time.time() - response_wait_start) < 10:
+            while self.waiting_for_keepalive_response and (time.time() - response_wait_start) < 20:
                 time.sleep(0.1)  # Short sleep to avoid busy waiting
                 
                 if not self.connected:
                     break
             
-            # If we're still waiting for a response after 10 seconds, count it as a failure
+            # If we're still waiting for a response after 20 seconds, count it as a failure
             if self.waiting_for_keepalive_response:
                 self.keepalive_failures += 1
                 print(f"Keepalive failure for client {self.client_id} (failure {self.keepalive_failures}/3)")
