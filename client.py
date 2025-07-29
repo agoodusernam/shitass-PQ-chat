@@ -130,6 +130,9 @@ class SecureChatClient:
 
             All exceptions are caught and logged to prevent crashes.
         """
+        #TODO: MAKE SURE 2 MESSAGES WITH THE SAME COUNTER ARENT ACCEPTED AGAIN
+        # Currently replay attacks are possible if the same message is sent twice
+        # Also stale messages are accepted
         try:
             # First, try to parse as JSON (for control messages including keepalive)
             # This is more efficient for frequent messages like keepalives
