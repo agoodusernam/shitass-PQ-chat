@@ -1458,6 +1458,14 @@ class GUISecureChatClient(SecureChatClient):
                     ))
             
             if is_complete:
+                # Final progress update to ensure 100% is shown
+                if self.gui:
+                    final_bytes_transferred = metadata["file_size"]
+                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.update_transfer_progress(
+                        transfer_id, metadata['filename'], metadata['total_chunks'], metadata['total_chunks'],
+                        final_bytes_transferred
+                    ))
+                
                 # Reassemble file
                 output_path = os.path.join(os.getcwd(), metadata["filename"])
                 
@@ -1539,7 +1547,7 @@ class GUISecureChatClient(SecureChatClient):
                 if self.gui:
                     if i % 50 == 0:
                         filename = os.path.basename(file_path)
-                        self.gui.root.after(0, lambda curr=i + 1, total=total_chunks, bytes_sent=bytes_transferred,
+                        self.gui.root.after(0, lambda curr=i, total=total_chunks, bytes_sent=bytes_transferred,
                                                       fname=filename:
                         self.gui.file_transfer_window.update_transfer_progress(transfer_id, fname, curr, total,
                                                                                bytes_sent)
