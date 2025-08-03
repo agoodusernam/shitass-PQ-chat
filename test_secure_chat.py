@@ -3,7 +3,7 @@ import unittest
 import threading
 import time
 import socket
-from shared import SecureChatProtocol
+from shared import SecureChatProtocol, MSG_TYPE_INITIATE_KEY_EXCHANGE
 from server import SecureChatServer
 
 class TestSecureChatProtocol(unittest.TestCase):
@@ -418,7 +418,7 @@ class TestSecureChatIntegration(unittest.TestCase):
             initiate_data = receive_message(client1)
             initiate_msg = json.loads(initiate_data.decode('utf-8'))
             
-            if initiate_msg.get("type") == "initiate_key_exchange":
+            if initiate_msg.get("type") == MSG_TYPE_INITIATE_KEY_EXCHANGE:
                 # Client 1 generates keypair and sends init message
                 protocol1 = SecureChatProtocol()
                 public_key1, private_key1 = protocol1.generate_keypair()

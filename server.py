@@ -8,13 +8,14 @@ import socketserver
 import threading
 import json
 import time
-from typing import Optional, Dict
+from typing import Optional
 
 from shared import SecureChatProtocol, send_message, receive_message, create_error_message, create_reset_message, \
     MSG_TYPE_KEY_EXCHANGE_RESPONSE, MSG_TYPE_KEY_VERIFICATION, MSG_TYPE_KEEP_ALIVE, MSG_TYPE_KEEP_ALIVE_RESPONSE, \
-    PROTOCOL_VERSION
+    MSG_TYPE_INITIATE_KEY_EXCHANGE, MSG_TYPE_SERVER_FULL, MSG_TYPE_KEY_EXCHANGE_COMPLETE, MSG_TYPE_SERVER_VERSION_INFO, \
+    PROTOCOL_VERSION, PROTOCOL_COMPATIBILITY
 
-SERVER_VERSION = 4
+SERVER_VERSION = 5
 
 class SecureChatServer(socketserver.ThreadingTCPServer):
     """Secure chat server that handles two-client connections with end-to-end encryption."""
@@ -30,7 +31,7 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
                 Defaults to 'localhost'.
             port (int, optional): The port number to listen on. Defaults to 16384.
         """
-        self.clients: Dict[str, 'SecureChatRequestHandler'] = {}
+        self.clients: dict[str, 'SecureChatRequestHandler'] = {}
         self.clients_lock = threading.Lock()
         self.running = False
         
@@ -95,7 +96,7 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
             # Tell first client to start key exchange
             try:
                 initiate_message = {
-                    "type": "initiate_key_exchange",
+                    "type": MSG_TYPE_INITIATE_KEY_EXCHANGE,
                     "message": "Starting key exchange..."
                 }
                 message_data = json.dumps(initiate_message).encode('utf-8')
@@ -177,7 +178,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             # Server is full, send rejection message and disconnect
             try:
                 rejection_message = {
-                    "type": "server_full",
+                    "type": MSG_TYPE_SERVER_FULL,
                     "message": "Server only supports 2 clients. Connection rejected."
                 }
                 message_data = json.dumps(rejection_message).encode('utf-8')
@@ -189,6 +190,9 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             return
         
         super().setup()
+        
+        # Send server version information to the newly connected client
+        self.send_server_version_info()
     
     def handle(self):
         """Main client handling loop."""
@@ -299,7 +303,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         """Notify both clients that key exchange is complete."""
         try:
             complete_message = {
-                "type": "key_exchange_complete",
+                "type": MSG_TYPE_KEY_EXCHANGE_COMPLETE,
                 "message": "Key exchange completed successfully"
             }
             message_data = json.dumps(complete_message).encode('utf-8')
@@ -386,6 +390,24 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                 
         except Exception as e:
             print(f"Error handling keepalive response from {self.client_id}: {e}")
+    
+    def send_server_version_info(self):
+        """Send server version and protocol information to the client."""
+        try:
+            # Create server version message
+            version_message = {
+                "type": MSG_TYPE_SERVER_VERSION_INFO,
+                "server_version": PROTOCOL_VERSION,
+                "compatible_versions": PROTOCOL_COMPATIBILITY.get(PROTOCOL_VERSION, [PROTOCOL_VERSION]),
+                "message": f"Server v{SERVER_VERSION} using protocol v{PROTOCOL_VERSION}"
+            }
+            
+            message_data = json.dumps(version_message).encode('utf-8')
+            send_message(self.request, message_data)
+            print(f"Sent server version info to {self.client_id}: Server v{SERVER_VERSION}, Protocol v{PROTOCOL_VERSION}")
+            
+        except Exception as e:
+            print(f"Error sending server version info to {self.client_id}: {e}")
     
     def disconnect(self):
         """Disconnect the client and clean up."""

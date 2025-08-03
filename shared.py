@@ -29,11 +29,14 @@ MSG_TYPE_KEEP_ALIVE = 12
 MSG_TYPE_KEEP_ALIVE_RESPONSE = 13
 MSG_TYPE_DELIVERY_CONFIRMATION = 14
 MSG_TYPE_EMERGENCY_CLOSE = 15
+MSG_TYPE_INITIATE_KEY_EXCHANGE = 16
+MSG_TYPE_SERVER_FULL = 17
+MSG_TYPE_KEY_EXCHANGE_COMPLETE = 18
+MSG_TYPE_SERVER_VERSION_INFO = 19
 
 # File transfer constants
 SEND_CHUNK_SIZE = 1024 * 1024  # 1 MiB chunks for sending
 
-# Protocol compatibility mapping, not used in this version but kept for future compatibility
 # Maps protocol versions to compatible versions for key exchange and message processing
 PROTOCOL_COMPATIBILITY: dict[int, list[int]] = {
     1: [1, 2],

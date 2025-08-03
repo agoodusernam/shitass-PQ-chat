@@ -1563,6 +1563,15 @@ class GUISecureChatClient(SecureChatClient):
                     f"Error sending file chunks: {e}", transfer_id))
             else:
                 print(f"Error sending file chunks: {e}")
+    
+    def handle_server_full(self) -> None:
+        """Handle server full notification - override to display in GUI."""
+        if self.gui:
+            self.gui.root.after(0, lambda: self.gui.append_to_chat("Server is full. Please try again later."))
+        else:
+            print("Server is full. Please try again later.")
+        
+        self.disconnect()
 
 
 def load_theme_colors():

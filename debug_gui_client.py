@@ -85,78 +85,78 @@ class DebugChatGUI(ChatGUI):
         # Create the main layout with debug panels from the start
         # Main frame
         main_frame = tk.Frame(self.root, bg=self.BG_COLOR)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10) # type: ignore
         
         # Connection frame
         conn_frame = tk.Frame(main_frame, bg=self.BG_COLOR)
-        conn_frame.pack(fill=tk.X, pady=(0, 10))
+        conn_frame.pack(fill=tk.X, pady=(0, 10)) # type: ignore
         
         # Host and port inputs
-        tk.Label(conn_frame, text="Host:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=tk.LEFT)
+        tk.Label(conn_frame, text="Host:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=tk.LEFT) # type: ignore
         self.host_entry = tk.Entry(
                 conn_frame, width=15, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR,
-                insertbackground=self.FG_COLOR, relief=tk.FLAT
+                insertbackground=self.FG_COLOR, relief=tk.FLAT # type: ignore
         )
-        self.host_entry.pack(side=tk.LEFT, padx=(5, 10))
+        self.host_entry.pack(side=tk.LEFT, padx=(5, 10)) # type: ignore
         self.host_entry.insert(0, "localhost")
         
-        tk.Label(conn_frame, text="Port:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=tk.LEFT)
+        tk.Label(conn_frame, text="Port:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=tk.LEFT) # type: ignore
         self.port_entry = tk.Entry(
                 conn_frame, width=8, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR,
-                insertbackground=self.FG_COLOR, relief=tk.FLAT
+                insertbackground=self.FG_COLOR, relief=tk.FLAT # type: ignore
         )
-        self.port_entry.pack(side=tk.LEFT, padx=(5, 10))
+        self.port_entry.pack(side=tk.LEFT, padx=(5, 10)) # type: ignore
         self.port_entry.insert(0, "16384")
         
         # Connect/Disconnect button
         self.connect_btn = tk.Button(
                 conn_frame, text="Connect", command=self.toggle_connection,
-                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,
+                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT, # type: ignore
                 activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR
         )
-        self.connect_btn.pack(side=tk.LEFT, padx=(10, 0))
+        self.connect_btn.pack(side=tk.LEFT, padx=(10, 0)) # type: ignore
         
         # Sound toggle button
         self.sound_btn = tk.Button(
                 conn_frame, text="Notif sounds ON", command=self.toggle_sound_notifications,
-                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,
+                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT, # type: ignore
                 activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
                 font=("Consolas", 10)
         )
-        self.sound_btn.pack(side=tk.LEFT, padx=(10, 0))
+        self.sound_btn.pack(side=tk.LEFT, padx=(10, 0)) # type: ignore
         
         # Windows notifications toggle button
         self.windows_notif_btn = tk.Button(
                 conn_frame, text="System notifs ON", command=self.toggle_windows_notifications,
-                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,
+                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT, # type: ignore
                 activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
                 font=("Consolas", 10)
         )
-        self.windows_notif_btn.pack(side=tk.LEFT, padx=(10, 0))
+        self.windows_notif_btn.pack(side=tk.LEFT, padx=(10, 0)) # type: ignore
         
         # Status indicator (top right)
         self.status_label = tk.Label(
                 conn_frame, text="Not Connected",
                 bg=self.BG_COLOR, fg="#ff6b6b", font=("Consolas", 9, "bold")
         )
-        self.status_label.pack(side=tk.RIGHT, padx=(10, 0))
+        self.status_label.pack(side=tk.RIGHT, padx=(10, 0)) # type: ignore
         
         # Debug toggle button (in connection frame)
         self.debug_toggle_btn = tk.Button(
                 conn_frame, text="🔍 Hide Debug Info", command=self.toggle_debug_box,
-                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,
+                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT, # type: ignore
                 activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
                 font=("Consolas", 9)
         )
-        self.debug_toggle_btn.pack(side=tk.RIGHT, padx=(5, 10))
+        self.debug_toggle_btn.pack(side=tk.RIGHT, padx=(5, 10)) # type: ignore
         
         # Content frame to hold chat and debug side by side
         content_frame = tk.Frame(main_frame, bg=self.BG_COLOR)
-        content_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        content_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10)) # type: ignore
         
         # Chat frame (left side)
         chat_frame = tk.Frame(content_frame, bg=self.BG_COLOR)
-        chat_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
+        chat_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5)) # type: ignore
         
         # Chat display area (in chat frame)
         self.chat_display = scrolledtext.ScrolledText(
@@ -170,20 +170,20 @@ class DebugChatGUI(ChatGUI):
                 insertbackground=self.FG_COLOR,
                 relief=tk.FLAT
         )
-        self.chat_display.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
-        self.chat_display.drop_target_register(DND_FILES)
-        self.chat_display.dnd_bind('<<Drop>>', self.handle_drop)
+        self.chat_display.pack(fill=tk.BOTH, expand=True, pady=(0, 10)) # type: ignore
+        self.chat_display.drop_target_register(DND_FILES) # type: ignore
+        self.chat_display.dnd_bind('<<Drop>>', self.handle_drop) # type: ignore
         
         # Input frame (in chat frame)
         self.input_frame = tk.Frame(chat_frame, bg=self.BG_COLOR)
-        self.input_frame.pack(fill=tk.X)
+        self.input_frame.pack(fill=tk.X) # type: ignore
         
         # Message input
         self.message_entry = tk.Text(
                 self.input_frame, height=1, font=("Consolas", 10), bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR, width=15,
-                insertbackground=self.FG_COLOR, relief=tk.FLAT, wrap=tk.NONE
+                insertbackground=self.FG_COLOR, relief=tk.FLAT, wrap=tk.NONE # type: ignore
         )
-        self.message_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        self.message_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10)) # type: ignore
         self.message_entry.bind("<Return>", self.send_message)
         self.message_entry.bind("<KeyPress>", self.on_key_press)
         self.message_entry.bind("<Control-v>", self.on_paste)
@@ -191,38 +191,38 @@ class DebugChatGUI(ChatGUI):
         # Ephemeral mode button
         self.ephemeral_btn = tk.Button(
                 self.input_frame, text="Ephemeral", command=self.toggle_ephemeral_mode,
-                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,
+                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT, # type: ignore
                 activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
                 font=("Consolas", 9)
         )
-        self.ephemeral_btn.pack(side=tk.RIGHT, padx=(0, 5))
+        self.ephemeral_btn.pack(side=tk.RIGHT, padx=(0, 5)) # type: ignore
         
         # File Transfer window button
         self.file_transfer_btn = tk.Button(
                 self.input_frame, text="Transfers", command=self.show_file_transfer_window,
-                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,
+                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT, # type: ignore
                 activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
                 font=("Consolas", 9)
         )
-        self.file_transfer_btn.pack(side=tk.RIGHT, padx=(0, 10))
+        self.file_transfer_btn.pack(side=tk.RIGHT, padx=(0, 10)) # type: ignore
         
         # Send File button
         self.send_file_btn = tk.Button(
                 self.input_frame, text="Send File", command=self.send_file,
-                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,
+                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT, # type: ignore
                 activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
                 font=("Consolas", 9)
         )
-        self.send_file_btn.pack(side=tk.RIGHT, padx=(0, 10))
+        self.send_file_btn.pack(side=tk.RIGHT, padx=(0, 10)) # type: ignore
         
         # Send button
         self.send_btn = tk.Button(
                 self.input_frame, text="Send", command=self.send_message,
-                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,
+                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT, # type: ignore
                 activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
                 font=("Consolas", 9)
         )
-        self.send_btn.pack(side=tk.RIGHT)
+        self.send_btn.pack(side=tk.RIGHT) # type: ignore
         
         # Debug frame (middle, initially visible)
         self.debug_frame = tk.Frame(content_frame, bg=self.BG_COLOR, width=300)
@@ -234,8 +234,8 @@ class DebugChatGUI(ChatGUI):
         self.debug_actions_frame.pack_propagate(False)
         
         # Pack debug frames to the right
-        self.debug_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(5, 5))
-        self.debug_actions_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(0, 0))
+        self.debug_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(5, 5)) # type: ignore
+        self.debug_actions_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(0, 0)) # type: ignore
         
         # Create debug UI elements
         self._create_debug_display()
@@ -254,7 +254,7 @@ class DebugChatGUI(ChatGUI):
                 insertbackground="#00ff00",
                 relief=tk.FLAT
         )
-        self.debug_display.pack(fill=tk.BOTH, expand=True, padx=5)
+        self.debug_display.pack(fill=tk.BOTH, expand=True, padx=5) # type: ignore
     
     def _create_debug_action_buttons(self):
         """Create all debug action buttons."""
@@ -266,7 +266,7 @@ class DebugChatGUI(ChatGUI):
                 fg=self.FG_COLOR,
                 font=("Consolas", 10, "bold")
         )
-        debug_actions_label.pack(fill=tk.X, padx=5, pady=5)
+        debug_actions_label.pack(fill=tk.X, padx=5, pady=5) # type: ignore
         
         # Create all debug buttons
         self._create_debug_buttons()
@@ -280,12 +280,12 @@ class DebugChatGUI(ChatGUI):
                 command=self.toggle_keepalive_responses,
                 bg=self.BUTTON_BG_COLOR,
                 fg=self.FG_COLOR,
-                relief=tk.FLAT,
+                relief=tk.FLAT, # type: ignore
                 activebackground=self.BUTTON_ACTIVE_BG,
                 activeforeground=self.FG_COLOR,
                 font=("Consolas", 9)
         )
-        self.keepalive_toggle_btn.pack(fill=tk.X, padx=5, pady=2)
+        self.keepalive_toggle_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
         
         # Delivery confirmation toggle button
         self.delivery_confirmation_toggle_btn = tk.Button(
@@ -294,12 +294,12 @@ class DebugChatGUI(ChatGUI):
                 command=self.toggle_delivery_confirmations,
                 bg=self.BUTTON_BG_COLOR,
                 fg=self.FG_COLOR,
-                relief=tk.FLAT,
+                relief=tk.FLAT, # type: ignore
                 activebackground=self.BUTTON_ACTIVE_BG,
                 activeforeground=self.FG_COLOR,
                 font=("Consolas", 9)
         )
-        self.delivery_confirmation_toggle_btn.pack(fill=tk.X, padx=5, pady=2)
+        self.delivery_confirmation_toggle_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
         
         # Send malformed message button
         self.malformed_msg_btn = tk.Button(
@@ -308,12 +308,12 @@ class DebugChatGUI(ChatGUI):
                 command=self.send_malformed_message,
                 bg=self.BUTTON_BG_COLOR,
                 fg=self.FG_COLOR,
-                relief=tk.FLAT,
+                relief=tk.FLAT, # type: ignore
                 activebackground=self.BUTTON_ACTIVE_BG,
                 activeforeground=self.FG_COLOR,
                 font=("Consolas", 9)
         )
-        self.malformed_msg_btn.pack(fill=tk.X, padx=5, pady=2)
+        self.malformed_msg_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
         
         # Set chain keys button
         self.set_chain_keys_btn = tk.Button(
@@ -322,12 +322,12 @@ class DebugChatGUI(ChatGUI):
                 command=self.set_chain_keys,
                 bg=self.BUTTON_BG_COLOR,
                 fg=self.FG_COLOR,
-                relief=tk.FLAT,
+                relief=tk.FLAT, # type: ignore
                 activebackground=self.BUTTON_ACTIVE_BG,
                 activeforeground=self.FG_COLOR,
                 font=("Consolas", 9)
         )
-        self.set_chain_keys_btn.pack(fill=tk.X, padx=5, pady=2)
+        self.set_chain_keys_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
         
         # Force disconnect button
         self.force_disconnect_btn = tk.Button(
@@ -336,12 +336,12 @@ class DebugChatGUI(ChatGUI):
                 command=self.force_disconnect,
                 bg=self.BUTTON_BG_COLOR,
                 fg="#ff6b6b",
-                relief=tk.FLAT,
+                relief=tk.FLAT, # type: ignore
                 activebackground=self.BUTTON_ACTIVE_BG,
                 activeforeground="#ff6b6b",
                 font=("Consolas", 9, "bold")
         )
-        self.force_disconnect_btn.pack(fill=tk.X, padx=5, pady=2)
+        self.force_disconnect_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
         
         # Force key reset button
         self.force_key_reset_btn = tk.Button(
@@ -350,12 +350,12 @@ class DebugChatGUI(ChatGUI):
                 command=self.force_key_reset,
                 bg=self.BUTTON_BG_COLOR,
                 fg=self.FG_COLOR,
-                relief=tk.FLAT,
+                relief=tk.FLAT, # type: ignore
                 activebackground=self.BUTTON_ACTIVE_BG,
                 activeforeground=self.FG_COLOR,
                 font=("Consolas", 9)
         )
-        self.force_key_reset_btn.pack(fill=tk.X, padx=5, pady=2)
+        self.force_key_reset_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
         
         # View fingerprints button
         self.view_fingerprints_btn = tk.Button(
@@ -364,12 +364,12 @@ class DebugChatGUI(ChatGUI):
                 command=self.view_key_fingerprints,
                 bg=self.BUTTON_BG_COLOR,
                 fg=self.FG_COLOR,
-                relief=tk.FLAT,
+                relief=tk.FLAT, # type: ignore
                 activebackground=self.BUTTON_ACTIVE_BG,
                 activeforeground=self.FG_COLOR,
                 font=("Consolas", 9)
         )
-        self.view_fingerprints_btn.pack(fill=tk.X, padx=5, pady=2)
+        self.view_fingerprints_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
         
         # Simulate latency button
         self.simulate_latency_btn = tk.Button(
@@ -378,12 +378,12 @@ class DebugChatGUI(ChatGUI):
                 command=self.simulate_network_latency,
                 bg=self.BUTTON_BG_COLOR,
                 fg=self.FG_COLOR,
-                relief=tk.FLAT,
+                relief=tk.FLAT, # type: ignore
                 activebackground=self.BUTTON_ACTIVE_BG,
                 activeforeground=self.FG_COLOR,
                 font=("Consolas", 9)
         )
-        self.simulate_latency_btn.pack(fill=tk.X, padx=5, pady=2)
+        self.simulate_latency_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
         
         # Export debug log button
         self.export_debug_log_btn = tk.Button(
@@ -392,12 +392,12 @@ class DebugChatGUI(ChatGUI):
                 command=self.export_debug_log,
                 bg=self.BUTTON_BG_COLOR,
                 fg=self.FG_COLOR,
-                relief=tk.FLAT,
+                relief=tk.FLAT, # type: ignore
                 activebackground=self.BUTTON_ACTIVE_BG,
                 activeforeground=self.FG_COLOR,
                 font=("Consolas", 9)
         )
-        self.export_debug_log_btn.pack(fill=tk.X, padx=5, pady=2)
+        self.export_debug_log_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
         
         # Send stale message button
         self.stale_msg_btn = tk.Button(
@@ -405,13 +405,13 @@ class DebugChatGUI(ChatGUI):
                 text="Send Stale Message",
                 command=self.send_stale_message,
                 bg=self.BUTTON_BG_COLOR,
-                fg=self.FG_COLOR,
-                relief=tk.FLAT,
+                fg=self.FG_COLOR, # type: ignore
+                relief=tk.FLAT, # type: ignore
                 activebackground=self.BUTTON_ACTIVE_BG,
                 activeforeground=self.FG_COLOR,
                 font=("Consolas", 9)
         )
-        self.stale_msg_btn.pack(fill=tk.X, padx=5, pady=2)
+        self.stale_msg_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
         
         # Simulate packet loss button
         self.packet_loss_btn = tk.Button(
@@ -420,12 +420,12 @@ class DebugChatGUI(ChatGUI):
                 command=self.simulate_packet_loss,
                 bg=self.BUTTON_BG_COLOR,
                 fg=self.FG_COLOR,
-                relief=tk.FLAT,
+                relief=tk.FLAT, # type: ignore
                 activebackground=self.BUTTON_ACTIVE_BG,
                 activeforeground=self.FG_COLOR,
                 font=("Consolas", 9)
         )
-        self.packet_loss_btn.pack(fill=tk.X, padx=5, pady=2)
+        self.packet_loss_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
         
         # Send duplicate message button
         self.duplicate_msg_btn = tk.Button(
@@ -434,12 +434,12 @@ class DebugChatGUI(ChatGUI):
                 command=self.send_duplicate_message,
                 bg=self.BUTTON_BG_COLOR,
                 fg=self.FG_COLOR,
-                relief=tk.FLAT,
+                relief=tk.FLAT, # type: ignore
                 activebackground=self.BUTTON_ACTIVE_BG,
                 activeforeground=self.FG_COLOR,
                 font=("Consolas", 9)
         )
-        self.duplicate_msg_btn.pack(fill=tk.X, padx=5, pady=2)
+        self.duplicate_msg_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
         
         # Set message counter button
         self.set_counter_btn = tk.Button(
@@ -448,12 +448,12 @@ class DebugChatGUI(ChatGUI):
                 command=self.set_message_counter,
                 bg=self.BUTTON_BG_COLOR,
                 fg=self.FG_COLOR,
-                relief=tk.FLAT,
+                relief=tk.FLAT, # type: ignore
                 activebackground=self.BUTTON_ACTIVE_BG,
                 activeforeground=self.FG_COLOR,
                 font=("Consolas", 9)
         )
-        self.set_counter_btn.pack(fill=tk.X, padx=5, pady=2)
+        self.set_counter_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
         
         # Test protocol version button
         self.test_protocol_btn = tk.Button(
@@ -462,12 +462,12 @@ class DebugChatGUI(ChatGUI):
                 command=self.test_protocol_version,
                 bg=self.BUTTON_BG_COLOR,
                 fg=self.FG_COLOR,
-                relief=tk.FLAT,
+                relief=tk.FLAT, # type: ignore
                 activebackground=self.BUTTON_ACTIVE_BG,
                 activeforeground=self.FG_COLOR,
                 font=("Consolas", 9)
         )
-        self.test_protocol_btn.pack(fill=tk.X, padx=5, pady=2)
+        self.test_protocol_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
     
     # Debug-specific methods
     def toggle_debug_box(self):
@@ -480,8 +480,8 @@ class DebugChatGUI(ChatGUI):
             # Stop the debug timer when hiding
             self._stop_debug_timer()
         else:
-            self.debug_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(5, 5))
-            self.debug_actions_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(0, 0))
+            self.debug_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(5, 5)) # type: ignore
+            self.debug_actions_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(0, 0)) # type: ignore
             self.debug_toggle_btn.config(text="🔍 Hide Debug Info")
             self.debug_visible = True
             # Start the debug timer when showing
@@ -646,11 +646,11 @@ class DebugChatGUI(ChatGUI):
             debug_text += "\n" + "=" * 50 + "\n"
             
             # Update the debug display
-            self.debug_display.config(state=tk.NORMAL)
+            self.debug_display.config(state=tk.NORMAL) # type: ignore # type: ignore
             self.debug_display.delete(1.0, tk.END)
             self.debug_display.insert(tk.END, debug_text)
             self.debug_display.see(tk.END)
-            self.debug_display.config(state=tk.DISABLED)
+            self.debug_display.config(state=tk.DISABLED) # type: ignore # type: ignore
         
         except Exception as e:
             # Fallback debug info if there's an error
@@ -658,10 +658,10 @@ class DebugChatGUI(ChatGUI):
             error_text += f"Client exists: {hasattr(self, 'client')}\n"
             error_text += f"Connected: {self.connected}\n"
             
-            self.debug_display.config(state=tk.NORMAL)
+            self.debug_display.config(state=tk.NORMAL) # type: ignore # type: ignore
             self.debug_display.delete(1.0, tk.END)
             self.debug_display.insert(tk.END, error_text)
-            self.debug_display.config(state=tk.DISABLED)
+            self.debug_display.config(state=tk.DISABLED) # type: ignore # type: ignore
     
     def toggle_keepalive_responses(self):
         """Toggle whether the client responds to keepalive messages."""
@@ -749,18 +749,18 @@ class DebugChatGUI(ChatGUI):
             dialog.grab_set()
             
             # Send chain key input
-            tk.Label(dialog, text="Send Chain Key (hex):", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(anchor=tk.W,
+            tk.Label(dialog, text="Send Chain Key (hex):", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(anchor=tk.W, # type: ignore
                                                                                                     padx=10,
                                                                                                     pady=(10, 0))
             send_key_entry = tk.Entry(dialog, width=50, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR)
-            send_key_entry.pack(fill=tk.X, padx=10, pady=5)
-            
+            send_key_entry.pack(fill=tk.X, padx=10, pady=5) # type: ignore
+             # type: ignore # type: ignore
             # Receive chain key input
-            tk.Label(dialog, text="Receive Chain Key (hex):", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(anchor=tk.W,
+            tk.Label(dialog, text="Receive Chain Key (hex):", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(anchor=tk.W, # type: ignore
                                                                                                        padx=10,
                                                                                                        pady=(10, 0))
             receive_key_entry = tk.Entry(dialog, width=50, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR)
-            receive_key_entry.pack(fill=tk.X, padx=10, pady=5)
+            receive_key_entry.pack(fill=tk.X, padx=10, pady=5) # type: ignore
             
             # Pre-fill with current values if available
             if hasattr(self.client.protocol, 'send_chain_key') and self.client.protocol.send_chain_key:
@@ -774,9 +774,9 @@ class DebugChatGUI(ChatGUI):
                     text="WARNING: Setting custom chain keys will break the security of the connection.\nOnly use for debugging!",
                     bg=self.BG_COLOR,
                     fg="#ff6b6b",
-                    justify=tk.LEFT
+                    justify=tk.LEFT # type: ignore
             )
-            warning_label.pack(fill=tk.X, padx=10, pady=10)
+            warning_label.pack(fill=tk.X, padx=10, pady=10) # type: ignore
             
             def apply_keys():
                 try:
@@ -798,19 +798,19 @@ class DebugChatGUI(ChatGUI):
             
             # Buttons
             button_frame = tk.Frame(dialog, bg=self.BG_COLOR)
-            button_frame.pack(fill=tk.X, padx=10, pady=10)
+            button_frame.pack(fill=tk.X, padx=10, pady=10) # type: ignore
             
             apply_btn = tk.Button(
                     button_frame, text="Apply", command=apply_keys,
-                    bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT
+                    bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT # type: ignore
             )
-            apply_btn.pack(side=tk.LEFT, padx=(0, 5))
+            apply_btn.pack(side=tk.LEFT, padx=(0, 5)) # type: ignore
             
             cancel_btn = tk.Button(
                     button_frame, text="Cancel", command=dialog.destroy,
-                    bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT
+                    bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT # type: ignore
             )
-            cancel_btn.pack(side=tk.LEFT)
+            cancel_btn.pack(side=tk.LEFT) # type: ignore
         
         except Exception as e:
             self.append_to_chat(f"Error opening chain key dialog: {e}")
@@ -875,7 +875,7 @@ class DebugChatGUI(ChatGUI):
                     insertbackground=self.FG_COLOR,
                     relief=tk.FLAT
             )
-            text_area.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+            text_area.pack(fill=tk.BOTH, expand=True, padx=10, pady=10) # type: ignore
             
             fingerprint_text = "=== KEY FINGERPRINTS ===\n\n"
             
@@ -900,9 +900,9 @@ class DebugChatGUI(ChatGUI):
             else:
                 fingerprint_text += "Shared Key: Not available\n\n"
             
-            text_area.config(state=tk.NORMAL)
+            text_area.config(state=tk.NORMAL) # type: ignore
             text_area.insert(tk.END, fingerprint_text)
-            text_area.config(state=tk.DISABLED)
+            text_area.config(state=tk.DISABLED) # type: ignore
         
         except Exception as e:
             self.append_to_chat(f"Error viewing fingerprints: {e}")
@@ -941,15 +941,15 @@ class DebugChatGUI(ChatGUI):
             
             apply_btn = tk.Button(
                     button_frame, text="Apply", command=apply_latency,
-                    bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT
+                    bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT # type: ignore
             )
-            apply_btn.pack(side=tk.LEFT, padx=5)
+            apply_btn.pack(side=tk.LEFT, padx=5) # type: ignore
             
             cancel_btn = tk.Button(
                     button_frame, text="Cancel", command=dialog.destroy,
-                    bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT
+                    bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT # type: ignore
             )
-            cancel_btn.pack(side=tk.LEFT, padx=5)
+            cancel_btn.pack(side=tk.LEFT, padx=5) # type: ignore
         
         except Exception as e:
             self.append_to_chat(f"Error opening latency dialog: {e}")
@@ -997,7 +997,7 @@ class DebugChatGUI(ChatGUI):
                     font=("Consolas", 12, "bold")
             ).pack(pady=10)
             
-            # Message input
+            # Message input # type: ignore
             tk.Label(
                     dialog,
                     text="Message:",
@@ -1005,7 +1005,7 @@ class DebugChatGUI(ChatGUI):
                     fg=self.FG_COLOR,
                     font=("Consolas", 10),
                     anchor="w"
-            ).pack(fill=tk.X, padx=20, pady=(10, 5))
+            ).pack(fill=tk.X, padx=20, pady=(10, 5)) # type: ignore
             
             message_entry = tk.Entry(
                     dialog,
@@ -1014,12 +1014,12 @@ class DebugChatGUI(ChatGUI):
                     fg=self.FG_COLOR,
                     insertbackground=self.FG_COLOR
             )
-            message_entry.pack(fill=tk.X, padx=20, pady=(0, 10))
+            message_entry.pack(fill=tk.X, padx=20, pady=(0, 10)) # type: ignore
             message_entry.insert(0, "This is a stale message")
             
             # Button frame
             button_frame = tk.Frame(dialog, bg=self.BG_COLOR)
-            button_frame.pack(fill=tk.X, pady=10)
+            button_frame.pack(fill=tk.X, pady=10) # type: ignore
             
             # Send button
             def send_stale():
@@ -1060,10 +1060,10 @@ class DebugChatGUI(ChatGUI):
                     command=send_stale,
                     bg=self.BUTTON_BG_COLOR,
                     fg=self.FG_COLOR,
-                    relief=tk.FLAT,
+                    relief=tk.FLAT, # type: ignore
                     activebackground=self.BUTTON_ACTIVE_BG,
                     activeforeground=self.FG_COLOR
-            ).pack(side=tk.LEFT, padx=5)
+            ).pack(side=tk.LEFT, padx=5) # type: ignore
             
             # Cancel button
             tk.Button(
@@ -1072,10 +1072,10 @@ class DebugChatGUI(ChatGUI):
                     command=dialog.destroy,
                     bg=self.BUTTON_BG_COLOR,
                     fg=self.FG_COLOR,
-                    relief=tk.FLAT,
+                    relief=tk.FLAT, # type: ignore
                     activebackground=self.BUTTON_ACTIVE_BG,
                     activeforeground=self.FG_COLOR
-            ).pack(side=tk.RIGHT, padx=5)
+            ).pack(side=tk.RIGHT, padx=5) # type: ignore
         
         except Exception as e:
             self.append_to_chat(f"Error creating stale message dialog: {e}")
@@ -1107,7 +1107,7 @@ class DebugChatGUI(ChatGUI):
             
             # Create a frame for the packet loss settings
             loss_frame = tk.Frame(dialog, bg=self.BG_COLOR)
-            loss_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+            loss_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10) # type: ignore
             
             # Packet loss percentage slider
             tk.Label(
@@ -1117,25 +1117,25 @@ class DebugChatGUI(ChatGUI):
                     fg=self.FG_COLOR,
                     font=("Consolas", 10),
                     anchor="w"
-            ).pack(fill=tk.X, pady=(10, 5))
+            ).pack(fill=tk.X, pady=(10, 5)) # type: ignore
             
             loss_var = tk.IntVar(value=25)  # Default 25%
             loss_slider = tk.Scale(
                     loss_frame,
                     from_=0,
                     to=100,
-                    orient=tk.HORIZONTAL,
+                    orient=tk.HORIZONTAL, # type: ignore
                     variable=loss_var,
                     bg=self.BG_COLOR,
                     fg=self.FG_COLOR,
                     highlightthickness=0,
                     troughcolor="#2d2d2d"
             )
-            loss_slider.pack(fill=tk.X, pady=(0, 10))
+            loss_slider.pack(fill=tk.X, pady=(0, 10)) # type: ignore
             
             # Button frame
             button_frame = tk.Frame(dialog, bg=self.BG_COLOR)
-            button_frame.pack(fill=tk.X, pady=10)
+            button_frame.pack(fill=tk.X, pady=10) # type: ignore
             
             # Apply button
             def apply_packet_loss():
@@ -1160,10 +1160,10 @@ class DebugChatGUI(ChatGUI):
                     command=apply_packet_loss,
                     bg=self.BUTTON_BG_COLOR,
                     fg=self.FG_COLOR,
-                    relief=tk.FLAT,
+                    relief=tk.FLAT, # type: ignore
                     activebackground=self.BUTTON_ACTIVE_BG,
                     activeforeground=self.FG_COLOR
-            ).pack(side=tk.LEFT, padx=5)
+            ).pack(side=tk.LEFT, padx=5) # type: ignore
             
             # Cancel button
             tk.Button(
@@ -1172,10 +1172,10 @@ class DebugChatGUI(ChatGUI):
                     command=dialog.destroy,
                     bg=self.BUTTON_BG_COLOR,
                     fg=self.FG_COLOR,
-                    relief=tk.FLAT,
+                    relief=tk.FLAT, # type: ignore
                     activebackground=self.BUTTON_ACTIVE_BG,
                     activeforeground=self.FG_COLOR
-            ).pack(side=tk.RIGHT, padx=5)
+            ).pack(side=tk.RIGHT, padx=5) # type: ignore
         
         except Exception as e:
             self.append_to_chat(f"Error simulating packet loss: {e}")
@@ -1211,9 +1211,9 @@ class DebugChatGUI(ChatGUI):
                     text="Message:",
                     bg=self.BG_COLOR,
                     fg=self.FG_COLOR,
-                    font=("Consolas", 10),
+                    font=("Consolas", 10), # type: ignore
                     anchor="w"
-            ).pack(fill=tk.X, padx=20, pady=(10, 5))
+            ).pack(fill=tk.X, padx=20, pady=(10, 5)) # type: ignore
             
             message_entry = tk.Entry(
                     dialog,
@@ -1222,7 +1222,7 @@ class DebugChatGUI(ChatGUI):
                     fg=self.FG_COLOR,
                     insertbackground=self.FG_COLOR
             )
-            message_entry.pack(fill=tk.X, padx=20, pady=(0, 10))
+            message_entry.pack(fill=tk.X, padx=20, pady=(0, 10)) # type: ignore
             message_entry.insert(0, "This is a duplicate message")
             
             # Count input
@@ -1233,25 +1233,25 @@ class DebugChatGUI(ChatGUI):
                     fg=self.FG_COLOR,
                     font=("Consolas", 10),
                     anchor="w"
-            ).pack(fill=tk.X, padx=20, pady=(10, 5))
+            ).pack(fill=tk.X, padx=20, pady=(10, 5)) # type: ignore
             
             count_var = tk.IntVar(value=3)  # Default 3 duplicates
             count_slider = tk.Scale(
                     dialog,
                     from_=2,
                     to=10,
-                    orient=tk.HORIZONTAL,
+                    orient=tk.HORIZONTAL, # type: ignore
                     variable=count_var,
                     bg=self.BG_COLOR,
                     fg=self.FG_COLOR,
                     highlightthickness=0,
                     troughcolor="#2d2d2d"
             )
-            count_slider.pack(fill=tk.X, padx=20, pady=(0, 10))
+            count_slider.pack(fill=tk.X, padx=20, pady=(0, 10)) # type: ignore
             
             # Button frame
             button_frame = tk.Frame(dialog, bg=self.BG_COLOR)
-            button_frame.pack(fill=tk.X, pady=10)
+            button_frame.pack(fill=tk.X, pady=10) # type: ignore
             
             # Send button
             def send_duplicates():
@@ -1282,10 +1282,10 @@ class DebugChatGUI(ChatGUI):
                     command=send_duplicates,
                     bg=self.BUTTON_BG_COLOR,
                     fg=self.FG_COLOR,
-                    relief=tk.FLAT,
+                    relief=tk.FLAT, # type: ignore
                     activebackground=self.BUTTON_ACTIVE_BG,
                     activeforeground=self.FG_COLOR
-            ).pack(side=tk.LEFT, padx=5)
+            ).pack(side=tk.LEFT, padx=5) # type: ignore
             
             # Cancel button
             tk.Button(
@@ -1294,10 +1294,10 @@ class DebugChatGUI(ChatGUI):
                     command=dialog.destroy,
                     bg=self.BUTTON_BG_COLOR,
                     fg=self.FG_COLOR,
-                    relief=tk.FLAT,
+                    relief=tk.FLAT, # type: ignore
                     activebackground=self.BUTTON_ACTIVE_BG,
                     activeforeground=self.FG_COLOR
-            ).pack(side=tk.RIGHT, padx=5)
+            ).pack(side=tk.RIGHT, padx=5) # type: ignore
         
         except Exception as e:
             self.append_to_chat(f"Error creating duplicate message dialog: {e}")
@@ -1324,7 +1324,7 @@ class DebugChatGUI(ChatGUI):
                     fg=self.FG_COLOR,
                     font=("Consolas", 10),
                     anchor="w"
-            ).pack(fill=tk.X, padx=20, pady=(20, 5))
+            ).pack(fill=tk.X, padx=20, pady=(20, 5)) # type: ignore
             
             send_counter_entry = tk.Entry(
                     dialog,
@@ -1333,7 +1333,7 @@ class DebugChatGUI(ChatGUI):
                     fg=self.FG_COLOR,
                     insertbackground=self.FG_COLOR
             )
-            send_counter_entry.pack(fill=tk.X, padx=20, pady=(0, 10))
+            send_counter_entry.pack(fill=tk.X, padx=20, pady=(0, 10)) # type: ignore
             
             # Pre-fill with current value if available
             if hasattr(self.client.protocol, 'message_counter'):
@@ -1347,7 +1347,7 @@ class DebugChatGUI(ChatGUI):
                     fg=self.FG_COLOR,
                     font=("Consolas", 10),
                     anchor="w"
-            ).pack(fill=tk.X, padx=20, pady=(10, 5))
+            ).pack(fill=tk.X, padx=20, pady=(10, 5)) # type: ignore
             
             peer_counter_entry = tk.Entry(
                     dialog,
@@ -1356,7 +1356,7 @@ class DebugChatGUI(ChatGUI):
                     fg=self.FG_COLOR,
                     insertbackground=self.FG_COLOR
             )
-            peer_counter_entry.pack(fill=tk.X, padx=20, pady=(0, 10))
+            peer_counter_entry.pack(fill=tk.X, padx=20, pady=(0, 10)) # type: ignore
             
             # Pre-fill with current value if available
             if hasattr(self.client.protocol, 'peer_counter'):
@@ -1368,13 +1368,13 @@ class DebugChatGUI(ChatGUI):
                     text="WARNING: Setting custom counters may break message encryption.\nOnly use for debugging!",
                     bg=self.BG_COLOR,
                     fg="#ff6b6b",
-                    justify=tk.LEFT
+                    justify=tk.LEFT # type: ignore
             )
-            warning_label.pack(fill=tk.X, padx=20, pady=10)
+            warning_label.pack(fill=tk.X, padx=20, pady=10) # type: ignore
             
             # Buttons frame
             buttons_frame = tk.Frame(dialog, bg=self.BG_COLOR)
-            buttons_frame.pack(fill=tk.X, padx=20, pady=10)
+            buttons_frame.pack(fill=tk.X, padx=20, pady=10) # type: ignore
             
             def apply_counters():
                 try:
@@ -1401,11 +1401,11 @@ class DebugChatGUI(ChatGUI):
                     command=apply_counters,
                     bg=self.BUTTON_BG_COLOR,
                     fg=self.FG_COLOR,
-                    relief=tk.FLAT,
+                    relief=tk.FLAT, # type: ignore
                     activebackground=self.BUTTON_ACTIVE_BG,
                     activeforeground=self.FG_COLOR
             )
-            apply_btn.pack(side=tk.LEFT, padx=5)
+            apply_btn.pack(side=tk.LEFT, padx=5) # type: ignore
             
             # Cancel button
             cancel_btn = tk.Button(
@@ -1414,11 +1414,11 @@ class DebugChatGUI(ChatGUI):
                     command=dialog.destroy,
                     bg=self.BUTTON_BG_COLOR,
                     fg=self.FG_COLOR,
-                    relief=tk.FLAT,
+                    relief=tk.FLAT, # type: ignore
                     activebackground=self.BUTTON_ACTIVE_BG,
                     activeforeground=self.FG_COLOR
             )
-            cancel_btn.pack(side=tk.RIGHT, padx=5)
+            cancel_btn.pack(side=tk.RIGHT, padx=5) # type: ignore
         
         except Exception as e:
             self.append_to_chat(f"Error setting message counters: {e}")
@@ -1456,7 +1456,7 @@ class DebugChatGUI(ChatGUI):
                     fg=self.FG_COLOR,
                     font=("Consolas", 10),
                     anchor="w"
-            ).pack(fill=tk.X, padx=20, pady=(10, 5))
+            ).pack(fill=tk.X, padx=20, pady=(10, 5)) # type: ignore
             
             message_entry = tk.Entry(
                     dialog,
@@ -1465,7 +1465,7 @@ class DebugChatGUI(ChatGUI):
                     fg=self.FG_COLOR,
                     insertbackground=self.FG_COLOR
             )
-            message_entry.pack(fill=tk.X, padx=20, pady=(0, 10))
+            message_entry.pack(fill=tk.X, padx=20, pady=(0, 10)) # type: ignore
             message_entry.insert(0, "Testing protocol version compatibility")
             
             # Version input
@@ -1476,7 +1476,7 @@ class DebugChatGUI(ChatGUI):
                     fg=self.FG_COLOR,
                     font=("Consolas", 10),
                     anchor="w"
-            ).pack(fill=tk.X, padx=20, pady=(10, 5))
+            ).pack(fill=tk.X, padx=20, pady=(10, 5)) # type: ignore
             
             # Get the current protocol version
             current_version = PROTOCOL_VERSION
@@ -1488,7 +1488,7 @@ class DebugChatGUI(ChatGUI):
                     fg=self.FG_COLOR,
                     insertbackground=self.FG_COLOR
             )
-            version_entry.pack(fill=tk.X, padx=20, pady=(0, 10))
+            version_entry.pack(fill=tk.X, padx=20, pady=(0, 10)) # type: ignore
             version_entry.insert(0, str(current_version - 1))  # Default to previous version
             
             # Current version label
@@ -1499,11 +1499,11 @@ class DebugChatGUI(ChatGUI):
                     fg=self.FG_COLOR,
                     font=("Consolas", 9),
                     anchor="w"
-            ).pack(fill=tk.X, padx=20, pady=(0, 10))
+            ).pack(fill=tk.X, padx=20, pady=(0, 10)) # type: ignore
             
             # Button frame
             button_frame = tk.Frame(dialog, bg=self.BG_COLOR)
-            button_frame.pack(fill=tk.X, pady=10)
+            button_frame.pack(fill=tk.X, pady=10) # type: ignore
             
             # Send button
             def send_with_version():
@@ -1546,10 +1546,10 @@ class DebugChatGUI(ChatGUI):
                     command=send_with_version,
                     bg=self.BUTTON_BG_COLOR,
                     fg=self.FG_COLOR,
-                    relief=tk.FLAT,
+                    relief=tk.FLAT, # type: ignore # type: ignore
                     activebackground=self.BUTTON_ACTIVE_BG,
                     activeforeground=self.FG_COLOR
-            ).pack(side=tk.LEFT, padx=5)
+            ).pack(side=tk.LEFT, padx=5) # type: ignore
             
             # Cancel button
             tk.Button(
@@ -1558,10 +1558,10 @@ class DebugChatGUI(ChatGUI):
                     command=dialog.destroy,
                     bg=self.BUTTON_BG_COLOR,
                     fg=self.FG_COLOR,
-                    relief=tk.FLAT,
+                    relief=tk.FLAT, # type: ignore
                     activebackground=self.BUTTON_ACTIVE_BG,
                     activeforeground=self.FG_COLOR
-            ).pack(side=tk.RIGHT, padx=5)
+            ).pack(side=tk.RIGHT, padx=5) # type: ignore
         
         except Exception as e:
             self.append_to_chat(f"Error creating protocol version test dialog: {e}")
@@ -1639,16 +1639,42 @@ class DebugGUISecureChatClient(GUISecureChatClient):
             else:
                 print(f"Key exchange init error: {e}")
     
+    def handle_key_exchange_response(self, message_data: bytes):
+        """Handle key exchange response - override to extract and store protocol version."""
+        try:
+            # Extract protocol version from message
+            message = json.loads(message_data.decode('utf-8'))
+            self.peer_version = message.get("version")
+            
+            # Debug logging
+            if self.gui:
+                self.gui.root.after(0, lambda: self.gui.append_to_chat(
+                        f"DEBUG: Key exchange response from peer (version {self.peer_version})", is_message=False))
+            
+            # Call parent method to handle the key exchange
+            super().handle_key_exchange_response(message_data)
+            
+            # Update debug info after key exchange response
+            if self.gui:
+                self.gui.root.after(0, lambda: self.gui.update_debug_info())
+        
+        except Exception as e:
+            if self.gui:
+                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Key exchange response error: {e}"))
+            else:
+                print(f"Key exchange response error: {e}")
+    
     def handle_keepalive(self) -> None:
         """Handle keepalive messages from the server with GUI updates."""
         try:
+            # Update last keepalive received time
+            self.last_keepalive_received = time.time()
+            
             # Call parent method to handle the keepalive
             if self.respond_to_keepalive:
                 super().handle_keepalive()
                 self.last_keepalive_sent = time.time()
             
-            # Update last keepalive received time
-            self.last_keepalive_received = time.time()
             
             # Debug logging
             if self.gui:
@@ -1663,6 +1689,13 @@ class DebugGUISecureChatClient(GUISecureChatClient):
     
     def _send_delivery_confirmation(self, confirmed_counter: int):
         """Send delivery confirmation - override to add debug control."""
+        if self.packet_loss_percentage > 0:
+            if random.randint(1, 100) <= self.packet_loss_percentage:
+                if self.gui:
+                    self.gui.root.after(0, lambda: self.gui.append_to_chat(
+                            f"DEBUG: Packet loss simulated ({self.packet_loss_percentage}%) for delivery confirmation", is_message=False))
+                return
+            
         if self.send_delivery_confirmations:
             super()._send_delivery_confirmation(confirmed_counter)
         else:
@@ -1677,10 +1710,6 @@ class DebugGUISecureChatClient(GUISecureChatClient):
             return None
         
         try:
-            # Simulate network latency if configured
-            if self.simulated_latency > 0:
-                time.sleep(self.simulated_latency)
-            
             # Simulate packet loss
             if self.packet_loss_percentage > 0:
                 if random.randint(1, 100) <= self.packet_loss_percentage:
@@ -1688,6 +1717,11 @@ class DebugGUISecureChatClient(GUISecureChatClient):
                         self.gui.root.after(0, lambda: self.gui.append_to_chat(
                                 f"DEBUG: Packet loss simulated ({self.packet_loss_percentage}%)", is_message=False))
                     return None
+                
+            # Simulate network latency if configured
+            if self.simulated_latency > 0:
+                time.sleep(self.simulated_latency)
+            
             
             # Call parent method to send the message
             return super().send_message(text)

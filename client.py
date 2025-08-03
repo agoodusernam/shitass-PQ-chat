@@ -11,7 +11,11 @@ import os
 import time
 from shared import SecureChatProtocol, send_message, receive_message, MSG_TYPE_FILE_METADATA, \
     MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT, MSG_TYPE_FILE_COMPLETE, MSG_TYPE_KEY_EXCHANGE_RESET, \
-    MSG_TYPE_KEEP_ALIVE, MSG_TYPE_KEEP_ALIVE_RESPONSE, MSG_TYPE_DELIVERY_CONFIRMATION, MSG_TYPE_EMERGENCY_CLOSE, PROTOCOL_VERSION
+    MSG_TYPE_KEEP_ALIVE, MSG_TYPE_KEEP_ALIVE_RESPONSE, MSG_TYPE_DELIVERY_CONFIRMATION, MSG_TYPE_EMERGENCY_CLOSE, \
+    MSG_TYPE_INITIATE_KEY_EXCHANGE, MSG_TYPE_SERVER_FULL, MSG_TYPE_KEY_EXCHANGE_COMPLETE, MSG_TYPE_SERVER_VERSION_INFO, \
+    PROTOCOL_VERSION, MSG_TYPE_ERROR, MSG_TYPE_KEY_VERIFICATION, MSG_TYPE_ENCRYPTED_MESSAGE, MSG_TYPE_KEY_EXCHANGE_RESPONSE, \
+    MSG_TYPE_KEY_EXCHANGE_INIT
+
 
 class SecureChatClient:
     
@@ -50,6 +54,11 @@ class SecureChatClient:
         # File transfer state
         self.pending_file_transfers = {}  # Track outgoing file transfers
         self.active_file_metadata = {}    # Track incoming file metadata
+        
+        # Server version information
+        self.server_version = None
+        self.server_protocol_version = None
+        self.server_compatible_versions = None
         
     def connect(self) -> bool:
         """Connect to the chat server and start the message receiving thread.
@@ -140,18 +149,18 @@ class SecureChatClient:
                 message = json.loads(message_data.decode('utf-8'))
                 message_type = message.get("type")
                 
-                if message_type == 1:  # MSG_TYPE_KEY_EXCHANGE_INIT
+                if message_type == MSG_TYPE_KEY_EXCHANGE_INIT:  # MSG_TYPE_KEY_EXCHANGE_INIT
                     self.handle_key_exchange_init(message_data)
-                elif message_type == 2:  # MSG_TYPE_KEY_EXCHANGE_RESPONSE
+                elif message_type == MSG_TYPE_KEY_EXCHANGE_RESPONSE:  # MSG_TYPE_KEY_EXCHANGE_RESPONSE
                     self.handle_key_exchange_response(message_data)
-                elif message_type == 3:  # MSG_TYPE_ENCRYPTED_MESSAGE
+                elif message_type == MSG_TYPE_ENCRYPTED_MESSAGE:  # MSG_TYPE_ENCRYPTED_MESSAGE
                     if self.key_exchange_complete:
                         self.handle_encrypted_message(message_data)
                     else:
                         print("\nReceived encrypted message before key exchange complete")
-                elif message_type == 4:  # MSG_TYPE_ERROR
+                elif message_type == MSG_TYPE_ERROR:
                     print(f"\nServer error: {message.get('error', 'Unknown error')}")
-                elif message_type == 5:  # MSG_TYPE_KEY_VERIFICATION
+                elif message_type == MSG_TYPE_KEY_VERIFICATION:
                     self.handle_key_verification_message(message_data)
                 elif message_type == MSG_TYPE_KEY_EXCHANGE_RESET:
                     self.handle_key_exchange_reset(message_data)
@@ -162,10 +171,14 @@ class SecureChatClient:
                         self.handle_delivery_confirmation(message_data)
                 elif message_type == MSG_TYPE_EMERGENCY_CLOSE:
                     self.handle_emergency_close(message_data)
-                elif message.get("type") == "key_exchange_complete":
+                elif message_type == MSG_TYPE_KEY_EXCHANGE_COMPLETE:
                     self.handle_key_exchange_complete()
-                elif message.get("type") == "initiate_key_exchange":
+                elif message_type == MSG_TYPE_INITIATE_KEY_EXCHANGE:
                     self.initiate_key_exchange()
+                elif message_type == MSG_TYPE_SERVER_FULL:
+                    self.handle_server_full()
+                elif message_type == MSG_TYPE_SERVER_VERSION_INFO:
+                    self.handle_server_version_info(message_data)
                 else:
                     print(f"\nUnknown message type: {message_type}")
                 return  # Successfully processed as JSON message
@@ -713,6 +726,37 @@ class SecureChatClient:
             
         except Exception as e:
             print(f"Error handling file completion: {e}")
+    
+    def handle_server_full(self) -> None:
+        """Handle server full notification."""
+        print("\n⚠️ Server is full. Cannot connect at this time.")
+        print("Please try again later or contact the server administrator.")
+        self.disconnect()
+    
+    def handle_server_version_info(self, message_data: bytes) -> None:
+        """Handle server version information."""
+        try:
+            message = json.loads(message_data.decode('utf-8'))
+            
+            # Store server version information
+            self.server_version = message.get("server_version")
+            self.server_protocol_version = message.get("protocol_version")
+            self.server_compatible_versions = message.get("compatible_versions", [])
+            
+            print(f"\n📡 Server Info: v{self.server_version} (Protocol v{self.server_protocol_version})")
+            
+            # Check compatibility
+            if self.server_protocol_version != PROTOCOL_VERSION:
+                print(f"⚠️ Protocol version mismatch: Client v{PROTOCOL_VERSION}, Server v{self.server_protocol_version}")
+                if PROTOCOL_VERSION in self.server_compatible_versions:
+                    print("✅ Versions are compatible for communication")
+                else:
+                    print("❌ Versions may not be compatible - communication issues possible")
+            else:
+                print("✅ Protocol versions match")
+                
+        except Exception as e:
+            print(f"Error handling server version info: {e}")
     
     def _send_file_chunks(self, transfer_id: str, file_path: str) -> None:
         """Send file chunks to peer."""
