@@ -811,7 +811,7 @@ class ChatGUI:
         threading.Thread(target=monitor_thread, daemon=True).start()
     
     def show_verification_dialog(self):
-        """Show the key verification dialogue."""
+        """Show the key verification dialogue using non-intrusive notification."""
         if not self.client or not hasattr(self.client, 'protocol'):
             return
         
@@ -821,31 +821,24 @@ class ChatGUI:
         try:
             fingerprint = self.client.protocol.get_own_key_fingerprint()
             
-            dialog_text = f"""Key Exchange Complete!
-
-{fingerprint}
-
-INSTRUCTIONS:
-1. Compare the fingerprint above with the other person through a
-   separate secure channel (phone call, in person, etc.)
-2. If the fingerprints match exactly, click 'Verify'
-3. If they don't match or you're unsure, click 'Don't Verify'
-
-Do the fingerprints match?"""
+            self.play_notification_sound()
             
-            result = messagebox.askyesno("Key Verification", dialog_text)
+            # Show Windows notification if enabled
+            self.show_windows_notification("Key exchange complete - verification required")
             
-            # Send verification result
-            self.client.confirm_key_verification(result)
+            self.append_to_chat("KEY EXCHANGE COMPLETE!")
+            self.append_to_chat(f"Fingerprint: {fingerprint}")
+            self.append_to_chat("")
+            self.append_to_chat("VERIFICATION REQUIRED:")
+            self.append_to_chat("1. Compare the fingerprint above with the other person through a")
+            self.append_to_chat("   separate secure channel (phone call, in person, etc.)")
+            self.append_to_chat("2. Type '/y' if the fingerprints match exactly")
+            self.append_to_chat("3. Type '/n' if they don't match or you're unsure")
+            self.append_to_chat("")
+            self.append_to_chat("⚠️  Please verify the key to start secure messaging!")
             
-            if result:
-                self.append_to_chat("You verified the peer's key.")
-                self.update_status("Verified, Secure")
-            else:
-                self.append_to_chat("You did not verify the peer's key.")
-                self.update_status("Not Verified, Secure")
-            
-            self.append_to_chat("You can now send messages!")
+            # Store the verification state for later processing
+            self.client.verification_pending = True
         
         except Exception as e:
             self.append_to_chat(f"Verification error: {e}")
@@ -863,22 +856,136 @@ Do the fingerprints match?"""
         if not self.connected or not self.client:
             return "break"
         
-        # Check if verification is complete (like console client does)
-        if not hasattr(self.client, 'verification_complete') or not self.client.verification_complete:
-            self.append_to_chat("Cannot send messages - verification not complete")
-            return "break"
-        
         message = self.message_entry.get("1.0", "end-1c").strip()
         if not message:
             return "break"
         
-        # Handle special commands
+        # Handle special commands (these work even during verification)
         if message.lower() == '/quit':
             self.disconnect_from_server()
             return "break"
         if message.lower() == '/verify':
             self.show_verification_dialog()
             self.message_entry.delete("1.0", tk.END)
+            return "break"
+        
+        # Handle verification commands
+        if message.lower() in ['/vy', '/verify yes', '/yes', '/y']:
+            if hasattr(self.client, 'verification_pending') and self.client.verification_pending:
+                try:
+                    self.client.confirm_key_verification(True)
+                    self.client.verification_pending = False
+                    self.append_to_chat("✅ You verified the peer's key.")
+                    self.update_status("Verified, Secure")
+                    self.append_to_chat("You can now send messages!")
+                except Exception as e:
+                    self.append_to_chat(f"Verification error: {e}")
+                self.message_entry.delete("1.0", tk.END)
+                return "break"
+            elif hasattr(self.client, 'pending_file_requests') and self.client.pending_file_requests:
+                # Handle file transfer acceptance when no verification is pending
+                transfer_id = list(self.client.pending_file_requests.keys())[-1]
+                metadata = self.client.pending_file_requests[transfer_id]
+                try:
+                    # Send acceptance
+                    accept_msg = self.client.protocol.create_file_accept_message(transfer_id)
+                    send_message(self.client.socket, accept_msg)
+                    self.file_transfer_window.add_transfer_message(
+                        f"File transfer accepted: {metadata['filename']}", transfer_id)
+                    self.append_to_chat(f"✅ Accepted file transfer: {metadata['filename']}")
+                    # Remove from pending requests
+                    del self.client.pending_file_requests[transfer_id]
+                except Exception as e:
+                    self.append_to_chat(f"Error accepting file transfer: {e}")
+                self.message_entry.delete("1.0", tk.END)
+                return "break"
+            else:
+                self.append_to_chat("No verification or file transfer pending.")
+                self.message_entry.delete("1.0", tk.END)
+                return "break"
+        
+        if message.lower() in ['/vn', '/verify no', '/no', '/n']:
+            if hasattr(self.client, 'verification_pending') and self.client.verification_pending:
+                try:
+                    self.client.confirm_key_verification(False)
+                    self.client.verification_pending = False
+                    self.append_to_chat("❌ You did not verify the peer's key.")
+                    self.update_status("Not Verified, Secure")
+                    self.append_to_chat("You can now send messages!")
+                except Exception as e:
+                    self.append_to_chat(f"Verification error: {e}")
+                self.message_entry.delete("1.0", tk.END)
+                return "break"
+            elif hasattr(self.client, 'pending_file_requests') and self.client.pending_file_requests:
+                # Handle file transfer rejection when no verification is pending
+                transfer_id = list(self.client.pending_file_requests.keys())[-1]
+                metadata = self.client.pending_file_requests[transfer_id]
+                try:
+                    # Send rejection
+                    reject_msg = self.client.protocol.create_file_reject_message(transfer_id)
+                    send_message(self.client.socket, reject_msg)
+                    self.file_transfer_window.add_transfer_message("File transfer rejected.")
+                    self.append_to_chat(f"❌ Rejected file transfer: {metadata['filename']}")
+                    # Remove from pending requests and active metadata
+                    del self.client.pending_file_requests[transfer_id]
+                    if transfer_id in self.client.active_file_metadata:
+                        del self.client.active_file_metadata[transfer_id]
+                except Exception as e:
+                    self.append_to_chat(f"Error rejecting file transfer: {e}")
+                self.message_entry.delete("1.0", tk.END)
+                return "break"
+            else:
+                self.append_to_chat("No verification or file transfer pending.")
+                self.message_entry.delete("1.0", tk.END)
+                return "break"
+        
+        # Handle file transfer commands
+        if message.lower() in ['/accept', '/y']:
+            if hasattr(self.client, 'pending_file_requests') and self.client.pending_file_requests:
+                # Accept the most recent file transfer request
+                transfer_id = list(self.client.pending_file_requests.keys())[-1]
+                metadata = self.client.pending_file_requests[transfer_id]
+                try:
+                    # Send acceptance
+                    accept_msg = self.client.protocol.create_file_accept_message(transfer_id)
+                    send_message(self.client.socket, accept_msg)
+                    self.file_transfer_window.add_transfer_message(
+                        f"File transfer accepted: {metadata['filename']}", transfer_id)
+                    self.append_to_chat(f"✅ Accepted file transfer: {metadata['filename']}")
+                    # Remove from pending requests
+                    del self.client.pending_file_requests[transfer_id]
+                except Exception as e:
+                    self.append_to_chat(f"Error accepting file transfer: {e}")
+            else:
+                self.append_to_chat("No pending file transfer requests.")
+            self.message_entry.delete("1.0", tk.END)
+            return "break"
+        
+        if message.lower() in ['/reject', '/n']:
+            if hasattr(self.client, 'pending_file_requests') and self.client.pending_file_requests:
+                # Reject the most recent file transfer request
+                transfer_id = list(self.client.pending_file_requests.keys())[-1]
+                metadata = self.client.pending_file_requests[transfer_id]
+                try:
+                    # Send rejection
+                    reject_msg = self.client.protocol.create_file_reject_message(transfer_id)
+                    send_message(self.client.socket, reject_msg)
+                    self.file_transfer_window.add_transfer_message("File transfer rejected.")
+                    self.append_to_chat(f"❌ Rejected file transfer: {metadata['filename']}")
+                    # Remove from pending requests and active metadata
+                    del self.client.pending_file_requests[transfer_id]
+                    if transfer_id in self.client.active_file_metadata:
+                        del self.client.active_file_metadata[transfer_id]
+                except Exception as e:
+                    self.append_to_chat(f"Error rejecting file transfer: {e}")
+            else:
+                self.append_to_chat("No pending file transfer requests.")
+            self.message_entry.delete("1.0", tk.END)
+            return "break"
+        
+        # Check if verification is complete (like console client does)
+        if not hasattr(self.client, 'verification_complete') or not self.client.verification_complete:
+            self.append_to_chat("Cannot send messages - verification not complete")
             return "break"
         
         # Send the message
@@ -1485,31 +1592,30 @@ class GUISecureChatClient(SecureChatClient):
             # Store metadata for potential acceptance
             self.active_file_metadata[transfer_id] = metadata
             
-            # Show file acceptance dialog in GUI thread
             if self.gui:
-                def show_file_dialog():
-                    result = messagebox.askyesno(
-                            "Incoming File Transfer",
-                            f"Accept file transfer?\n\n"
-                            f"Filename: {metadata['filename']}\n"
-                            f"Size: {bytes_to_human_readable(metadata['file_size'])}\n"
-                            f"Chunks: {metadata['total_chunks']}"
-                    )
+                def show_file_notification():
+                    # Play notification sound
+                    self.gui.play_notification_sound()
                     
-                    if result:
-                        # Send acceptance
-                        accept_msg = self.protocol.create_file_accept_message(transfer_id)
-                        send_message(self.socket, accept_msg)
-                        self.gui.file_transfer_window.add_transfer_message(
-                            f"File transfer accepted: {metadata['filename']}", transfer_id)
-                    else:
-                        # Send rejection
-                        reject_msg = self.protocol.create_file_reject_message(transfer_id)
-                        send_message(self.socket, reject_msg)
-                        self.gui.file_transfer_window.add_transfer_message("File transfer rejected.")
-                        del self.active_file_metadata[transfer_id]
+                    # Show Windows notification if enabled
+                    self.gui.show_windows_notification(f"Incoming file transfer: {metadata['filename']}")
+                    
+                    # Display file transfer information in chat
+                    self.gui.append_to_chat("📁 INCOMING FILE TRANSFER")
+                    self.gui.append_to_chat(f"Filename: {metadata['filename']}")
+                    self.gui.append_to_chat(f"Size: {bytes_to_human_readable(metadata['file_size'])}")
+                    self.gui.append_to_chat(f"Chunks: {metadata['total_chunks']}")
+                    self.gui.append_to_chat("")
+                    self.gui.append_to_chat("Type '/accept' or '/y' to accept the file transfer")
+                    self.gui.append_to_chat("Type '/reject' or '/n' to reject the file transfer")
+                    self.gui.append_to_chat("")
+                    
+                    # Store the transfer ID for command processing
+                    if not hasattr(self, 'pending_file_requests'):
+                        self.pending_file_requests = {}
+                    self.pending_file_requests[transfer_id] = metadata
                 
-                self.gui.root.after(0, show_file_dialog)
+                self.gui.root.after(0, show_file_notification)
             else:
                 # Fallback to console behavior
                 super().handle_file_metadata(decrypted_message)
