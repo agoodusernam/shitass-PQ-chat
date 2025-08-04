@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -14,6 +15,7 @@ from tkinter import scrolledtext, messagebox, filedialog
 import winsound
 from PIL import Image, ImageTk, ImageGrab
 from plyer import notification
+from spellchecker import SpellChecker
 from tkinterdnd2 import DND_FILES, TkinterDnD
 
 from client import SecureChatClient
@@ -298,6 +300,12 @@ class ChatGUI:
         self.file_transfer_window.BUTTON_BG_COLOR = self.BUTTON_BG_COLOR
         self.file_transfer_window.TEXT_BG_COLOR = self.TEXT_BG_COLOR
         
+        # Spellcheck functionality
+        self.spell_checker = SpellChecker()
+        self.spellcheck_timer = None
+        self.spellcheck_enabled = True
+        self.misspelled_tags = set()  # Track tags for misspelled words
+        
         # Create GUI elements
         self.create_widgets()
         
@@ -453,9 +461,17 @@ class ChatGUI:
                 insertbackground=self.FG_COLOR, relief=tk.FLAT, wrap=tk.NONE  # type: ignore
         )
         self.message_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))  # type: ignore
+        
+        # Configure text tags for spellcheck
+        self.message_entry.tag_configure("misspelled", underline=True, underlinefg="red")
+        
+        # Bind events
         self.message_entry.bind("<Return>", self.send_message)
         self.message_entry.bind("<KeyPress>", self.on_key_press)
         self.message_entry.bind("<Control-v>", self.on_paste)
+        self.message_entry.bind("<KeyRelease>", self.on_text_change)
+        self.message_entry.bind("<Button-1>", self.on_text_change)
+        self.message_entry.bind("<Button-3>", self.show_spellcheck_menu)
         
         # Ephemeral mode button (with gap before Send File)
         self.ephemeral_btn = tk.Button(
@@ -992,6 +1008,147 @@ Do the fingerprints match?"""
         except Exception as e:
             self.append_to_chat(f"Error handling clipboard image: {e}")
     
+    def on_text_change(self, event=None):
+        """Handle text changes in message entry for spellcheck."""
+        if not self.spellcheck_enabled:
+            return
+        
+        # Cancel existing timer if any
+        if self.spellcheck_timer:
+            self.root.after_cancel(self.spellcheck_timer)
+        
+        # Start new timer for 500ms delay
+        self.spellcheck_timer = self.root.after(500, self.perform_spellcheck)
+    
+    def perform_spellcheck(self):
+        """Perform spellcheck on the message entry text."""
+        if not self.spellcheck_enabled:
+            return
+        
+        try:
+            # Get current text
+            text = self.message_entry.get("1.0", tk.END).strip()
+            
+            # Clear existing misspelled tags
+            for tag in self.misspelled_tags:
+                self.message_entry.tag_delete(tag)
+            self.misspelled_tags.clear()
+            
+            if not text:
+                return
+            
+            # Split text into words and check spelling
+            words = re.findall(r'\b[a-zA-Z]+\b', text)
+            misspelled = self.spell_checker.unknown(words)
+            
+            if not misspelled:
+                return
+            
+            # Find and tag misspelled words
+            for word in misspelled:
+                # Find all occurrences of this word
+                start_pos = "1.0"
+                while True:
+                    pos = self.message_entry.search(word, start_pos, tk.END)
+                    if not pos:
+                        break
+                    
+                    # Check if this is a whole word (not part of another word)
+                    char_before = self.message_entry.get(f"{pos}-1c") if pos != "1.0" else " "
+                    char_after = self.message_entry.get(f"{pos}+{len(word)}c")
+                    
+                    if not char_before.isalpha() and not char_after.isalpha():
+                        # Create unique tag for this occurrence
+                        tag_name = f"misspelled_{len(self.misspelled_tags)}"
+                        end_pos = f"{pos}+{len(word)}c"
+                        
+                        self.message_entry.tag_add(tag_name, pos, end_pos)
+                        self.message_entry.tag_configure(tag_name, underline=True, underlinefg="red")
+                        self.misspelled_tags.add(tag_name)
+                    
+                    start_pos = f"{pos}+1c"
+        
+        except Exception as e:
+            # Silently ignore spellcheck errors to avoid disrupting user experience
+            pass
+    
+    def show_spellcheck_menu(self, event):
+        """Show context menu with spelling suggestions on right-click."""
+        if not self.spellcheck_enabled:
+            return
+        
+        try:
+            # Get the position of the click
+            click_pos = self.message_entry.index(f"@{event.x},{event.y}")
+            
+            # Get the word at the click position
+            word_start = click_pos
+            word_end = click_pos
+            
+            # Find word boundaries
+            while True:
+                char = self.message_entry.get(f"{word_start}-1c")
+                if not char.isalpha():
+                    break
+                word_start = f"{word_start}-1c"
+            
+            while True:
+                char = self.message_entry.get(word_end)
+                if not char.isalpha():
+                    break
+                word_end = f"{word_end}+1c"
+            
+            word = self.message_entry.get(word_start, word_end)
+            
+            if not word or word not in self.spell_checker.unknown([word]):
+                return  # Word is correctly spelled or empty
+            
+            # Create context menu
+            context_menu = tk.Menu(self.root, tearoff=0)
+            
+            # Get suggestions
+            suggestions = list(self.spell_checker.candidates(word))[:5]  # Limit to 5 suggestions
+            
+            if suggestions:
+                for suggestion in suggestions:
+                    context_menu.add_command(
+                        label=suggestion,
+                        command=lambda s=suggestion, start=word_start, end=word_end: self.replace_word(start, end, s)
+                    )
+                context_menu.add_separator()
+            
+            # Add "Add to dictionary" option
+            context_menu.add_command(
+                label="Add to dictionary",
+                command=lambda w=word: self.add_to_dictionary(w)
+            )
+            
+            # Show the menu
+            context_menu.tk_popup(event.x_root, event.y_root)
+        
+        except Exception as e:
+            # Silently ignore menu errors
+            pass
+    
+    def replace_word(self, start_pos, end_pos, replacement):
+        """Replace a word with the selected suggestion."""
+        try:
+            self.message_entry.delete(start_pos, end_pos)
+            self.message_entry.insert(start_pos, replacement)
+            # Trigger spellcheck after replacement
+            self.on_text_change()
+        except Exception:
+            pass
+    
+    def add_to_dictionary(self, word):
+        """Add a word to the personal dictionary."""
+        try:
+            self.spell_checker.word_frequency.load_words([word])
+            # Trigger spellcheck to remove red underline
+            self.on_text_change()
+        except Exception:
+            pass
+    
     def emergency_close(self):
         """Handle emergency close (Control+Q) - send emergency message and close immediately."""
         try:
@@ -1450,8 +1607,8 @@ class GUISecureChatClient(SecureChatClient):
                     complete_chunks = received_chunks - 1  # Exclude current chunk
                     bytes_transferred = (complete_chunks * SEND_CHUNK_SIZE) + len(chunk_info["chunk_data"])
                 
-                # Update GUI with transfer progress every 50 chunks
-                if received_chunks % 50 == 0 or received_chunks == 1:
+                # Update GUI with transfer progress every 10 chunks
+                if received_chunks % 10 == 0 or received_chunks == 1:
                     self.gui.root.after(0, lambda: self.gui.file_transfer_window.update_transfer_progress(
                             transfer_id, metadata['filename'], received_chunks, metadata['total_chunks'],
                             bytes_transferred
@@ -1543,9 +1700,9 @@ class GUISecureChatClient(SecureChatClient):
                 # Update bytes transferred
                 bytes_transferred += len(chunk)
                 
-                # Show progress in GUI every 50 chunks
+                # Show progress in GUI every 10 chunks
                 if self.gui:
-                    if i % 50 == 0:
+                    if i % 10 == 0:
                         filename = os.path.basename(file_path)
                         self.gui.root.after(0, lambda curr=i, total=total_chunks, bytes_sent=bytes_transferred,
                                                       fname=filename:
