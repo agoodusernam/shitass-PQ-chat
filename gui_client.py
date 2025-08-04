@@ -1081,24 +1081,25 @@ Do the fingerprints match?"""
             # Get the position of the click
             click_pos = self.message_entry.index(f"@{event.x},{event.y}")
             
-            # Get the word at the click position
-            word_start = click_pos
-            word_end = click_pos
+            # Get the entire line of text
+            line_start = self.message_entry.index(f"{click_pos} linestart")
+            line_end = self.message_entry.index(f"{click_pos} lineend")
+            line_text = self.message_entry.get(line_start, line_end)
             
-            # Find word boundaries
-            while True:
-                char = self.message_entry.get(f"{word_start}-1c")
-                if not char.isalpha():
+            # Find the word at the click position using regex
+            click_col = int(click_pos.split('.')[1])
+            word_match = None
+            for match in re.finditer(r'\b[a-zA-Z]+\b', line_text):
+                if match.start() <= click_col < match.end():
+                    word_match = match
                     break
-                word_start = f"{word_start}-1c"
             
-            while True:
-                char = self.message_entry.get(word_end)
-                if not char.isalpha():
-                    break
-                word_end = f"{word_end}+1c"
+            if not word_match:
+                return
             
-            word = self.message_entry.get(word_start, word_end)
+            word = word_match.group(0)
+            word_start = f"{line_start}+{word_match.start()}c"
+            word_end = f"{line_start}+{word_match.end()}c"
             
             if not word or word not in self.spell_checker.unknown([word]):
                 return  # Word is correctly spelled or empty
@@ -1350,8 +1351,7 @@ class GUISecureChatClient(SecureChatClient):
             if self.gui:
                 # Display emergency close message in GUI
                 self.gui.root.after(0, lambda: self.gui.append_to_chat("🚨 EMERGENCY CLOSE RECEIVED"))
-                self.gui.root.after(0,
-                                    lambda: self.gui.append_to_chat(f"The other client has activated emergency close."))
+                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"The other client has activated emergency close."))
                 self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Message: {close_message}"))
                 self.gui.root.after(0, lambda: self.gui.append_to_chat("Connection will be terminated immediately."))
             else:
