@@ -34,6 +34,7 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
         self.clients: dict[str, 'SecureChatRequestHandler'] = {}
         self.clients_lock = threading.Lock()
         self.running = False
+        self.client_counter = 0  # Counter for unique client IDs
         
         super().__init__((host, port), SecureChatRequestHandler)
         
@@ -46,7 +47,8 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
             if len(self.clients) >= 2:
                 return False
             
-            client_id = f"client_{len(self.clients) + 1}"
+            self.client_counter += 1
+            client_id = f"client_{self.client_counter}"
             client_handler.client_id = client_id
             self.clients[client_id] = client_handler
             
