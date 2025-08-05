@@ -139,9 +139,6 @@ class SecureChatClient:
 
             All exceptions are caught and logged to prevent crashes.
         """
-        #TODO: MAKE SURE 2 MESSAGES WITH THE SAME COUNTER ARENT ACCEPTED AGAIN
-        # Currently replay attacks are possible if the same message is sent twice
-        # Also stale messages are accepted
         try:
             # First, try to parse as JSON (for control messages including keepalive)
             # This is more efficient for frequent messages like keepalives
@@ -738,17 +735,18 @@ class SecureChatClient:
         try:
             message = json.loads(message_data.decode('utf-8'))
             
-            # Store server version information
-            self.server_version = message.get("server_version")
+            # Store server protocol version information
             self.server_protocol_version = message.get("protocol_version")
-            self.server_compatible_versions = message.get("compatible_versions", [])
             
-            print(f"\n📡 Server Info: v{self.server_version} (Protocol v{self.server_protocol_version})")
+            print(f"\n📡 Server Protocol Version: v{self.server_protocol_version}")
             
-            # Check compatibility
+            # Check compatibility using local compatibility matrix from shared.py
             if self.server_protocol_version != PROTOCOL_VERSION:
                 print(f"⚠️ Protocol version mismatch: Client v{PROTOCOL_VERSION}, Server v{self.server_protocol_version}")
-                if PROTOCOL_VERSION in self.server_compatible_versions:
+                # Use local compatibility matrix since server no longer sends it
+                from shared import PROTOCOL_COMPATIBILITY
+                client_compatible_versions = PROTOCOL_COMPATIBILITY.get(PROTOCOL_VERSION, [PROTOCOL_VERSION])
+                if self.server_protocol_version in client_compatible_versions:
                     print("✅ Versions are compatible for communication")
                 else:
                     print("❌ Versions may not be compatible - communication issues possible")

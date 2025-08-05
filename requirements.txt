@@ -3,3 +3,4 @@ kyber_py~=1.0.1
 pillow~=11.3.0
 plyer~=2.1.0
 tkinterdnd2~=0.4.3
+pyspellchecker~=0.8.3

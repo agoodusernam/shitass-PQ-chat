@@ -509,11 +509,11 @@ class DebugChatGUI(ChatGUI):
             debug_text += "PROTOCOL VERSIONS:\n"
             debug_text += f"  Client Version: {PROTOCOL_VERSION}\n"
             
-            # Server version (if known)
-            if hasattr(self.client, 'server_version'):
-                debug_text += f"  Server Version: {self.client.server_version}\n"
+            # Server protocol version (if known)
+            if hasattr(self.client, 'server_protocol_version'):
+                debug_text += f"  Server Protocol Version: {self.client.server_protocol_version}\n"
             else:
-                debug_text += "  Server Version: Unknown\n"
+                debug_text += "  Server Protocol Version: Unknown\n"
             
             # Peer version (if known)
             if hasattr(self.client, 'peer_version'):
@@ -523,9 +523,9 @@ class DebugChatGUI(ChatGUI):
             
             # Version compatibility check
             if (hasattr(self.client, 'peer_version') and
-                    hasattr(self.client, 'server_version')):
+                    hasattr(self.client, 'server_protocol_version')):
                 if (self.client.peer_version == PROTOCOL_VERSION and
-                        self.client.server_version == PROTOCOL_VERSION):
+                        self.client.server_protocol_version == PROTOCOL_VERSION):
                     debug_text += "  ✅ All versions compatible\n"
                 else:
                     debug_text += "  ⚠️ Version mismatch detected\n"
@@ -1582,7 +1582,6 @@ class DebugGUISecureChatClient(GUISecureChatClient):
         
         # Protocol version tracking
         self.protocol_version = PROTOCOL_VERSION
-        self.server_version = None  # Will be set when we receive server info
         self.peer_version = None  # Will be set during key exchange
         
         # Keepalive tracking

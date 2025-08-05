@@ -394,22 +394,20 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             print(f"Error handling keepalive response from {self.client_id}: {e}")
     
     def send_server_version_info(self):
-        """Send server version and protocol information to the client."""
+        """Send protocol version information to the client."""
         try:
-            # Create server version message
+            # Create protocol version message (only protocol version, no compatibility matrix or server version)
             version_message = {
                 "type": MSG_TYPE_SERVER_VERSION_INFO,
-                "server_version": PROTOCOL_VERSION,
-                "compatible_versions": PROTOCOL_COMPATIBILITY.get(PROTOCOL_VERSION, [PROTOCOL_VERSION]),
-                "message": f"Server v{SERVER_VERSION} using protocol v{PROTOCOL_VERSION}"
+                "protocol_version": PROTOCOL_VERSION
             }
             
             message_data = json.dumps(version_message).encode('utf-8')
             send_message(self.request, message_data)
-            print(f"Sent server version info to {self.client_id}: Server v{SERVER_VERSION}, Protocol v{PROTOCOL_VERSION}")
+            print(f"Sent protocol version info to {self.client_id}: Protocol v{PROTOCOL_VERSION}")
             
         except Exception as e:
-            print(f"Error sending server version info to {self.client_id}: {e}")
+            print(f"Error sending protocol version info to {self.client_id}: {e}")
     
     def disconnect(self):
         """Disconnect the client and clean up."""
