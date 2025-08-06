@@ -12,21 +12,56 @@ import tkinter as tk
 import uuid
 from tkinter import scrolledtext, messagebox, filedialog
 
-import winsound
-from PIL import Image, ImageTk, ImageGrab
-from plyer import notification
-from spellchecker import SpellChecker
-from tkinterdnd2 import DND_FILES, TkinterDnD
+try:
+    import winsound
+    WINSOUND_AVAILABLE = True
+except ImportError:
+    WINSOUND_AVAILABLE = False
+    winsound = None
+    
+try:
+    from PIL import Image, ImageTk, ImageGrab
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+    Image = None  # type: ignore
+    ImageTk = None  # type: ignore
+    ImageGrab = None  # type: ignore
+
+# Plyer for system notifications
+try:
+    from plyer import notification
+    PLYER_AVAILABLE = True
+except ImportError:
+    PLYER_AVAILABLE = False
+    notification = None  # type: ignore
+
+# py-spellchecker for spell checking
+try:
+    from spellchecker import SpellChecker
+    SPELLCHECKER_AVAILABLE = True
+except ImportError:
+    SPELLCHECKER_AVAILABLE = False
+    SpellChecker = None  # type: ignore
+
+# tkinterdnd2 for drag-and-drop file support
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+    TKINTERDND2_AVAILABLE = True
+except ImportError:
+    TKINTERDND2_AVAILABLE = False
+    DND_FILES = None  # type: ignore
+    TkinterDnD = None  # type: ignore
 
 from client import SecureChatClient
-from shared import bytes_to_human_readable, send_message, MSG_TYPE_FILE_METADATA, MSG_TYPE_FILE_ACCEPT, \
-    MSG_TYPE_FILE_REJECT, MSG_TYPE_FILE_COMPLETE, MSG_TYPE_DELIVERY_CONFIRMATION, SEND_CHUNK_SIZE
+from shared import bytes_to_human_readable, send_message, MessageType, SEND_CHUNK_SIZE
 
 GUI_VERSION = 17
 
-
 def get_image_from_clipboard() -> Image.Image | None:
     """Get an image from the clipboard."""
+    if not PIL_AVAILABLE or not ImageGrab:
+        return None
     try:
         image = ImageGrab.grabclipboard()
         if isinstance(image, Image.Image):
@@ -37,8 +72,11 @@ def get_image_from_clipboard() -> Image.Image | None:
         return None
 
 
-def display_image(image: Image.Image, root: tk.mainloop):
+def display_image(image: Image.Image, root):
     """Display an image in a new Tkinter window, scaling it down if it's too large."""
+    if not PIL_AVAILABLE or not ImageTk:
+        messagebox.showerror("Error", "PIL is not available. Cannot display image.")
+        return
     if image is None:
         return
     
@@ -60,7 +98,7 @@ def display_image(image: Image.Image, root: tk.mainloop):
         to_display_image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
     
     window: tk.Toplevel = tk.Toplevel(root)
-    # Update window title to show original and scaled dimensions
+    # Update the window title to show original and scaled dimensions
     if to_display_image.size != image.size:
         window.title(
             f"Image (scaled from {img_width}x{img_height} to {to_display_image.width}x{to_display_image.height})")
@@ -82,26 +120,27 @@ class FileTransferWindow:
     """Separate window for file transfer progress and status updates."""
     
     def __init__(self, parent_root):
+        # noinspection PyUnresolvedReferences
         """Initialize the file transfer window manager.
-        
-        Args:
-            parent_root (tk.Tk): The parent root window that this transfer window
-                will be associated with.
                 
-        Attributes:
-            parent_root (tk.Tk): Reference to the parent window.
-            window (tk.Toplevel): The actual transfer window (created on demand).
-            transfers (dict): Dictionary mapping transfer IDs to transfer information.
-            speed_label (tk.Label): Label widget displaying current transfer speed.
-            transfer_list (scrolledtext.ScrolledText): Text widget showing transfer messages.
-            last_update_time (float): Timestamp of last speed calculation update.
-            last_bytes_transferred (int): Bytes transferred at last speed update.
-            current_speed (float): Current transfer speed in bytes per second.
-            BG_COLOR (str): Background color for dark theme.
-            FG_COLOR (str): Foreground text color for dark theme.
-            ENTRY_BG_COLOR (str): Background color for entry widgets.
-            BUTTON_BG_COLOR (str): Background color for button widgets.
-        """
+                Args:
+                    parent_root (tk.Tk): The parent root window that this transfer window
+                        will be associated with.
+                        
+                Attributes:
+                    parent_root (tk.Tk): Reference to the parent window.
+                    window (tk.Toplevel): The actual transfer window (created on demand).
+                    transfers (dict): Dictionary mapping transfer IDs to transfer information.
+                    speed_label (tk.Label): Label widget displaying current transfer speed.
+                    transfer_list (scrolledtext.ScrolledText): Text widget showing transfer messages.
+                    last_update_time (float): Timestamp of last speed calculation update.
+                    last_bytes_transferred (int): Bytes transferred at last speed update.
+                    current_speed (float): Current transfer speed in bytes per second.
+                    BG_COLOR (str): Background color for dark theme.
+                    FG_COLOR (str): Foreground text color for dark theme.
+                    ENTRY_BG_COLOR (str): Background color for entry widgets.
+                    BUTTON_BG_COLOR (str): Background color for button widgets.
+                """
         self.parent_root = parent_root
         self.window = None
         self.transfers = {}  # transfer_id -> transfer_info
@@ -133,7 +172,7 @@ class FileTransferWindow:
             
             # Top frame for speed display
             top_frame = tk.Frame(self.window, bg=self.BG_COLOR)
-            top_frame.pack(fill=tk.X, padx=10, pady=5)
+            top_frame.pack(fill=tk.X, padx=10, pady=5) # type: ignore
             
             # Speed label in top right
             self.speed_label = tk.Label(
@@ -143,7 +182,7 @@ class FileTransferWindow:
                     fg="#4CAF50",
                     font=("Consolas", 10, "bold")
             )
-            self.speed_label.pack(side=tk.RIGHT)
+            self.speed_label.pack(side=tk.RIGHT) # type: ignore
             
             # Title label
             title_label = tk.Label(
@@ -153,11 +192,11 @@ class FileTransferWindow:
                     fg=self.FG_COLOR,
                     font=("Consolas", 12, "bold")
             )
-            title_label.pack(side=tk.LEFT)
+            title_label.pack(side=tk.LEFT) # type: ignore
             
             # Main frame for transfer list
             main_frame = tk.Frame(self.window, bg=self.BG_COLOR)
-            main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+            main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5) # type: ignore
             
             # Scrollable text area for transfer updates
             self.transfer_list = scrolledtext.ScrolledText(
@@ -171,7 +210,7 @@ class FileTransferWindow:
                     insertbackground=self.FG_COLOR,
                     relief=tk.FLAT
             )
-            self.transfer_list.pack(fill=tk.BOTH, expand=True)
+            self.transfer_list.pack(fill=tk.BOTH, expand=True) # type: ignore
             
             # Handle window closing
             self.window.protocol("WM_DELETE_WINDOW", self.hide_window)
@@ -187,7 +226,7 @@ class FileTransferWindow:
         if self.window:
             self.window.withdraw()
     
-    def add_transfer_message(self, message, transfer_id=None):
+    def add_transfer_message(self, message):
         """Add a message to the transfer window."""
         self.create_window()
         
@@ -211,7 +250,7 @@ class FileTransferWindow:
             self.update_speed(bytes_transferred)
         
         message = f"{filename}: {progress:.1f}% ({current}/{total} chunks)"
-        self.add_transfer_message(message, transfer_id)
+        self.add_transfer_message(message)
     
     def update_speed(self, total_bytes_transferred):
         """Update the transfer speed display."""
@@ -408,7 +447,7 @@ class ChatGUI:
                 bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,  # type: ignore
                 activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR
         )
-        self.connect_btn.pack(side=tk.LEFT, padx=(10, 0))  # type: ignore
+        self.connect_btn.pack(side=tk.LEFT, padx=(10, 0)) # type: ignore
         
         # Sound toggle button
         self.sound_btn = tk.Button(
@@ -426,7 +465,7 @@ class ChatGUI:
                 activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
                 font=("Consolas", 10)
         )
-        self.windows_notif_btn.pack(side=tk.LEFT, padx=(10, 0))  # type: ignore
+        self.windows_notif_btn.pack(side=tk.LEFT, padx=(10, 0)) # type: ignore
         
         # Status indicator (top right)
         self.status_label = tk.Label(
@@ -448,8 +487,9 @@ class ChatGUI:
                 relief=tk.FLAT
         )
         self.chat_display.pack(fill=tk.BOTH, expand=True, pady=(0, 10))  # type: ignore
-        self.chat_display.drop_target_register(DND_FILES)
-        self.chat_display.dnd_bind('<<Drop>>', self.handle_drop)
+        if TKINTERDND2_AVAILABLE:
+            self.chat_display.drop_target_register(DND_FILES) # type: ignore
+            self.chat_display.dnd_bind('<<Drop>>', self.handle_drop) # type: ignore
         
         # Input frame
         self.input_frame = tk.Frame(main_frame, bg=self.BG_COLOR)
@@ -519,6 +559,9 @@ class ChatGUI:
     
     def handle_drop(self, event):
         """Handle file drop events."""
+        if not TKINTERDND2_AVAILABLE:
+            self.append_to_chat("Drag-and-drop support is not available.")
+            return
         if not self.connected or not self.client:
             return
         
@@ -563,6 +606,7 @@ class ChatGUI:
     
     def append_to_chat(self, text, is_message=False):
         """Append text to the chat display."""
+        text = str(text)
         self.chat_display.config(state=tk.NORMAL)  # type: ignore
         formatted_time = time.strftime("%H:%M:%S")
         
@@ -891,7 +935,7 @@ class ChatGUI:
                     accept_msg = self.client.protocol.create_file_accept_message(transfer_id)
                     send_message(self.client.socket, accept_msg)
                     self.file_transfer_window.add_transfer_message(
-                        f"File transfer accepted: {metadata['filename']}", transfer_id)
+                        f"File transfer accepted: {metadata['filename']}")
                     self.append_to_chat(f"✅ Accepted file transfer: {metadata['filename']}")
                     # Remove from pending requests
                     del self.client.pending_file_requests[transfer_id]
@@ -950,7 +994,7 @@ class ChatGUI:
                     accept_msg = self.client.protocol.create_file_accept_message(transfer_id)
                     send_message(self.client.socket, accept_msg)
                     self.file_transfer_window.add_transfer_message(
-                        f"File transfer accepted: {metadata['filename']}", transfer_id)
+                        f"File transfer accepted: {metadata['filename']}")
                     self.append_to_chat(f"✅ Accepted file transfer: {metadata['filename']}")
                     # Remove from pending requests
                     del self.client.pending_file_requests[transfer_id]
@@ -1388,15 +1432,15 @@ class GUISecureChatClient(SecureChatClient):
                 message: dict = json.loads(decrypted_text)
                 message_type = message.get("type")
                 
-                if message_type == MSG_TYPE_FILE_METADATA:
+                if message_type == MessageType.FILE_METADATA:
                     self.handle_file_metadata(decrypted_text)
-                elif message_type == MSG_TYPE_FILE_ACCEPT:
+                elif message_type == MessageType.FILE_ACCEPT:
                     self.handle_file_accept(decrypted_text)
-                elif message_type == MSG_TYPE_FILE_REJECT:
+                elif message_type == MessageType.FILE_REJECT:
                     self.handle_file_reject(decrypted_text)
-                elif message_type == MSG_TYPE_FILE_COMPLETE:
+                elif message_type == MessageType.FILE_COMPLETE:
                     self.handle_file_complete(decrypted_text)
-                elif message_type == MSG_TYPE_DELIVERY_CONFIRMATION:
+                elif message_type == MessageType.DELIVERY_CONFIRMATION:
                     self.handle_delivery_confirmation(message)
                 else:
                     # It's a regular chat message
@@ -1643,7 +1687,7 @@ class GUISecureChatClient(SecureChatClient):
             
             if self.gui:
                 self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
-                    f"File transfer accepted. Sending {filename}...", transfer_id))
+                    f"File transfer accepted. Sending {filename}..."))
             
             # Start sending file chunks in a separate thread to avoid blocking message processing
             chunk_thread = threading.Thread(
@@ -1670,7 +1714,7 @@ class GUISecureChatClient(SecureChatClient):
                 filename = self.pending_file_transfers[transfer_id]["metadata"]["filename"]
                 if self.gui:
                     self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
-                        f"File transfer rejected: {filename} - {reason}", transfer_id))
+                        f"File transfer rejected: {filename} - {reason}"))
                 del self.pending_file_transfers[transfer_id]
         
         except Exception as e:
@@ -1743,7 +1787,7 @@ class GUISecureChatClient(SecureChatClient):
                     self.protocol.reassemble_file(transfer_id, output_path, metadata["file_hash"])
                     if self.gui:
                         self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
-                            f"File received successfully: {output_path}", transfer_id))
+                            f"File received successfully: {output_path}"))
                         # Clear speed when transfer completes
                         self.gui.root.after(0, lambda: self.gui.file_transfer_window.clear_speed())
                     
@@ -1757,7 +1801,7 @@ class GUISecureChatClient(SecureChatClient):
                 except Exception as e:
                     if self.gui:
                         self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
-                            f"File reassembly failed: {e}", transfer_id))
+                            f"File reassembly failed: {e}"))
                 
                 # Clean up
                 del self.active_file_metadata[transfer_id]
@@ -1779,7 +1823,7 @@ class GUISecureChatClient(SecureChatClient):
                 filename = self.pending_file_transfers[transfer_id]["metadata"]["filename"]
                 if self.gui:
                     self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
-                        f"File transfer completed: {filename}", transfer_id))
+                        f"File transfer completed: {filename}"))
                     # Clear speed when transfer completes
                     self.gui.root.after(0, lambda: self.gui.file_transfer_window.clear_speed())
                 del self.pending_file_transfers[transfer_id]
@@ -1824,14 +1868,14 @@ class GUISecureChatClient(SecureChatClient):
                 self.gui.file_transfer_window.update_transfer_progress(transfer_id, fname, curr, total, bytes_sent)
                                     )
                 self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
-                    "File chunks sent successfully.", transfer_id))
+                    "File chunks sent successfully."))
                 # Clear speed when transfer completes
                 self.gui.root.after(0, lambda: self.gui.file_transfer_window.clear_speed())
         
         except Exception as e:
             if self.gui:
                 self.gui.root.after(0, lambda e=e: self.gui.file_transfer_window.add_transfer_message(
-                    f"Error sending file chunks: {e}", transfer_id))
+                    f"Error sending file chunks: {e}"))
             else:
                 print(f"Error sending file chunks: {e}")
     
@@ -1906,7 +1950,10 @@ def load_theme_colors():
 
 def main():
     """Main function to run the GUI chat client."""
-    root = TkinterDnD.Tk()
+    if TKINTERDND2_AVAILABLE:
+        root = TkinterDnD.Tk()
+    else:
+        root = tk.Tk()
     root.title("Secure Chat Client")
     
     # Load theme colors

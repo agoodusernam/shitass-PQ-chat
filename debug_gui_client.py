@@ -63,6 +63,7 @@ class DebugChatGUI(ChatGUI):
     
     def _periodic_debug_update(self):
         """Periodic callback to update debug information."""
+        # noinspection PyBroadException
         try:
             # Update debug info if visible and client exists
             if self.debug_visible and hasattr(self, 'client') and self.client:
@@ -643,7 +644,7 @@ class DebugChatGUI(ChatGUI):
             else:
                 debug_text += "  Keepalive Responses: Unknown\n"
             
-            debug_text += "\n" + "=" * 50 + "\n"
+            debug_text += "\n" + "=" * 30 + "\n"
             
             # Update the debug display
             self.debug_display.config(state=tk.NORMAL) # type: ignore # type: ignore
@@ -791,10 +792,10 @@ class DebugChatGUI(ChatGUI):
                     self.append_to_chat("Chain keys updated")
                     self.update_debug_info()
                     dialog.destroy()
-                except ValueError as e:
-                    messagebox.showerror("Error", f"Invalid hex value: {e}")
-                except Exception as e:
-                    messagebox.showerror("Error", f"Failed to set keys: {e}")
+                except ValueError as err:
+                    messagebox.showerror("Error", f"Invalid hex value: {err}")
+                except Exception as err:
+                    messagebox.showerror("Error", f"Failed to set keys: {err}")
             
             # Buttons
             button_frame = tk.Frame(dialog, bg=self.BG_COLOR)
@@ -933,8 +934,8 @@ class DebugChatGUI(ChatGUI):
                     dialog.destroy()
                 except ValueError:
                     messagebox.showerror("Error", "Please enter a valid number")
-                except Exception as e:
-                    messagebox.showerror("Error", f"Failed to set latency: {e}")
+                except Exception as err:
+                    messagebox.showerror("Error", f"Failed to set latency: {err}")
             
             button_frame = tk.Frame(dialog, bg=self.BG_COLOR)
             button_frame.pack(pady=20)
@@ -1049,8 +1050,8 @@ class DebugChatGUI(ChatGUI):
                     self.client.protocol.message_counter = current_counter
                     self.client.protocol.send_chain_key = current_chain_key
                 
-                except Exception as e:
-                    self.append_to_chat(f"Error sending stale message: {e}")
+                except Exception as err:
+                    self.append_to_chat(f"Error sending stale message: {err}")
                 
                 dialog.destroy()
             
@@ -1143,8 +1144,7 @@ class DebugChatGUI(ChatGUI):
                 
                 if loss_percentage == 0:
                     # Disable packet loss simulation
-                    if hasattr(self.client, 'packet_loss_percentage'):
-                        delattr(self.client, 'packet_loss_percentage')
+                    self.client.packet_loss_percentage = 0
                     self.append_to_chat("Packet loss simulation disabled")
                 else:
                     # Store the packet loss percentage in the client
@@ -1271,8 +1271,8 @@ class DebugChatGUI(ChatGUI):
                         send_message(self.client.socket, encrypted_data)
                         self.append_to_chat(f"Sent duplicate {i + 1}/{count}: {message_text}")
                 
-                except Exception as e:
-                    self.append_to_chat(f"Error sending duplicate messages: {e}")
+                except Exception as err:
+                    self.append_to_chat(f"Error sending duplicate messages: {err}")
                 
                 dialog.destroy()
             
@@ -1420,8 +1420,8 @@ class DebugChatGUI(ChatGUI):
             )
             cancel_btn.pack(side=tk.RIGHT, padx=5) # type: ignore
         
-        except Exception as e:
-            self.append_to_chat(f"Error setting message counters: {e}")
+        except Exception as err:
+            self.append_to_chat(f"Error setting message counters: {err}")
     
     def test_protocol_version(self):
         """Test protocol version compatibility by sending messages with different versions."""
@@ -1563,8 +1563,8 @@ class DebugChatGUI(ChatGUI):
                     activeforeground=self.FG_COLOR
             ).pack(side=tk.RIGHT, padx=5) # type: ignore
         
-        except Exception as e:
-            self.append_to_chat(f"Error creating protocol version test dialog: {e}")
+        except Exception as err:
+            self.append_to_chat(f"Error creating protocol version test dialog: {err}")
     
     def on_closing(self):
         """Handle window closing - override to clean up debug timer."""
@@ -1634,7 +1634,7 @@ class DebugGUISecureChatClient(GUISecureChatClient):
         
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Key exchange init error: {e}"))
+                self.gui.root.after(0, lambda er=e: self.gui.append_to_chat(f"Key exchange init error: {er}"))
             else:
                 print(f"Key exchange init error: {e}")
     
@@ -1659,7 +1659,7 @@ class DebugGUISecureChatClient(GUISecureChatClient):
         
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Key exchange response error: {e}"))
+                self.gui.root.after(0, lambda er=e: self.gui.append_to_chat(f"Key exchange response error: {er}"))
             else:
                 print(f"Key exchange response error: {e}")
     
@@ -1680,11 +1680,11 @@ class DebugGUISecureChatClient(GUISecureChatClient):
                 self.gui.root.after(0, lambda: self.gui.append_to_chat(
                         "DEBUG: Keepalive received from server", is_message=False))
         
-        except Exception as e:
+        except Exception as err:
             if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Keepalive error: {e}"))
+                self.gui.root.after(0, lambda er=err: self.gui.append_to_chat(f"Keepalive error: {er}"))
             else:
-                print(f"Keepalive error: {e}")
+                print(f"Keepalive error: {err}")
     
     def _send_delivery_confirmation(self, confirmed_counter: int):
         """Send delivery confirmation - override to add debug control."""
@@ -1722,12 +1722,12 @@ class DebugGUISecureChatClient(GUISecureChatClient):
                 time.sleep(self.simulated_latency)
             
             
-            # Call parent method to send the message
+            # Call the parent method to send the message
             return super().send_message(text)
         
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error sending message: {e}"))
+                self.gui.root.after(0, lambda er=e: self.gui.append_to_chat(f"Error sending message: {er}"))
             else:
                 print(f"Error sending message: {e}")
             return None
@@ -1738,7 +1738,7 @@ def main():
     root = TkinterDnD.Tk()
     root.title("Secure Chat Client (DEBUG)")
     
-    # Load theme colors
+    # Load theme colours
     theme_colors = load_theme_colors()
     
     # Create GUI
@@ -1756,6 +1756,7 @@ def main():
             gui.client = DebugGUISecureChatClient(host, port, gui)
             
             # Start connection in a separate thread
+            # noinspection DuplicatedCode
             def connect_thread():
                 try:
                     if gui.client.connect():
@@ -1771,8 +1772,8 @@ def main():
         
         except ValueError:
             messagebox.showerror("Error", "Invalid port number")
-        except Exception as e:
-            gui.append_to_chat(f"Connection error: {e}")
+        except Exception as err:
+            gui.append_to_chat(f"Connection error: {err}")
     
     gui.connect_to_server = gui_connect
     

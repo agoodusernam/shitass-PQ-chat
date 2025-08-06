@@ -7,34 +7,41 @@ import hashlib
 import shutil
 import gzip
 import io
+from enum import IntEnum
 from typing import Generator
 
-from kyber_py.ml_kem import ML_KEM_1024
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-from cryptography.hazmat.primitives import hashes
-
+try:
+    from kyber_py.ml_kem import ML_KEM_1024
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    from cryptography.hazmat.primitives import hashes
+except ImportError:
+    print("Required cryptographic libraries not found.")
+    raise ImportError("Please install the required libraries with pip install -r requirements.txt")
 # Protocol constants
 PROTOCOL_VERSION = 7
-MSG_TYPE_KEY_EXCHANGE_INIT = 1
-MSG_TYPE_KEY_EXCHANGE_RESPONSE = 2
-MSG_TYPE_ENCRYPTED_MESSAGE = 3
-MSG_TYPE_ERROR = 4
-MSG_TYPE_KEY_VERIFICATION = 5
-MSG_TYPE_FILE_METADATA = 6
-MSG_TYPE_FILE_ACCEPT = 7
-MSG_TYPE_FILE_REJECT = 8
-MSG_TYPE_FILE_CHUNK = 9
-MSG_TYPE_FILE_COMPLETE = 10
-MSG_TYPE_KEY_EXCHANGE_RESET = 11
-MSG_TYPE_KEEP_ALIVE = 12
-MSG_TYPE_KEEP_ALIVE_RESPONSE = 13
-MSG_TYPE_DELIVERY_CONFIRMATION = 14
-MSG_TYPE_EMERGENCY_CLOSE = 15
-MSG_TYPE_INITIATE_KEY_EXCHANGE = 16
-MSG_TYPE_SERVER_FULL = 17
-MSG_TYPE_KEY_EXCHANGE_COMPLETE = 18
-MSG_TYPE_SERVER_VERSION_INFO = 19
+
+class MessageType(IntEnum):
+    """Enumeration of all message types used in the secure chat protocol."""
+    KEY_EXCHANGE_INIT = 1
+    KEY_EXCHANGE_RESPONSE = 2
+    ENCRYPTED_MESSAGE = 3
+    ERROR = 4
+    KEY_VERIFICATION = 5
+    FILE_METADATA = 6
+    FILE_ACCEPT = 7
+    FILE_REJECT = 8
+    FILE_CHUNK = 9
+    FILE_COMPLETE = 10
+    KEY_EXCHANGE_RESET = 11
+    KEEP_ALIVE = 12
+    KEEP_ALIVE_RESPONSE = 13
+    DELIVERY_CONFIRMATION = 14
+    EMERGENCY_CLOSE = 15
+    INITIATE_KEY_EXCHANGE = 16
+    SERVER_FULL = 17
+    KEY_EXCHANGE_COMPLETE = 18
+    SERVER_VERSION_INFO = 19
 
 # File transfer constants
 SEND_CHUNK_SIZE = 1024 * 1024  # 1 MiB chunks for sending
@@ -356,7 +363,7 @@ class SecureChatProtocol:
         """Create a key verification status message."""
         message = {
             "version": PROTOCOL_VERSION,
-            "type": MSG_TYPE_KEY_VERIFICATION,
+            "type": MessageType.KEY_VERIFICATION,
             "verified": verified,
             "own_key_fingerprint": self.get_own_key_fingerprint() if self.own_public_key else ""
         }
@@ -367,7 +374,7 @@ class SecureChatProtocol:
         """Process a key verification message from peer."""
         try:
             message = json.loads(data.decode('utf-8'))
-            if message["type"] != MSG_TYPE_KEY_VERIFICATION:
+            if message["type"] != MessageType.KEY_VERIFICATION:
                 raise ValueError("Invalid message type")
             
             return {
@@ -392,7 +399,7 @@ class SecureChatProtocol:
         """Create initial key exchange message."""
         message = {
             "version": PROTOCOL_VERSION,
-            "type": MSG_TYPE_KEY_EXCHANGE_INIT,
+            "type": MessageType.KEY_EXCHANGE_INIT,
             "public_key": base64.b64encode(public_key).decode('utf-8')
         }
         return json.dumps(message).encode('utf-8')
@@ -401,7 +408,7 @@ class SecureChatProtocol:
         """Create key exchange response message."""
         message = {
             "version": PROTOCOL_VERSION,
-            "type": MSG_TYPE_KEY_EXCHANGE_RESPONSE,
+            "type": MessageType.KEY_EXCHANGE_RESPONSE,
             "ciphertext": base64.b64encode(ciphertext).decode('utf-8'),
             "public_key": base64.b64encode(self.own_public_key).decode('utf-8') if self.own_public_key else ""
         }
@@ -416,7 +423,7 @@ class SecureChatProtocol:
         """
         try:
             message = json.loads(data.decode('utf-8'))
-            if message["type"] != MSG_TYPE_KEY_EXCHANGE_INIT:
+            if message["type"] != MessageType.KEY_EXCHANGE_INIT:
                 raise ValueError("Invalid message type")
             
             # Check protocol version
@@ -453,7 +460,7 @@ class SecureChatProtocol:
         """
         try:
             message = json.loads(data.decode('utf-8'))
-            if message["type"] != MSG_TYPE_KEY_EXCHANGE_RESPONSE:
+            if message["type"] != MessageType.KEY_EXCHANGE_RESPONSE:
                 raise ValueError("Invalid message type")
             
             # Check protocol version
@@ -493,7 +500,7 @@ class SecureChatProtocol:
         # Create AAD from message metadata for authentication
         aad_data = {
             "version": PROTOCOL_VERSION,
-            "type": MSG_TYPE_ENCRYPTED_MESSAGE,
+            "type": MessageType.ENCRYPTED_MESSAGE,
             "counter": self.message_counter
         }
         aad = json.dumps(aad_data, sort_keys=True).encode('utf-8')
@@ -510,7 +517,7 @@ class SecureChatProtocol:
         # Create authenticated message with counter outside the ciphertext
         encrypted_message = {
             "version":    PROTOCOL_VERSION,
-            "type":       MSG_TYPE_ENCRYPTED_MESSAGE,
+            "type":       MessageType.ENCRYPTED_MESSAGE,
             "counter":    self.message_counter,  # Counter is now in plaintext
             "nonce":      base64.b64encode(nonce).decode('utf-8'),
             "ciphertext": base64.b64encode(ciphertext).decode('utf-8')
@@ -525,7 +532,7 @@ class SecureChatProtocol:
         
         try:
             message = json.loads(data.decode('utf-8'))
-            if message["type"] != MSG_TYPE_ENCRYPTED_MESSAGE:
+            if message["type"] != MessageType.ENCRYPTED_MESSAGE:
                 raise ValueError("Invalid message type")
             
             nonce = base64.b64decode(message["nonce"])
@@ -558,7 +565,7 @@ class SecureChatProtocol:
             # Create AAD from message metadata for authentication verification
             aad_data = {
                 "version": version,
-                "type": MSG_TYPE_ENCRYPTED_MESSAGE,
+                "type": MessageType.ENCRYPTED_MESSAGE,
                 "counter": counter
             }
             aad = json.dumps(aad_data, sort_keys=True).encode('utf-8')
@@ -625,7 +632,7 @@ class SecureChatProtocol:
         # Create verification request message
         verification_request = {
             "version": PROTOCOL_VERSION,
-            "type": MSG_TYPE_KEY_VERIFICATION,
+            "type": MessageType.KEY_VERIFICATION,
             "verification_type": "verification_request",
             "words": words
         }
@@ -636,7 +643,7 @@ class SecureChatProtocol:
         try:
             message = json.loads(message_data.decode('utf-8'))
             
-            if message["type"] != MSG_TYPE_KEY_VERIFICATION:
+            if message["type"] != MessageType.KEY_VERIFICATION:
                 raise ValueError("Invalid message type for key verification")
             
             verification_type = message.get("verification_type")
@@ -668,7 +675,7 @@ class SecureChatProtocol:
         # Create verification response message
         verification_response = {
             "version": PROTOCOL_VERSION,
-            "type": MSG_TYPE_KEY_VERIFICATION,
+            "type": MessageType.KEY_VERIFICATION,
             "verification_type": "verification_response",
             "verified": verified
         }
@@ -710,7 +717,7 @@ class SecureChatProtocol:
         
         metadata = {
             "version": PROTOCOL_VERSION,
-            "type": MSG_TYPE_FILE_METADATA,
+            "type": MessageType.FILE_METADATA,
             "transfer_id": transfer_id,
             "filename": file_name,
             "file_size": file_size,  # Original file size for integrity verification
@@ -729,7 +736,7 @@ class SecureChatProtocol:
         """Create a file acceptance message."""
         message = {
             "version": PROTOCOL_VERSION,
-            "type": MSG_TYPE_FILE_ACCEPT,
+            "type": MessageType.FILE_ACCEPT,
             "transfer_id": transfer_id
         }
         return self.encrypt_message(json.dumps(message))
@@ -738,7 +745,7 @@ class SecureChatProtocol:
         """Create a file rejection message."""
         message = {
             "version": PROTOCOL_VERSION,
-            "type": MSG_TYPE_FILE_REJECT,
+            "type": MessageType.FILE_REJECT,
             "transfer_id": transfer_id,
             "reason": reason
         }
@@ -760,7 +767,7 @@ class SecureChatProtocol:
         # Create compact header (no JSON, no base64 for chunk data)
         header = {
             "version":     PROTOCOL_VERSION,
-            "type":        MSG_TYPE_FILE_CHUNK,
+            "type":        MessageType.FILE_CHUNK,
             "transfer_id": transfer_id,
             "chunk_index": chunk_index
         }
@@ -787,7 +794,7 @@ class SecureChatProtocol:
         """Create a file transfer completion message."""
         message = {
             "version": PROTOCOL_VERSION,
-            "type": MSG_TYPE_FILE_COMPLETE,
+            "type": MessageType.FILE_COMPLETE,
             "transfer_id": transfer_id
         }
         return self.encrypt_message(json.dumps(message))
@@ -796,7 +803,7 @@ class SecureChatProtocol:
         """Create a delivery confirmation message for a received text message."""
         message = {
             "version": PROTOCOL_VERSION,
-            "type": MSG_TYPE_DELIVERY_CONFIRMATION,
+            "type": MessageType.DELIVERY_CONFIRMATION,
             "confirmed_counter": confirmed_message_counter
         }
         return self.encrypt_message(json.dumps(message))
@@ -853,7 +860,7 @@ class SecureChatProtocol:
         """Process a file metadata message."""
         try:
             message = json.loads(decrypted_data)
-            if message["type"] != MSG_TYPE_FILE_METADATA:
+            if message["type"] != MessageType.FILE_METADATA:
                 raise ValueError("Invalid message type")
             
             return {
@@ -914,7 +921,7 @@ class SecureChatProtocol:
             chunk_data = plaintext[2 + header_len:]
             header = json.loads(header_json.decode('utf-8'))
             
-            if header["type"] != MSG_TYPE_FILE_CHUNK:
+            if header["type"] != MessageType.FILE_CHUNK:
                 raise ValueError("Invalid message type in decrypted chunk")
             
             # Decryption successful, update the state
@@ -1084,7 +1091,7 @@ def create_error_message(error_text: str) -> bytes:
     """Create an error message."""
     message = {
         "version": PROTOCOL_VERSION,
-        "type": MSG_TYPE_ERROR,
+        "type": MessageType.ERROR,
         "error": error_text
     }
     return json.dumps(message).encode('utf-8')
@@ -1093,7 +1100,7 @@ def create_reset_message() -> bytes:
     """Create a key exchange reset message."""
     message = {
         "version": PROTOCOL_VERSION,
-        "type": MSG_TYPE_KEY_EXCHANGE_RESET,
+        "type": MessageType.KEY_EXCHANGE_RESET,
         "message": "Key exchange reset - other client disconnected"
     }
     return json.dumps(message).encode('utf-8')

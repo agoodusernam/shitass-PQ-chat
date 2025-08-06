@@ -11,9 +11,7 @@ import time
 from typing import Optional
 
 from shared import SecureChatProtocol, send_message, receive_message, create_error_message, create_reset_message, \
-    MSG_TYPE_KEY_EXCHANGE_RESPONSE, MSG_TYPE_KEY_VERIFICATION, MSG_TYPE_KEEP_ALIVE, MSG_TYPE_KEEP_ALIVE_RESPONSE, \
-    MSG_TYPE_INITIATE_KEY_EXCHANGE, MSG_TYPE_SERVER_FULL, MSG_TYPE_KEY_EXCHANGE_COMPLETE, MSG_TYPE_SERVER_VERSION_INFO, \
-    PROTOCOL_VERSION, PROTOCOL_COMPATIBILITY
+    MessageType, PROTOCOL_VERSION
 
 SERVER_VERSION = 5
 
@@ -36,7 +34,7 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
         self.running = False
         self.client_counter = 0  # Counter for unique client IDs
         
-        super().__init__((host, port), SecureChatRequestHandler)
+        super().__init__((host, port), SecureChatRequestHandler) # type: ignore
         
         print(f"Secure chat server started on {host}:{port}")
         print("Waiting for clients to connect...")
@@ -98,7 +96,7 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
             # Tell first client to start key exchange
             try:
                 initiate_message = {
-                    "type": MSG_TYPE_INITIATE_KEY_EXCHANGE,
+                    "type": MessageType.INITIATE_KEY_EXCHANGE,
                     "message": "Starting key exchange..."
                 }
                 message_data = json.dumps(initiate_message).encode('utf-8')
@@ -158,6 +156,7 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
 
 class SecureChatRequestHandler(socketserver.BaseRequestHandler):
     """Handles individual client connections."""
+    server: 'SecureChatServer'  # Type hint
     
     def __init__(self, request, client_address, server):
         self.client_id = None
@@ -172,6 +171,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         self.keepalive_thread = None
         
         super().__init__(request, client_address, server)
+        
     
     def setup(self):
         """Called before handle() to perform initialization."""
@@ -180,7 +180,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             # Server is full, send rejection message and disconnect
             try:
                 rejection_message = {
-                    "type": MSG_TYPE_SERVER_FULL,
+                    "type": MessageType.SERVER_FULL,
                     "message": "Server only supports 2 clients. Connection rejected."
                 }
                 message_data = json.dumps(rejection_message).encode('utf-8')
@@ -220,10 +220,10 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                             message = json.loads(message_data.decode('utf-8'))
                             message_type = message.get("type")
                             
-                            if message_type == MSG_TYPE_KEY_VERIFICATION:
+                            if message_type == MessageType.KEY_VERIFICATION:
                                 # Route verification messages
                                 self.route_verification_message(message_data)
-                            elif message_type == MSG_TYPE_KEEP_ALIVE_RESPONSE:
+                            elif message_type == MessageType.KEEP_ALIVE_RESPONSE:
                                 # Handle keepalive response
                                 self.handle_keepalive_response(message_data)
                             else:
@@ -269,7 +269,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                 print(f"Key exchange message (type {message_type}) routed from {self.client_id} to {other_client.client_id}")
                 
                 # If this is a key exchange response, the key exchange is complete
-                if message_type == MSG_TYPE_KEY_EXCHANGE_RESPONSE:
+                if message_type == MessageType.KEY_EXCHANGE_RESPONSE:
                     print(f"Key exchange completed between {self.client_id} and {other_client.client_id}")
                     # Mark both clients as having completed key exchange
                     self.key_exchange_complete = True
@@ -305,7 +305,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         """Notify both clients that key exchange is complete."""
         try:
             complete_message = {
-                "type": MSG_TYPE_KEY_EXCHANGE_COMPLETE,
+                "type": MessageType.KEY_EXCHANGE_COMPLETE,
                 "message": "Key exchange completed successfully"
             }
             message_data = json.dumps(complete_message).encode('utf-8')
@@ -369,7 +369,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                     return
             
             keepalive_message = {
-                "type": MSG_TYPE_KEEP_ALIVE,
+                "type": MessageType.KEEP_ALIVE,
                 "timestamp": time.time()
             }
             message_data = json.dumps(keepalive_message).encode('utf-8')
@@ -386,7 +386,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         """Handle keepalive response from client."""
         try:
             message = json.loads(message_data.decode('utf-8'))
-            if message.get("type") == MSG_TYPE_KEEP_ALIVE_RESPONSE:
+            if message.get("type") == MessageType.KEEP_ALIVE_RESPONSE:
                 self.waiting_for_keepalive_response = False
                 self.keepalive_failures = 0
                 
@@ -398,7 +398,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         try:
             # Create protocol version message (only protocol version, no compatibility matrix or server version)
             version_message = {
-                "type": MSG_TYPE_SERVER_VERSION_INFO,
+                "type": MessageType.SERVER_VERSION_INFO,
                 "protocol_version": PROTOCOL_VERSION
             }
             

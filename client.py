@@ -9,12 +9,7 @@ import json
 import sys
 import os
 import time
-from shared import SecureChatProtocol, send_message, receive_message, MSG_TYPE_FILE_METADATA, \
-    MSG_TYPE_FILE_ACCEPT, MSG_TYPE_FILE_REJECT, MSG_TYPE_FILE_COMPLETE, MSG_TYPE_KEY_EXCHANGE_RESET, \
-    MSG_TYPE_KEEP_ALIVE, MSG_TYPE_KEEP_ALIVE_RESPONSE, MSG_TYPE_DELIVERY_CONFIRMATION, MSG_TYPE_EMERGENCY_CLOSE, \
-    MSG_TYPE_INITIATE_KEY_EXCHANGE, MSG_TYPE_SERVER_FULL, MSG_TYPE_KEY_EXCHANGE_COMPLETE, MSG_TYPE_SERVER_VERSION_INFO, \
-    PROTOCOL_VERSION, MSG_TYPE_ERROR, MSG_TYPE_KEY_VERIFICATION, MSG_TYPE_ENCRYPTED_MESSAGE, MSG_TYPE_KEY_EXCHANGE_RESPONSE, \
-    MSG_TYPE_KEY_EXCHANGE_INIT
+from shared import SecureChatProtocol, send_message, receive_message, MessageType, PROTOCOL_VERSION
 
 
 class SecureChatClient:
@@ -144,37 +139,37 @@ class SecureChatClient:
             # This is more efficient for frequent messages like keepalives
             try:
                 message = json.loads(message_data.decode('utf-8'))
-                message_type = message.get("type")
+                message_type = MessageType(message.get("type"))
                 
-                if message_type == MSG_TYPE_KEY_EXCHANGE_INIT:  # MSG_TYPE_KEY_EXCHANGE_INIT
+                if message_type == MessageType.KEY_EXCHANGE_INIT:
                     self.handle_key_exchange_init(message_data)
-                elif message_type == MSG_TYPE_KEY_EXCHANGE_RESPONSE:  # MSG_TYPE_KEY_EXCHANGE_RESPONSE
+                elif message_type == MessageType.KEY_EXCHANGE_RESPONSE:
                     self.handle_key_exchange_response(message_data)
-                elif message_type == MSG_TYPE_ENCRYPTED_MESSAGE:  # MSG_TYPE_ENCRYPTED_MESSAGE
+                elif message_type == MessageType.ENCRYPTED_MESSAGE:
                     if self.key_exchange_complete:
                         self.handle_encrypted_message(message_data)
                     else:
                         print("\nReceived encrypted message before key exchange complete")
-                elif message_type == MSG_TYPE_ERROR:
+                elif message_type == MessageType.ERROR:
                     print(f"\nServer error: {message.get('error', 'Unknown error')}")
-                elif message_type == MSG_TYPE_KEY_VERIFICATION:
+                elif message_type == MessageType.KEY_VERIFICATION:
                     self.handle_key_verification_message(message_data)
-                elif message_type == MSG_TYPE_KEY_EXCHANGE_RESET:
+                elif message_type == MessageType.KEY_EXCHANGE_RESET:
                     self.handle_key_exchange_reset(message_data)
-                elif message_type == MSG_TYPE_KEEP_ALIVE:
+                elif message_type == MessageType.KEEP_ALIVE:
                     self.handle_keepalive()
-                elif message_type == MSG_TYPE_DELIVERY_CONFIRMATION:
+                elif message_type == MessageType.DELIVERY_CONFIRMATION:
                     if self.key_exchange_complete:
                         self.handle_delivery_confirmation(message_data)
-                elif message_type == MSG_TYPE_EMERGENCY_CLOSE:
+                elif message_type == MessageType.EMERGENCY_CLOSE:
                     self.handle_emergency_close(message_data)
-                elif message_type == MSG_TYPE_KEY_EXCHANGE_COMPLETE:
+                elif message_type == MessageType.KEY_EXCHANGE_COMPLETE:
                     self.handle_key_exchange_complete()
-                elif message_type == MSG_TYPE_INITIATE_KEY_EXCHANGE:
+                elif message_type == MessageType.INITIATE_KEY_EXCHANGE:
                     self.initiate_key_exchange()
-                elif message_type == MSG_TYPE_SERVER_FULL:
+                elif message_type == MessageType.SERVER_FULL:
                     self.handle_server_full()
-                elif message_type == MSG_TYPE_SERVER_VERSION_INFO:
+                elif message_type == MessageType.SERVER_VERSION_INFO:
                     self.handle_server_version_info(message_data)
                 else:
                     print(f"\nUnknown message type: {message_type}")
@@ -209,7 +204,7 @@ class SecureChatClient:
             # Create keepalive response message
             response_message = {
                 "version": PROTOCOL_VERSION,
-                "type": MSG_TYPE_KEEP_ALIVE_RESPONSE
+                "type": MessageType.KEEP_ALIVE_RESPONSE
             }
             response_data = json.dumps(response_message).encode('utf-8')
             
@@ -406,15 +401,15 @@ class SecureChatClient:
                 message = json.loads(decrypted_text)
                 message_type = message.get("type")
 
-                if message_type == MSG_TYPE_FILE_METADATA:
+                if message_type == MessageType.FILE_METADATA:
                     self.handle_file_metadata(decrypted_text)
-                elif message_type == MSG_TYPE_FILE_ACCEPT:
+                elif message_type == MessageType.FILE_ACCEPT:
                     self.handle_file_accept(decrypted_text)
-                elif message_type == MSG_TYPE_FILE_REJECT:
+                elif message_type == MessageType.FILE_REJECT:
                     self.handle_file_reject(decrypted_text)
-                elif message_type == MSG_TYPE_FILE_COMPLETE:
+                elif message_type == MessageType.FILE_COMPLETE:
                     self.handle_file_complete(decrypted_text)
-                elif message_type == MSG_TYPE_DELIVERY_CONFIRMATION:
+                elif message_type == MessageType.DELIVERY_CONFIRMATION:
                     # Don't send delivery confirmation for delivery confirmations
                     pass
                 else:
@@ -472,7 +467,7 @@ class SecureChatClient:
         try:
             emergency_message = {
                 "version": PROTOCOL_VERSION,
-                "type": MSG_TYPE_EMERGENCY_CLOSE,
+                "type": MessageType.EMERGENCY_CLOSE,
                 "message": "Emergency close activated"
             }
             message_data = json.dumps(emergency_message).encode('utf-8')
