@@ -1979,9 +1979,10 @@ def main():
     """Main function to run the GUI chat client."""
     if TKINTERDND2_AVAILABLE:
         root = TkinterDnD.Tk()
+        root.title("Secure Chat Client")
     else:
         root = tk.Tk()
-    root.title("Secure Chat Client")
+        root.title("Secure Chat Client, no DnD support")
     
     # Load theme colors
     theme_colors = load_theme_colors()

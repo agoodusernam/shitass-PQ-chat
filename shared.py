@@ -283,7 +283,7 @@ class SecureChatProtocol:
         
         # Format the words in a user-friendly way
         # Display 5 words per line for better readability
-        msg = "Key Fingerprint:\n"
+        msg = "\n"
         for i in range(0, len(words), 5):
             msg += " ".join(words[i:i+5]) + "\n"
             
