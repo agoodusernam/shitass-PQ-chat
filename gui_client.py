@@ -241,7 +241,7 @@ class FileTransferWindow:
         if self.window.state() == 'withdrawn':
             self.show_window()
     
-    def update_transfer_progress(self, transfer_id, filename, current, total, bytes_transferred=None):
+    def update_transfer_progress(self, transfer_id, filename, current, total, bytes_transferred=None, comp_text=None):
         """Update progress for a specific transfer."""
         progress = (current / total) * 100 if total > 0 else 0
         
@@ -249,7 +249,9 @@ class FileTransferWindow:
         if bytes_transferred is not None:
             self.update_speed(bytes_transferred)
         
-        message = f"{filename}: {progress:.1f}% ({current}/{total} chunks)"
+        # Include compression status if provided
+        compression_info = f" ({comp_text})" if comp_text else ""
+        message = f"{filename}: {progress:.1f}% ({current}/{total} chunks){compression_info}"
         self.add_transfer_message(message)
     
     def update_speed(self, total_bytes_transferred):
@@ -539,6 +541,9 @@ class ChatGUI:
         )
         self.send_file_btn.pack(side=tk.RIGHT, padx=(0, 5))  # type: ignore
         
+        # Bind button click event to detect shift key
+        self.send_file_btn.bind("<Button-1>", self.on_send_file_click)
+        
         # Send button
         self.send_btn = tk.Button(
                 self.input_frame, text="Send", command=self.send_message,
@@ -581,22 +586,23 @@ class ChatGUI:
             file_path = file_path[1:-1]
         
         if os.path.exists(file_path):
-            self.confirm_and_send_file(file_path)
+            self.confirm_and_send_file(file_path, compress=True)  # Default to compressed for drag-and-drop
     
-    def confirm_and_send_file(self, file_path):
+    def confirm_and_send_file(self, file_path, compress=True):
         """Ask for confirmation and then send the file."""
         try:
             file_size = os.path.getsize(file_path)
             file_name = os.path.basename(file_path)
             
+            compression_text = "compressed" if compress else "uncompressed"
             result = messagebox.askyesno(
                     "Send File",
-                    f"Send file '{file_name}' ({bytes_to_human_readable(file_size)})?"
+                    f"Send file '{file_name}' ({bytes_to_human_readable(file_size)}) {compression_text}?"
             )
             
             if result:
-                self.append_to_chat(f"Sending file: {file_name}")
-                self.client.send_file(file_path)
+                self.append_to_chat(f"Sending file: {file_name} ({compression_text})")
+                self.client.send_file(file_path, compress=compress)
         except Exception as e:
             self.append_to_chat(f"File send error: {e}")
     
@@ -1058,7 +1064,14 @@ class ChatGUI:
         self.message_entry.delete("1.0", tk.END)
         return "break"  # Prevents the default newline insertion
     
-    def send_file(self):
+    def on_send_file_click(self, event):
+        """Handle send file button click with shift key detection."""
+        # Detect if shift key is held
+        shift_held = bool(event.state & 0x1)  # Check shift key state
+        self.send_file(compress=not shift_held)
+        return "break"  # Prevent default button command from executing
+    
+    def send_file(self, compress=True):
         """Send a file using file dialog."""
         if not self.connected or not self.client:
             return
@@ -1077,7 +1090,7 @@ class ChatGUI:
             
             if file_path:
                 # Get file info
-                self.confirm_and_send_file(file_path)
+                self.confirm_and_send_file(file_path, compress=compress)
         
         except Exception as e:
             self.append_to_chat(f"File send error: {e}")
@@ -1748,17 +1761,18 @@ class GUISecureChatClient(SecureChatClient):
             if self.gui:
                 received_chunks = len(self.protocol.received_chunks.get(transfer_id, set()))
                 # Calculate bytes transferred for speed tracking
-                # For most chunks, use SEND_CHUNK_SIZE, but for the last chunk use actual size
+                # Use processed_size from metadata for accurate progress calculation
+                processed_size = metadata.get("processed_size", metadata["file_size"])
                 if metadata["total_chunks"] == 1:
                     # Only one chunk, use actual size
                     bytes_transferred = len(chunk_info["chunk_data"])
                 else:
-                    # Multiple chunks - calculate based on complete chunks and current chunk
-                    complete_chunks = received_chunks - 1  # Exclude current chunk
-                    bytes_transferred = (complete_chunks * SEND_CHUNK_SIZE) + len(chunk_info["chunk_data"])
+                    # Multiple chunks - estimate based on received chunks and total processed size
+                    progress_ratio = received_chunks / metadata["total_chunks"]
+                    bytes_transferred = int(processed_size * progress_ratio)
                 
-                # Update GUI with transfer progress every 10 chunks
-                if received_chunks % 10 == 0 or received_chunks == 1:
+                # Update GUI with transfer progress every 10 chunks or for small transfers
+                if received_chunks % 10 == 0 or received_chunks == 1 or metadata["total_chunks"] <= 10:
                     self.gui.root.after(0, lambda: self.gui.file_transfer_window.update_transfer_progress(
                             transfer_id, metadata['filename'], received_chunks, metadata['total_chunks'],
                             bytes_transferred
@@ -1767,7 +1781,8 @@ class GUISecureChatClient(SecureChatClient):
             if is_complete:
                 # Final progress update to ensure 100% is shown
                 if self.gui:
-                    final_bytes_transferred = metadata["file_size"]
+                    # Use processed_size for final progress to match the transfer type
+                    final_bytes_transferred = metadata.get("processed_size", metadata["file_size"])
                     self.gui.root.after(0, lambda: self.gui.file_transfer_window.update_transfer_progress(
                         transfer_id, metadata['filename'], metadata['total_chunks'], metadata['total_chunks'],
                         final_bytes_transferred
@@ -1784,10 +1799,14 @@ class GUISecureChatClient(SecureChatClient):
                     counter += 1
                 
                 try:
-                    self.protocol.reassemble_file(transfer_id, output_path, metadata["file_hash"])
+                    # Get compression status from metadata
+                    compressed = metadata.get("compressed", True)  # Default to compressed for backward compatibility
+                    self.protocol.reassemble_file(transfer_id, output_path, metadata["file_hash"], compressed=compressed)
+                    
                     if self.gui:
+                        compression_text = "compressed" if compressed else "uncompressed"
                         self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
-                            f"File received successfully: {output_path}"))
+                            f"File received successfully ({compression_text}): {output_path}"))
                         # Clear speed when transfer completes
                         self.gui.root.after(0, lambda: self.gui.file_transfer_window.clear_speed())
                     
@@ -1838,9 +1857,12 @@ class GUISecureChatClient(SecureChatClient):
     def _send_file_chunks(self, transfer_id: str, file_path: str):
         """Send file chunks to peer with GUI progress updates."""
         try:
-            # Get total chunks from metadata (already calculated during file_metadata creation)
-            total_chunks = self.pending_file_transfers[transfer_id]["metadata"]["total_chunks"]
-            chunk_generator = self.protocol.chunk_file(file_path)
+            # Get transfer info including compression setting
+            transfer_info = self.pending_file_transfers[transfer_id]
+            total_chunks = transfer_info["metadata"]["total_chunks"]
+            compress = transfer_info.get("compress", True)  # Default to compressed for backward compatibility
+            
+            chunk_generator = self.protocol.chunk_file(file_path, compress=compress)
             bytes_transferred = 0
             
             for i, chunk in enumerate(chunk_generator):
@@ -1850,25 +1872,30 @@ class GUISecureChatClient(SecureChatClient):
                 # Update bytes transferred
                 bytes_transferred += len(chunk)
                 
-                # Show progress in GUI every 10 chunks
+                # Show progress in GUI more frequently for better user experience
+                # Update every chunk for small transfers, every 5 chunks for medium, every 10 for large
                 if self.gui:
-                    if i % 10 == 0:
+                    update_frequency = 1 if total_chunks <= 10 else (5 if total_chunks <= 50 else 10)
+                    if (i + 1) % update_frequency == 0 or (i + 1) == total_chunks:
                         filename = os.path.basename(file_path)
-                        self.gui.root.after(0, lambda curr=i, total=total_chunks, bytes_sent=bytes_transferred,
-                                                      fname=filename:
+                        current_chunk = i + 1
+                        compression_text = "compressed" if compress else "uncompressed"
+                        self.gui.root.after(0, lambda curr=current_chunk, total=total_chunks, bytes_sent=bytes_transferred,
+                                                      fname=filename, comp_text=compression_text:
                         self.gui.file_transfer_window.update_transfer_progress(transfer_id, fname, curr, total,
-                                                                               bytes_sent)
+                                                                               bytes_sent, comp_text)
                                             )
             
             # Final update to ensure 100% progress is shown
             if self.gui:
                 filename = os.path.basename(file_path)
+                compression_text = "compressed" if compress else "uncompressed"
                 self.gui.root.after(0, lambda curr=total_chunks, total=total_chunks, bytes_sent=bytes_transferred,
-                                              fname=filename:
-                self.gui.file_transfer_window.update_transfer_progress(transfer_id, fname, curr, total, bytes_sent)
+                                              fname=filename, comp_text=compression_text:
+                self.gui.file_transfer_window.update_transfer_progress(transfer_id, fname, curr, total, bytes_sent, comp_text)
                                     )
-                self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
-                    "File chunks sent successfully."))
+                self.gui.root.after(0, lambda comp_text=compression_text: self.gui.file_transfer_window.add_transfer_message(
+                    f"File chunks sent successfully ({comp_text})."))
                 # Clear speed when transfer completes
                 self.gui.root.after(0, lambda: self.gui.file_transfer_window.clear_speed())
         

@@ -525,7 +525,7 @@ class SecureChatClient:
             print(f"Failed to send message: {e}")
             return None
     
-    def send_file(self, file_path: str) -> None:
+    def send_file(self, file_path: str, compress: bool = True) -> None:
         """Send a file to the other client."""
         try:
             if not self.verification_complete:
@@ -533,18 +533,20 @@ class SecureChatClient:
                 return
 
             # Create file metadata message
-            metadata_msg, metadata = self.protocol.create_file_metadata_message(file_path, return_metadata=True)
+            metadata_msg, metadata = self.protocol.create_file_metadata_message(file_path, return_metadata=True, compress=compress)
             
             # Store file path for later sending
             transfer_id = metadata["transfer_id"]
             self.pending_file_transfers[transfer_id] = {
                 "file_path": file_path,
-                "metadata": metadata
+                "metadata": metadata,
+                "compress": compress
             }
             
             # Send metadata to peer
             send_message(self.socket, metadata_msg)
-            print(f"File transfer request sent: {metadata['filename']} ({metadata['file_size']} bytes)")
+            compression_text = "compressed" if compress else "uncompressed"
+            print(f"File transfer request sent: {metadata['filename']} ({metadata['file_size']} bytes, {compression_text})")
             
         except Exception as e:
             print(f"Failed to send file: {e}")
@@ -689,8 +691,12 @@ class SecureChatClient:
                 counter += 1
             
             try:
-                self.protocol.reassemble_file(transfer_id, output_path, metadata["file_hash"])
-                print(f"File received successfully: {output_path}")
+                # Get compression status from metadata
+                compressed = metadata.get("compressed", True)  # Default to compressed for backward compatibility
+                self.protocol.reassemble_file(transfer_id, output_path, metadata["file_hash"], compressed=compressed)
+                
+                compression_text = "compressed" if compressed else "uncompressed"
+                print(f"File received successfully ({compression_text}): {output_path}")
                 
                 # Send completion message
                 complete_msg = self.protocol.create_file_complete_message(transfer_id)
@@ -755,9 +761,12 @@ class SecureChatClient:
     def _send_file_chunks(self, transfer_id: str, file_path: str) -> None:
         """Send file chunks to peer."""
         try:
-            # Get total chunks from metadata (already calculated during file_metadata creation)
-            total_chunks = self.pending_file_transfers[transfer_id]["metadata"]["total_chunks"]
-            chunk_generator = self.protocol.chunk_file(file_path)
+            # Get transfer info including compression setting
+            transfer_info = self.pending_file_transfers[transfer_id]
+            total_chunks = transfer_info["metadata"]["total_chunks"]
+            compress = transfer_info.get("compress", True)  # Default to compressed for backward compatibility
+            
+            chunk_generator = self.protocol.chunk_file(file_path, compress=compress)
             
             for i, chunk in enumerate(chunk_generator):
                 chunk_msg = self.protocol.create_file_chunk_message(transfer_id, i, chunk)
@@ -765,7 +774,8 @@ class SecureChatClient:
                 
                 # Show progress
                 progress = ((i + 1) / total_chunks) * 100
-                print(f"Sending: {progress:.1f}% ({i + 1}/{total_chunks} chunks)")
+                compression_text = "compressed" if compress else "uncompressed"
+                print(f"Sending ({compression_text}): {progress:.1f}% ({i + 1}/{total_chunks} chunks)")
             
             print("File chunks sent successfully.")
             

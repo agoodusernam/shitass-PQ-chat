@@ -682,7 +682,7 @@ class SecureChatProtocol:
         return json.dumps(verification_response).encode('utf-8')
     
     # File transfer methods
-    def create_file_metadata_message(self, file_path: str, return_metadata: bool = False) -> bytes | tuple[bytes, dict]:
+    def create_file_metadata_message(self, file_path: str, return_metadata: bool = False, compress: bool = True) -> bytes | tuple[bytes, dict]:
         """Create a file metadata message for file transfer initiation."""
         
         if not os.path.exists(file_path):
@@ -697,20 +697,21 @@ class SecureChatProtocol:
             while chunk := f.read(8192):
                 file_hash.update(chunk)
         
-        # Calculate the actual number of compressed chunks that will be sent
+        # Calculate the actual number of chunks that will be sent
         # This is critical for large files to ensure correct progress tracking
         total_chunks = 0
-        total_compressed_size = 0
+        total_processed_size = 0
         
         try:
             # Use the same chunking logic as chunk_file to get accurate count
-            for chunk in self.chunk_file(file_path):
+            for chunk in self.chunk_file(file_path, compress=compress):
                 total_chunks += 1
-                total_compressed_size += len(chunk)
+                total_processed_size += len(chunk)
         except Exception as e:
             # Fallback to estimation if chunking fails
             print(f"Warning: Could not pre-calculate chunks, using estimation: {e}")
             total_chunks = (file_size + SEND_CHUNK_SIZE - 1) // SEND_CHUNK_SIZE
+            total_processed_size = file_size if not compress else file_size // 2  # Rough estimate
         
         # Generate unique transfer ID
         transfer_id = hashlib.sha256(f"{file_name}{file_size}{file_hash.hexdigest()}".encode()).hexdigest()[:16]
@@ -722,8 +723,9 @@ class SecureChatProtocol:
             "filename": file_name,
             "file_size": file_size,  # Original file size for integrity verification
             "file_hash": file_hash.hexdigest(),  # Hash of original file
-            "total_chunks": total_chunks,  # Actual number of compressed chunks
-            "compressed_size": total_compressed_size  # Total compressed size for progress tracking
+            "total_chunks": total_chunks,  # Actual number of chunks
+            "compressed": compress,  # Whether the transfer is compressed
+            "processed_size": total_processed_size  # Total processed size for progress tracking
         }
         
         encrypted_message = self.encrypt_message(json.dumps(metadata))
@@ -808,53 +810,72 @@ class SecureChatProtocol:
         }
         return self.encrypt_message(json.dumps(message))
     
-    def chunk_file(self, file_path: str) -> Generator[bytes, None, None]:
-        """Generate compressed file chunks for transmission one at a time.
+    def chunk_file(self, file_path: str, compress: bool = True) -> Generator[bytes, None, None]:
+        """Generate file chunks for transmission one at a time.
 
-        This is a streaming generator function that compresses and yields chunks
-        without loading the entire compressed file into memory. This approach
-        is memory-efficient for large files and provides a steady stream of
-        compressed data for network transmission.
+        This is a streaming generator function that optionally compresses and yields chunks
+        without loading the entire file into memory. This approach is memory-efficient 
+        for large files and provides a steady stream of data for network transmission.
+        
+        Args:
+            file_path: Path to the file to chunk
+            compress: Whether to compress the chunks (default: True)
         """
         
-        # Use streaming compression
-        compressor = StreamingGzipCompressor()
-        pending_data = b''
-        
-        try:
-            with open(file_path, 'rb') as original_file:
-                while True:
-                    # Read a chunk from the original file
-                    file_chunk = original_file.read(SEND_CHUNK_SIZE)
-                    
-                    if not file_chunk:
-                        # End of file - finalize compression
-                        final_compressed = compressor.finalize()
-                        if final_compressed:
-                            pending_data += final_compressed
-                        break
-                    
-                    # Compress this chunk
-                    compressed_chunk = compressor.compress_chunk(file_chunk)
-                    if compressed_chunk:
-                        pending_data += compressed_chunk
-                    
-                    # Yield complete chunks when we have enough data
-                    while len(pending_data) >= SEND_CHUNK_SIZE:
-                        yield pending_data[:SEND_CHUNK_SIZE]
-                        pending_data = pending_data[SEND_CHUNK_SIZE:]
-                
-                # Yield any remaining data
-                if pending_data:
-                    yield pending_data
-                    
-        except Exception as e:
-            # Clean up on error
+        if compress:
+            # Use streaming compression
+            compressor = StreamingGzipCompressor()
+            pending_data = b''
+            
             try:
-                compressor.finalize()
-            except:
-                pass
-            raise e
+                with open(file_path, 'rb') as original_file:
+                    while True:
+                        # Read a chunk from the original file
+                        file_chunk = original_file.read(SEND_CHUNK_SIZE)
+                        
+                        if not file_chunk:
+                            # End of file - finalize compression
+                            final_compressed = compressor.finalize()
+                            if final_compressed:
+                                pending_data += final_compressed
+                            break
+                        
+                        # Compress this chunk
+                        compressed_chunk = compressor.compress_chunk(file_chunk)
+                        if compressed_chunk:
+                            pending_data += compressed_chunk
+                        
+                        # Yield complete chunks when we have enough data
+                        while len(pending_data) >= SEND_CHUNK_SIZE:
+                            yield pending_data[:SEND_CHUNK_SIZE]
+                            pending_data = pending_data[SEND_CHUNK_SIZE:]
+                    
+                    # Yield any remaining data
+                    if pending_data:
+                        yield pending_data
+                        
+            except Exception as e:
+                # Clean up on error
+                try:
+                    compressor.finalize()
+                except:
+                    pass
+                raise e
+        else:
+            # Send uncompressed chunks directly
+            try:
+                with open(file_path, 'rb') as original_file:
+                    while True:
+                        # Read a chunk from the original file
+                        file_chunk = original_file.read(SEND_CHUNK_SIZE)
+                        
+                        if not file_chunk:
+                            break
+                        
+                        yield file_chunk
+                        
+            except Exception as e:
+                raise e
     
     def process_file_metadata(self, decrypted_data: str) -> dict:
         """Process a file metadata message."""
@@ -868,7 +889,9 @@ class SecureChatProtocol:
                 "filename": message["filename"],
                 "file_size": message["file_size"],
                 "file_hash": message["file_hash"],
-                "total_chunks": message["total_chunks"]
+                "total_chunks": message["total_chunks"],
+                "compressed": message.get("compressed", True),  # Default to compressed for backward compatibility
+                "processed_size": message.get("processed_size", message.get("compressed_size", 0))  # Support old field name
             }
         except Exception as e:
             raise ValueError(f"File metadata processing failed: {e}")
@@ -1003,15 +1026,21 @@ class SecureChatProtocol:
         
         return is_complete
     
-    def reassemble_file(self, transfer_id: str, output_path: str, expected_hash: str) -> bool:
-        """Finalize file transfer, decompress, and verify integrity.
+    def reassemble_file(self, transfer_id: str, output_path: str, expected_hash: str, compressed: bool = True) -> bool:
+        """Finalize file transfer, optionally decompress, and verify integrity.
         
         Since chunks are already written to a temporary file, this method:
         1. Ensures any open file handle is closed
-        2. Decompresses the temporary file (which contains compressed data)
-        3. Calculates the hash of the decompressed file
+        2. Optionally decompresses the temporary file (if compressed=True)
+        3. Calculates the hash of the final file
         4. Verifies the hash against the expected hash
-        5. Moves the decompressed file to the final output path
+        5. Moves the final file to the output path
+        
+        Args:
+            transfer_id: The transfer ID
+            output_path: Final output path for the file
+            expected_hash: Expected SHA256 hash of the original file
+            compressed: Whether the received data is compressed (default: True for backward compatibility)
         """
         if transfer_id not in self.received_chunks or transfer_id not in self.temp_file_paths:
             raise ValueError(f"No data found for transfer {transfer_id}")
@@ -1024,62 +1053,69 @@ class SecureChatProtocol:
                 pass  # Ignore errors during cleanup
             del self.open_file_handles[transfer_id]
         
-        temp_compressed_path = self.temp_file_paths[transfer_id]
+        temp_received_path = self.temp_file_paths[transfer_id]
         
-        if not os.path.exists(temp_compressed_path):
-            raise ValueError(f"Temporary file not found: {temp_compressed_path}")
+        if not os.path.exists(temp_received_path):
+            raise ValueError(f"Temporary file not found: {temp_received_path}")
         
-        # Create a temporary path for the decompressed file
-        temp_decompressed_path = temp_compressed_path + ".decompressed"
+        final_file_path = temp_received_path
         
         try:
-            # Decompress the file
-            with open(temp_compressed_path, 'rb') as compressed_file:
-                with gzip.GzipFile(fileobj=compressed_file, mode='rb') as gzip_file:
-                    with open(temp_decompressed_path, 'wb') as decompressed_file:
-                        # Decompress in chunks to avoid memory issues
-                        while chunk := gzip_file.read(8192):
-                            decompressed_file.write(chunk)
+            if compressed:
+                # Create a temporary path for the decompressed file
+                temp_decompressed_path = temp_received_path + ".decompressed"
+                
+                # Decompress the file
+                with open(temp_received_path, 'rb') as compressed_file:
+                    with gzip.GzipFile(fileobj=compressed_file, mode='rb') as gzip_file:
+                        with open(temp_decompressed_path, 'wb') as decompressed_file:
+                            # Decompress in chunks to avoid memory issues
+                            while chunk := gzip_file.read(8192):
+                                decompressed_file.write(chunk)
+                
+                final_file_path = temp_decompressed_path
             
-            # Calculate hash of the decompressed file
+            # Calculate hash of the final file
             file_hash = hashlib.sha256()
-            with open(temp_decompressed_path, 'rb') as f:
+            with open(final_file_path, 'rb') as f:
                 while chunk := f.read(8192):  # Read in small chunks to avoid memory issues
                     file_hash.update(chunk)
             
             # Verify file integrity
             if file_hash.hexdigest() != expected_hash:
                 # Clean up temporary files
-                os.remove(temp_compressed_path)
-                os.remove(temp_decompressed_path)
+                os.remove(temp_received_path)
+                if compressed and os.path.exists(final_file_path):
+                    os.remove(final_file_path)
                 raise ValueError("File integrity check failed")
             
-            # Move the decompressed file to the final output path
+            # Move the final file to the output path
             try:
                 # If the output file already exists, remove it first
                 if os.path.exists(output_path):
                     os.remove(output_path)
                 
-                # Move the decompressed file to the final output path
-                os.rename(temp_decompressed_path, output_path)
+                # Move the final file to the output path
+                os.rename(final_file_path, output_path)
             except Exception as e:
                 # If moving fails, try copying instead
                 try:
-                    shutil.copy2(temp_decompressed_path, output_path)
-                    os.remove(temp_decompressed_path)
+                    shutil.copy2(final_file_path, output_path)
+                    os.remove(final_file_path)
                 except Exception as copy_error:
                     raise ValueError(f"Failed to move file: {e}, copy error: {copy_error}")
             
-            # Clean up the compressed temporary file
-            os.remove(temp_compressed_path)
+            # Clean up the temporary received file (if different from final file)
+            if compressed and os.path.exists(temp_received_path):
+                os.remove(temp_received_path)
             
         except Exception as e:
             # Clean up any temporary files on error
-            if os.path.exists(temp_compressed_path):
-                os.remove(temp_compressed_path)
-            if os.path.exists(temp_decompressed_path):
-                os.remove(temp_decompressed_path)
-            raise ValueError(f"File decompression failed: {e}")
+            if os.path.exists(temp_received_path):
+                os.remove(temp_received_path)
+            if compressed and final_file_path != temp_received_path and os.path.exists(final_file_path):
+                os.remove(final_file_path)
+            raise ValueError(f"File processing failed: {e}")
         
         # Clean up tracking data
         del self.received_chunks[transfer_id]
