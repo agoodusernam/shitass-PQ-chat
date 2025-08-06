@@ -9,6 +9,7 @@ from server import SecureChatServer
 class TestSecureChatProtocol(unittest.TestCase):
     """Test the secure chat protocol functionality."""
     
+    # noinspection PyUnresolvedReferences
     def setUp(self):
         """Set up test fixtures for each test method.
         
@@ -135,8 +136,6 @@ class TestSecureChatProtocol(unittest.TestCase):
         
         # Store initial chain keys
         initial_send_key1 = self.protocol1.send_chain_key
-        initial_receive_key1 = self.protocol1.receive_chain_key
-        initial_send_key2 = self.protocol2.send_chain_key
         initial_receive_key2 = self.protocol2.receive_chain_key
         
         # Send first message
@@ -343,6 +342,8 @@ class TestSecureChatProtocol(unittest.TestCase):
         
         print("✓ PFS message counter advancement test passed")
 
+
+# noinspection PyBroadException
 class TestSecureChatIntegration(unittest.TestCase):
     """Integration tests for the complete secure chat system."""
     
@@ -391,7 +392,7 @@ class TestSecureChatIntegration(unittest.TestCase):
         client1 = self.create_test_client()
         time.sleep(0.1)
         
-        # Connect second client
+        # Connect the second client
         client2 = self.create_test_client()
         time.sleep(0.1)
         

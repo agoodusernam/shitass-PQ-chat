@@ -15,6 +15,8 @@ from shared import SecureChatProtocol, send_message, receive_message, create_err
 
 SERVER_VERSION = 5
 
+
+# noinspection PyBroadException
 class SecureChatServer(socketserver.ThreadingTCPServer):
     """Secure chat server that handles two-client connections with end-to-end encryption."""
     
@@ -154,6 +156,7 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
         return self.stop_server()
 
 
+# noinspection PyBroadException
 class SecureChatRequestHandler(socketserver.BaseRequestHandler):
     """Handles individual client connections."""
     server: 'SecureChatServer'  # Type hint

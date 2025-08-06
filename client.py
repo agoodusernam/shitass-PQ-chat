@@ -12,6 +12,7 @@ import time
 from shared import SecureChatProtocol, send_message, receive_message, MessageType, PROTOCOL_VERSION
 
 
+# noinspection PyUnresolvedReferences,PyBroadException
 class SecureChatClient:
     
     def __init__(self, host='localhost', port=16384):

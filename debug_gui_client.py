@@ -644,7 +644,7 @@ class DebugChatGUI(ChatGUI):
             else:
                 debug_text += "  Keepalive Responses: Unknown\n"
             
-            debug_text += "\n" + "=" * 30 + "\n"
+            debug_text += "\n" + "=" * 45 + "\n"
             
             # Update the debug display
             self.debug_display.config(state=tk.NORMAL) # type: ignore # type: ignore
