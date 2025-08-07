@@ -50,6 +50,10 @@ class SecureChatClient:
         # File transfer state
         self.pending_file_transfers = {}  # Track outgoing file transfers
         self.active_file_metadata = {}    # Track incoming file metadata
+        self._last_progress_shown = {}    # Track file transfer progress display
+        
+        # Key exchange state
+        self.private_key = None  # Private key for key exchange
         
         # Server version information
         self.server_version = None
@@ -293,7 +297,7 @@ class SecureChatClient:
     def handle_key_exchange_response(self, message_data: bytes) -> None:
         """Handle key exchange response from another client."""
         try:
-            if hasattr(self, 'private_key'):
+            if self.private_key is not None:
                 _, version_warning = self.protocol.process_key_exchange_response(message_data, self.private_key)
                 
                 # Display version warning if present
@@ -667,8 +671,6 @@ class SecureChatClient:
         progress = (received_chunks / metadata["total_chunks"]) * 100
         
         # Initialize progress tracking for this transfer if not exists
-        if not hasattr(self, '_last_progress_shown'):
-            self._last_progress_shown = {}
         if transfer_id not in self._last_progress_shown:
             self._last_progress_shown[transfer_id] = -1
         
@@ -709,7 +711,7 @@ class SecureChatClient:
             del self.active_file_metadata[transfer_id]
             
             # Clean up progress tracking
-            if hasattr(self, '_last_progress_shown') and transfer_id in self._last_progress_shown:
+            if transfer_id in self._last_progress_shown:
                 del self._last_progress_shown[transfer_id]
     
     def handle_file_complete(self, decrypted_message: str) -> None:

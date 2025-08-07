@@ -54,7 +54,7 @@ except ImportError:
     TkinterDnD = None  # type: ignore
 
 from client import SecureChatClient
-from shared import bytes_to_human_readable, send_message, MessageType, SEND_CHUNK_SIZE
+from shared import bytes_to_human_readable, send_message, MessageType
 
 GUI_VERSION = 17
 
@@ -119,13 +119,14 @@ def display_image(image: Image.Image, root):
 class FileTransferWindow:
     """Separate window for file transfer progress and status updates."""
     
-    def __init__(self, parent_root):
+    def __init__(self, parent_root, theme_colors=None, theme_colours=None):
         # noinspection PyUnresolvedReferences
         """Initialize the file transfer window manager.
                 
                 Args:
                     parent_root (tk.Tk): The parent root window that this transfer window
                         will be associated with.
+                    theme_colors (dict): Dictionary of theme colours to use.
                         
                 Attributes:
                     parent_root (tk.Tk): Reference to the parent window.
@@ -136,11 +137,13 @@ class FileTransferWindow:
                     last_update_time (float): Timestamp of last speed calculation update.
                     last_bytes_transferred (int): Bytes transferred at last speed update.
                     current_speed (float): Current transfer speed in bytes per second.
-                    BG_COLOR (str): Background color for dark theme.
-                    FG_COLOR (str): Foreground text color for dark theme.
-                    ENTRY_BG_COLOR (str): Background color for entry widgets.
-                    BUTTON_BG_COLOR (str): Background color for button widgets.
+                    BG_COLOR (str): Background colour for dark theme.
+                    FG_COLOR (str): Foreground text colour for dark theme.
+                    ENTRY_BG_COLOR (str): Background colour for entry widgets.
+                    BUTTON_BG_COLOR (str): Background colour for button widgets.
                 """
+        if theme_colours is not None:
+            theme_colors = theme_colours
         self.parent_root = parent_root
         self.window = None
         self.transfers = {}  # transfer_id -> transfer_info
@@ -152,12 +155,22 @@ class FileTransferWindow:
         self.last_bytes_transferred = 0
         self.current_speed = 0.0
         
-        # Dark theme colors (matching main window)
-        self.BG_COLOR = "#2b2b2b"
-        self.FG_COLOR = "#d4d4d4"
-        self.ENTRY_BG_COLOR = "#3c3c3c"
-        self.BUTTON_BG_COLOR = "#555555"
-        self.TEXT_BG_COLOR = "#1e1e1e"
+        # Theme colors (use provided theme or defaults)
+        if theme_colors:
+            self.BG_COLOR = theme_colors.get("BG_COLOR", "#2b2b2b")
+            self.FG_COLOR = theme_colors.get("FG_COLOR", "#d4d4d4")
+            self.ENTRY_BG_COLOR = theme_colors.get("ENTRY_BG_COLOR", "#3c3c3c")
+            self.BUTTON_BG_COLOR = theme_colors.get("BUTTON_BG_COLOR", "#555555")
+            self.TEXT_BG_COLOR = theme_colors.get("TEXT_BG_COLOR", "#1e1e1e")
+            self.SPEED_LABEL_COLOR = theme_colors.get("SPEED_LABEL_COLOR", "#4CAF50")
+        else:
+            # Default dark theme colors
+            self.BG_COLOR = "#2b2b2b"
+            self.FG_COLOR = "#d4d4d4"
+            self.ENTRY_BG_COLOR = "#3c3c3c"
+            self.BUTTON_BG_COLOR = "#555555"
+            self.TEXT_BG_COLOR = "#1e1e1e"
+            self.SPEED_LABEL_COLOR = "#4CAF50"
     
     def create_window(self):
         """Create the file transfer window if it doesn't exist."""
@@ -179,7 +192,7 @@ class FileTransferWindow:
                     top_frame,
                     text="Speed: 0.0 MiB/s",
                     bg=self.BG_COLOR,
-                    fg="#4CAF50",
+                    fg=self.SPEED_LABEL_COLOR,
                     font=("Consolas", 10, "bold")
             )
             self.speed_label.pack(side=tk.RIGHT) # type: ignore
@@ -282,7 +295,7 @@ class FileTransferWindow:
 
 
 # noinspection PyAttributeOutsideInit
-# noinspection DuplicatedCode
+# noinspection DuplicatedCode,PyBroadException
 class ChatGUI:
     def __init__(self, root, theme_colors=None):
         self.root = root
@@ -333,19 +346,16 @@ class ChatGUI:
         self.windows_notifications_enabled = True
         
         # File transfer window with theme colors
-        self.file_transfer_window = FileTransferWindow(self.root)
-        # Pass theme colors to file transfer window
-        self.file_transfer_window.BG_COLOR = self.BG_COLOR
-        self.file_transfer_window.FG_COLOR = self.FG_COLOR
-        self.file_transfer_window.ENTRY_BG_COLOR = self.ENTRY_BG_COLOR
-        self.file_transfer_window.BUTTON_BG_COLOR = self.BUTTON_BG_COLOR
-        self.file_transfer_window.TEXT_BG_COLOR = self.TEXT_BG_COLOR
+        self.file_transfer_window = FileTransferWindow(self.root, self.theme_colors)
         
         # Spellcheck functionality
         self.spell_checker = SpellChecker()
         self.spellcheck_timer = None
         self.spellcheck_enabled = True
         self.misspelled_tags = set()  # Track tags for misspelled words
+        
+        # Initialize UI elements that may be created conditionally
+        self.windows_notif_btn = None
         
         # Create GUI elements
         self.create_widgets()
@@ -472,7 +482,7 @@ class ChatGUI:
         # Status indicator (top right)
         self.status_label = tk.Label(
                 conn_frame, text="Not Connected",
-                bg=self.BG_COLOR, fg="#ff6b6b", font=("Consolas", 9, "bold")
+                bg=self.BG_COLOR, fg=self.theme_colors.get("STATUS_NOT_CONNECTED", "#ff6b6b"), font=("Consolas", 9, "bold")
         )
         self.status_label.pack(side=tk.RIGHT, padx=(10, 0))  # type: ignore
         
@@ -505,7 +515,7 @@ class ChatGUI:
         self.message_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))  # type: ignore
         
         # Configure text tags for spellcheck
-        self.message_entry.tag_configure("misspelled", underline=True, underlinefg="red")
+        self.message_entry.tag_configure("misspelled", underline=True, underlinefg=self.theme_colors.get("SPELLCHECK_ERROR_COLOR", "red"))
         
         # Bind events
         self.message_entry.bind("<Return>", self.send_message)
@@ -570,7 +580,7 @@ class ChatGUI:
         if not self.connected or not self.client:
             return
         
-        if not hasattr(self.client, 'verification_complete') or not self.client.verification_complete:
+        if not self.client.verification_complete:
             self.append_to_chat("Cannot send files - verification not complete")
             return
         
@@ -766,11 +776,11 @@ class ChatGUI:
     def toggle_windows_notifications(self):
         """Toggle Windows system notifications on/off."""
         self.windows_notifications_enabled = not self.windows_notifications_enabled
-        if hasattr(self, 'windows_notif_btn'):
+        if self.windows_notif_btn:
             if self.windows_notifications_enabled:
-                self.windows_notif_btn.config(text="Win notifs ON")
+                self.windows_notif_btn.config(text="System notifs ON")
             else:
-                self.windows_notif_btn.config(text="Win notifs OFF")
+                self.windows_notif_btn.config(text="System notifs OFF")
     
     def connect_to_server(self):
         """Connect to the chat server."""
@@ -844,9 +854,8 @@ class ChatGUI:
             try:
                 while self.connected and self.client and self.client.connected:
                     # Check if key exchange is complete and verification is needed
-                    if (hasattr(self.client, 'key_exchange_complete') and
-                            self.client.key_exchange_complete and
-                            not hasattr(self.client, 'verification_started')):
+                    if (self.client.key_exchange_complete and
+            not self.client.verification_started):
                         # Mark that we've started verification to avoid repeated prompts
                         self.client.verification_started = True
                         
@@ -862,7 +871,7 @@ class ChatGUI:
     
     def show_verification_dialog(self):
         """Show the key verification dialogue using non-intrusive notification."""
-        if not self.client or not hasattr(self.client, 'protocol'):
+        if not self.client:
             return
         
         # Update status to show we're now verifying the fingerprint
@@ -921,7 +930,7 @@ class ChatGUI:
         
         # Handle verification commands
         if message.lower() in ['/vy', '/verify yes', '/yes', '/y']:
-            if hasattr(self.client, 'verification_pending') and self.client.verification_pending:
+            if self.client.verification_pending:
                 try:
                     self.client.confirm_key_verification(True)
                     self.client.verification_pending = False
@@ -932,7 +941,7 @@ class ChatGUI:
                     self.append_to_chat(f"Verification error: {e}")
                 self.message_entry.delete("1.0", tk.END)
                 return "break"
-            elif hasattr(self.client, 'pending_file_requests') and self.client.pending_file_requests:
+            elif self.client.pending_file_requests:
                 # Handle file transfer acceptance when no verification is pending
                 transfer_id = list(self.client.pending_file_requests.keys())[-1]
                 metadata = self.client.pending_file_requests[transfer_id]
@@ -955,7 +964,7 @@ class ChatGUI:
                 return "break"
         
         if message.lower() in ['/vn', '/verify no', '/no', '/n']:
-            if hasattr(self.client, 'verification_pending') and self.client.verification_pending:
+            if self.client.verification_pending:
                 try:
                     self.client.confirm_key_verification(False)
                     self.client.verification_pending = False
@@ -966,7 +975,7 @@ class ChatGUI:
                     self.append_to_chat(f"Verification error: {e}")
                 self.message_entry.delete("1.0", tk.END)
                 return "break"
-            elif hasattr(self.client, 'pending_file_requests') and self.client.pending_file_requests:
+            elif self.client.pending_file_requests:
                 # Handle file transfer rejection when no verification is pending
                 transfer_id = list(self.client.pending_file_requests.keys())[-1]
                 metadata = self.client.pending_file_requests[transfer_id]
@@ -991,7 +1000,7 @@ class ChatGUI:
         
         # Handle file transfer commands
         if message.lower() in ['/accept', '/y']:
-            if hasattr(self.client, 'pending_file_requests') and self.client.pending_file_requests:
+            if self.client.pending_file_requests:
                 # Accept the most recent file transfer request
                 transfer_id = list(self.client.pending_file_requests.keys())[-1]
                 metadata = self.client.pending_file_requests[transfer_id]
@@ -1012,7 +1021,7 @@ class ChatGUI:
             return "break"
         
         if message.lower() in ['/reject', '/n']:
-            if hasattr(self.client, 'pending_file_requests') and self.client.pending_file_requests:
+            if self.client.pending_file_requests:
                 # Reject the most recent file transfer request
                 transfer_id = list(self.client.pending_file_requests.keys())[-1]
                 metadata = self.client.pending_file_requests[transfer_id]
@@ -1034,21 +1043,21 @@ class ChatGUI:
             return "break"
         
         # Check if verification is complete (like console client does)
-        if not hasattr(self.client, 'verification_complete') or not self.client.verification_complete:
+        if not self.client.verification_complete:
             self.append_to_chat("Cannot send messages - verification not complete")
             return "break"
         
         # Send the message
         try:
             # Get the message counter before sending (it will be incremented during send)
-            if hasattr(self.client, 'protocol') and self.client.protocol:
+            if self.client.protocol:
                 next_message_counter = self.client.protocol.message_counter + 1
             else:
                 next_message_counter = None
             
             if self.client.send_message(message):
                 # Display the sent message with delivery tracking
-                if hasattr(self.client, 'protocol') and self.client.protocol.is_peer_key_verified():
+                if self.client.protocol.is_peer_key_verified():
                     display_text = f"You: {message}"
                 else:
                     display_text = f"You (unverified): {message}"
@@ -1077,7 +1086,7 @@ class ChatGUI:
             return
         
         # Check if verification is complete
-        if not hasattr(self.client, 'verification_complete') or not self.client.verification_complete:
+        if not self.client.verification_complete:
             self.append_to_chat("Cannot send files - verification not complete")
             return
         
@@ -1107,7 +1116,7 @@ class ChatGUI:
             return "break"  # Prevent default paste behavior
         
         # Check if verification is complete
-        if not hasattr(self.client, 'verification_complete') or not self.client.verification_complete:
+        if not self.client.verification_complete:
             return "break"  # Prevent default paste behavior
         
         try:
@@ -1227,7 +1236,7 @@ class ChatGUI:
                         end_pos = f"{pos}+{len(word)}c"
                         
                         self.message_entry.tag_add(tag_name, pos, end_pos)
-                        self.message_entry.tag_configure(tag_name, underline=True, underlinefg="red")
+                        self.message_entry.tag_configure(tag_name, underline=True, underlinefg=self.theme_colors.get("SPELLCHECK_ERROR_COLOR", "red"))
                         self.misspelled_tags.add(tag_name)
                     
                     start_pos = f"{pos}+1c"
@@ -1369,7 +1378,7 @@ class ChatGUI:
         if not self.ephemeral_mode:
             # About to enable ephemeral mode
             self.ephemeral_mode = True
-            self.ephemeral_btn.config(bg="#ff6b6b", fg="#ffffff", text="Ephemeral ON")  # type: ignore
+            self.ephemeral_btn.config(bg=self.theme_colors.get("EPHEMERAL_ACTIVE_BG", "#ff6b6b"), fg=self.theme_colors.get("EPHEMERAL_ACTIVE_FG", "#ffffff"), text="Ephemeral ON")  # type: ignore
             self.append_to_chat("Ephemeral mode enabled - messages will disappear after 30 seconds", is_message=True)
         else:
             # About to disable ephemeral mode
@@ -1411,8 +1420,12 @@ class GUISecureChatClient(SecureChatClient):
     def __init__(self, host='localhost', port=16384, gui=None):
         super().__init__(host, port)
         self.gui = gui
-        # Initialize verification_complete flag like console client
+        # Initialize verification flags and state properly
         self.verification_complete = False
+        self.verification_started = False
+        self.verification_pending = False
+        # Initialize file transfer state
+        self.pending_file_requests = {}
     
     def _is_image_file(self, file_path: str) -> bool:
         """Check if a file is an image based on its extension."""
@@ -1561,7 +1574,7 @@ class GUISecureChatClient(SecureChatClient):
     def handle_key_exchange_response(self, message_data: bytes):
         """Handle key exchange response - override to send to GUI."""
         try:
-            if hasattr(self, 'private_key'):
+            if self.private_key is not None:
                 if self.gui:
                     self.gui.root.after(0, lambda: self.gui.update_status("Processing key exchange"))
                 else:
@@ -1615,8 +1628,8 @@ class GUISecureChatClient(SecureChatClient):
             self.protocol.reset_key_exchange()
             
             # Reset GUI-specific verification flags
-            if hasattr(self, 'verification_started'):
-                delattr(self, 'verification_started')
+            if self.verification_started:
+                self.verification_started = False
             
             # Clear any pending file transfers
             self.pending_file_transfers.clear()
@@ -1668,8 +1681,6 @@ class GUISecureChatClient(SecureChatClient):
                     self.gui.append_to_chat("")
                     
                     # Store the transfer ID for command processing
-                    if not hasattr(self, 'pending_file_requests'):
-                        self.pending_file_requests = {}
                     self.pending_file_requests[transfer_id] = metadata
                 
                 self.gui.root.after(0, show_file_notification)
@@ -1918,7 +1929,7 @@ class GUISecureChatClient(SecureChatClient):
 
 def load_theme_colors():
     """
-    Load theme colors from themes.json file.
+    Load theme colors from theme.json file.
     If the file doesn't exist, ask the user if they want to create it with default colors.
     Returns a dictionary of color values.
     """
@@ -1938,40 +1949,67 @@ def load_theme_colors():
         "STATUS_VERIFIED_SECURE":         "#00ff00",
         "STATUS_NOT_VERIFIED_SECURE":     "#ffff00",
         "STATUS_PROCESSING_KEY_EXCHANGE": "#ffa500",
-        "STATUS_KEY_EXCHANGE_RESET":      "#ffff00"
+        "STATUS_KEY_EXCHANGE_RESET":      "#ffff00",
+        
+        "SPEED_LABEL_COLOR":              "#4CAF50",
+        "EPHEMERAL_ACTIVE_BG":            "#ff6b6b",
+        "EPHEMERAL_ACTIVE_FG":            "#ffffff",
+        "SPELLCHECK_ERROR_COLOR":         "#ff0000"
     }
     
-    # Check if themes.json exists
-    if not os.path.exists("themes.json"):
+    # Check if theme.json exists
+    if not os.path.exists("theme.json"):
         # Ask user if they want to generate one with current defaults
         if messagebox.askyesno("Theme Configuration",
-                               "No themes.json file found. Would you like to create one with the default colors?"):
+                               "No theme.json file found. Would you like to create one with the default colors?"):
             try:
-                with open("themes.json", "w") as f:
+                with open("theme.json", "w") as f:
                     json.dump(default_colors, f, indent=4)
-                messagebox.showinfo("Theme Created", "themes.json has been created with default colors.")
+                messagebox.showinfo("Theme Created", "theme.json has been created with default colors.")
+            except PermissionError:
+                messagebox.showerror("Error", "Permission denied when trying to create theme.json.")
             except Exception as e:
-                messagebox.showerror("Error", f"Failed to create themes.json: {e}")
+                messagebox.showerror("Error", f"Failed to create theme.json: {e}")
         return default_colors
     
-    # Load colors from themes.json
+    # Load colors from theme.json
     try:
-        with open("themes.json", "r") as f:
+        with open("theme.json", "r") as f:
             theme_colors = json.load(f)
         
         # Validate theme format
-        required_colors = ["BG_COLOR", "FG_COLOR", "ENTRY_BG_COLOR", "BUTTON_BG_COLOR", "BUTTON_ACTIVE_BG"]
+        required_colors = [
+            "BG_COLOR", "FG_COLOR", "ENTRY_BG_COLOR", "BUTTON_BG_COLOR",
+            "BUTTON_ACTIVE_BG", "TEXT_BG_COLOR", "STATUS_NOT_CONNECTED",
+            "STATUS_CONNECTING", "STATUS_WAITING", "STATUS_VERIFYING",
+            "STATUS_VERIFIED_SECURE", "STATUS_NOT_VERIFIED_SECURE",
+            "STATUS_PROCESSING_KEY_EXCHANGE", "STATUS_KEY_EXCHANGE_RESET",
+            "SPEED_LABEL_COLOR", "EPHEMERAL_ACTIVE_BG", "EPHEMERAL_ACTIVE_FG",
+            "SPELLCHECK_ERROR_COLOR"
+        ]
         missing_colors = [color for color in required_colors if color not in theme_colors]
         
         if missing_colors:
             messagebox.showwarning("Theme Warning",
-                                   f"Missing colors in themes.json: {', '.join(missing_colors)}. Using defaults for these.")
+                                   f"Missing colors in theme.json: {', '.join(missing_colors)}. Using defaults for " +
+                                   f"these and saving the default values for the missing values.")
             for color in missing_colors:
                 theme_colors[color] = default_colors[color]
+            
+            json.dump(theme_colors, open("theme.json", "w"), indent=4)
         
         return theme_colors
+    except PermissionError:
+        messagebox.showerror("Error", "Permission denied when trying to read theme.json. Using default colors.")
+        return default_colors
+    except json.JSONDecodeError:
+        messagebox.showerror("Error", "Invalid JSON format in theme.json. Using default colors.")
+        return default_colors
+    except UnicodeDecodeError:
+        messagebox.showerror("Error", "Invalid characters in theme.json. Using default colors.")
+        return default_colors
     except Exception as e:
-        messagebox.showerror("Error", f"Failed to load themes.json: {e}")
+        messagebox.showerror("Error", f"Failed to load theme.json: {e}")
         return default_colors
 
 

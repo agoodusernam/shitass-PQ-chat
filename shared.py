@@ -19,7 +19,7 @@ except ImportError:
     print("Required cryptographic libraries not found.")
     raise ImportError("Please install the required libraries with pip install -r requirements.txt")
 # Protocol constants
-PROTOCOL_VERSION = 7
+PROTOCOL_VERSION = 1
 
 class MessageType(IntEnum):
     """Enumeration of all message types used in the secure chat protocol."""
@@ -48,13 +48,7 @@ SEND_CHUNK_SIZE = 1024 * 1024  # 1 MiB chunks for sending
 
 # Maps protocol versions to compatible versions for key exchange and message processing
 PROTOCOL_COMPATIBILITY: dict[int, list[int]] = {
-    1: [1, 2],
-    2: [1, 2],
-    3: [3, 4],
-    4: [3, 4],
-    5: [4, 5, 6],
-    6: [5, 6],
-    7: [5, 6, 7]
+    1: [1]
 }
 
 def bytes_to_human_readable(size: int) -> str:
@@ -89,7 +83,6 @@ class StreamingGzipCompressor:
             self.compressor.write(data)
         
         # Get any compressed data that's ready
-        current_pos = self.buffer.tell()
         self.buffer.seek(0)
         compressed_data = self.buffer.read()
         
@@ -104,20 +97,20 @@ class StreamingGzipCompressor:
         self.compressor.close()
         
         # Get any remaining compressed data
-        current_pos = self.buffer.tell()
         self.buffer.seek(0)
         final_data = self.buffer.read()
         self.buffer.close()
         
         return final_data
 
-# noinspection PyUnresolvedReferences
+
+# noinspection PyBroadException
 class SecureChatProtocol:
     """
     SecureChatProtocol - Implements the cryptographic protocol for secure chat using ML-KEM and AES-GCM.
     """
-    
-    def __init__(self):
+    # noinspection PyUnresolvedReferences
+    def __init__(self) -> None:
         """Initialize the secure chat protocol with default cryptographic state.
         
         Sets up all necessary state variables for the ML-KEM-1024 key exchange,
@@ -131,17 +124,21 @@ class SecureChatProtocol:
             peer_public_key (bytes | None): The peer's public key from key exchange.
             peer_key_verified (bool): Whether the peer's key has been verified.
             own_public_key (bytes | None): This client's public key.
+            private_key (bytes | None): This client's private key for key exchange.
             chain_key (bytes | None): Root key for perfect forward secrecy ratcheting.
             seen_counters (set): Set of seen message counters for replay protection.
             file_transfers (dict): Dictionary tracking ongoing file transfers.
             received_chunks (dict): Buffer for received file chunks during transfer.
         """
+        self.mac_key: bytes
+        self.encryption_key: bytes
         self.shared_key: bytes | None = None
         self.message_counter: int = 0
         self.peer_counter: int = 0
         self.peer_public_key: bytes | None = None
         self.peer_key_verified = False
         self.own_public_key: bytes | None = None
+        self.private_key: bytes | None = None  # Initialize private key properly
         # Perfect Forward Secrecy - Key Ratcheting
         self.send_chain_key: bytes | None = None    # For encrypting outgoing messages
         self.receive_chain_key: bytes | None = None # For decrypting incoming messages
@@ -153,7 +150,7 @@ class SecureChatProtocol:
         self.temp_file_paths: dict = {}  # Track temporary file paths for receiving chunks
         self.open_file_handles: dict = {}  # Track open file handles for active transfers
         
-    def reset_key_exchange(self):
+    def reset_key_exchange(self) -> None:
         """Reset all cryptographic state to initial values for key exchange restart."""
         self.shared_key = None
         self.message_counter = 0
@@ -172,8 +169,9 @@ class SecureChatProtocol:
         for file_handle in self.open_file_handles.values():
             try:
                 file_handle.close()
-            except Exception:
-                pass  # Ignore errors during cleanup
+            except:
+                pass  # Ignore errors closing file handles; they may already be closed.
+                      # If they are still open, the OS will close them eventually.
         self.open_file_handles = {}
         
         # Clean up any temporary files
@@ -181,8 +179,9 @@ class SecureChatProtocol:
             try:
                 if os.path.exists(temp_path):
                     os.remove(temp_path)
-            except Exception:
-                pass  # Ignore errors during cleanup
+            except:
+                pass  # Don't really care if it fails to delete, it's a temporary file.
+                      # The OS should clean up the files eventually on its own either way.
         self.temp_file_paths = {}
         
     def generate_keypair(self) -> tuple[bytes, bytes]:
@@ -197,7 +196,7 @@ class SecureChatProtocol:
         hkdf = HKDF(
             algorithm=hashes.SHA256(),
             length=64,
-            salt=b"SecureChat2025",
+            salt=b"ReallyCoolAndSecureSalt",
             info=b"key_derivation"
         )
         derived = hkdf.derive(shared_secret)
@@ -207,13 +206,13 @@ class SecureChatProtocol:
         
         return derived[:32], derived[32:]  # encryption_key, mac_key
     
-    def _initialize_chain_keys(self, shared_secret: bytes):
+    def _initialize_chain_keys(self, shared_secret: bytes) -> None:
         """Initialize separate chain keys for sending and receiving."""
         # Derive a root chain key that both parties will use as the starting point
         chain_hkdf = HKDF(
             algorithm=hashes.SHA256(),
             length=32,
-            salt=b"SecureChat2025",
+            salt=b"ReallyCoolAndSecureSalt",
             info=b"chain_key_root"
         )
         
@@ -223,23 +222,26 @@ class SecureChatProtocol:
         # They will diverge as messages are sent and received
         self.send_chain_key = root_chain_key
         self.receive_chain_key = root_chain_key
+        return None
     
-    def _derive_message_key(self, chain_key: bytes, counter: int) -> bytes:
+    @staticmethod
+    def _derive_message_key(chain_key: bytes, counter: int) -> bytes:
         """Derive a message key from the chain key and counter."""
         hkdf = HKDF(
             algorithm=hashes.SHA256(),
             length=32,
-            salt=b"SecureChat2025",
+            salt=b"ReallyCoolAndSecureSalt",
             info=f"message_key_{counter}".encode()
         )
         return hkdf.derive(chain_key)
     
-    def _ratchet_chain_key(self, chain_key: bytes, counter: int) -> bytes:
+    @staticmethod
+    def _ratchet_chain_key(chain_key: bytes, counter: int) -> bytes:
         """Advance the chain key (ratchet forward)."""
         hkdf = HKDF(
             algorithm=hashes.SHA256(),
             length=32,
-            salt=b"SecureChat2025",
+            salt=b"ReallyCoolAndSecureSalt",
             info=f"chain_key_{counter}".encode()
         )
         return hkdf.derive(chain_key)
@@ -265,7 +267,7 @@ class SecureChatProtocol:
         hkdf = HKDF(
             algorithm=hashes.SHA256(),
             length=32,
-            salt=b"SecureChat2025",
+            salt=b"ReallyCoolAndSecureSalt",
             info=f"fast_ratchet_{start_counter}_to_{end_counter}".encode()
         )
         return hkdf.derive(initial_chain_key)
@@ -303,20 +305,15 @@ class SecureChatProtocol:
             raise FileNotFoundError("eff_large_wordlist.txt not found. Please ensure the wordlist file is in the same directory as shared.py")
     
     @staticmethod
-    def _hash_to_words(hash_bytes: bytes, wordlist: list, num_words: int = 10) -> list:
+    def _hash_to_words(hash_bytes: bytes, wordlist: list, num_words: int = 20) -> list:
         """Convert hash bytes to a list of words from the wordlist."""
         # Convert hash to integer for easier manipulation
         hash_int = int.from_bytes(hash_bytes, byteorder='big')
         
-        # Use the wordlist size (7776) as base for conversion
-        wordlist_size = len(wordlist)
-        
         words = []
         for i in range(num_words):
-            # Extract word index using modulo and bit shifting
-            # This ensures good distribution across the wordlist
-            word_index = (hash_int >> (i * 13)) % wordlist_size
-            words.append(wordlist[word_index])
+            index = (hash_int >> (i * 8)) % len(wordlist)
+            words.append(wordlist[index])
         
         return words
     
@@ -607,7 +604,7 @@ class SecureChatProtocol:
     
     def handle_key_exchange_response(self, message_data: bytes) -> bytes:
         """Handle key exchange response from peer and return completion message."""
-        if not hasattr(self, 'private_key'):
+        if self.private_key is None:
             raise ValueError("No private key available for key exchange response")
         
         # Process the response to get shared secret

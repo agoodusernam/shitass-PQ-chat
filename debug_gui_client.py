@@ -1,7 +1,5 @@
-#!/usr/bin/env python3
 """
 Debug GUI Client - Extends the base GUI client with debugging functionality.
-This version uses inheritance instead of code duplication.
 """
 import json
 import random
@@ -13,7 +11,7 @@ import threading
 import hashlib
 
 # Import base classes
-from gui_client import ChatGUI, GUISecureChatClient, FileTransferWindow, load_theme_colors
+from gui_client import ChatGUI, GUISecureChatClient, FileTransferWindow
 from shared import PROTOCOL_VERSION, send_message
 
 
@@ -26,14 +24,14 @@ class DebugFileTransferWindow(FileTransferWindow):
 class DebugChatGUI(ChatGUI):
     """Debug version of ChatGUI - extends base with debug features."""
     
-    def __init__(self, root, theme_colors=None):
+    def __init__(self, root):
         # Initialize debug-specific attributes
         self.debug_visible = True  # Show debug panel by default
         self.last_debug_update = 0
         self.debug_update_interval = 1.0
         
         # Call parent constructor
-        super().__init__(root, theme_colors)
+        super().__init__(root)
         self.root.geometry("1400x700")
         
         # Add debug-specific UI elements
@@ -54,7 +52,7 @@ class DebugChatGUI(ChatGUI):
     
     def _start_debug_timer(self):
         """Start the periodic debug info update timer."""
-        if self.debug_visible and hasattr(self, 'root'):
+        if self.debug_visible:
             # Schedule the next debug update
             self.debug_timer_id = self.root.after(
                     int(self.debug_update_interval * 1000),  # Convert to milliseconds
@@ -66,7 +64,7 @@ class DebugChatGUI(ChatGUI):
         # noinspection PyBroadException
         try:
             # Update debug info if visible and client exists
-            if self.debug_visible and hasattr(self, 'client') and self.client:
+            if self.debug_visible and self.client:
                 self.update_debug_info()
         except Exception:
             # Silently handle errors to prevent timer from stopping
@@ -488,12 +486,12 @@ class DebugChatGUI(ChatGUI):
             # Start the debug timer when showing
             self._start_debug_timer()
             # Update debug info immediately when showing
-            if hasattr(self, 'client') and self.client:
+            if self.client:
                 self.update_debug_info()
     
     def update_debug_info(self):
         """Update the debug information display with current cryptographic state."""
-        if not self.debug_visible or not hasattr(self, 'client') or not self.client:
+        if not self.debug_visible or not self.client:
             return
         
         current_time = time.time()
@@ -511,20 +509,20 @@ class DebugChatGUI(ChatGUI):
             debug_text += f"  Client Version: {PROTOCOL_VERSION}\n"
             
             # Server protocol version (if known)
-            if hasattr(self.client, 'server_protocol_version'):
+            if self.client.server_version is not None:
                 debug_text += f"  Server Protocol Version: {self.client.server_protocol_version}\n"
             else:
                 debug_text += "  Server Protocol Version: Unknown\n"
             
             # Peer version (if known)
-            if hasattr(self.client, 'peer_version'):
+            if self.client.peer_version is not None:
                 debug_text += f"  Peer Version: {self.client.peer_version}\n"
             else:
                 debug_text += "  Peer Version: Unknown\n"
             
             # Version compatibility check
-            if (hasattr(self.client, 'peer_version') and
-                    hasattr(self.client, 'server_protocol_version')):
+            if (self.client.peer_version is not None and
+                    self.client.server_protocol_version is not None):
                 if (self.client.peer_version == PROTOCOL_VERSION and
                         self.client.server_protocol_version == PROTOCOL_VERSION):
                     debug_text += "  ✅ All versions compatible\n"
@@ -539,76 +537,69 @@ class DebugChatGUI(ChatGUI):
             debug_text += "KEY EXCHANGE STATUS:\n"
             
             # Check overall key exchange completion
-            if hasattr(self.client, 'key_exchange_complete') and self.client.key_exchange_complete:
+            if self.client.key_exchange_complete:
                 debug_text += "  ✅ KEY EXCHANGE COMPLETE\n"
             else:
                 debug_text += "  ⏳ Key Exchange In Progress\n"
             
             # Check verification status
-            if hasattr(self.client, 'verification_complete') and self.client.verification_complete:
+            if self.client.verification_complete:
                 debug_text += "  ✅ VERIFICATION COMPLETE\n"
             else:
                 debug_text += "  ⏳ Verification Pending\n"
             
-            if hasattr(self.client, 'protocol') and hasattr(self.client.protocol,
-                                                            'shared_key') and self.client.protocol.shared_key:
+            if self.client.protocol and self.client.protocol.shared_key:
                 debug_text += f"  ✓ Shared Key: {self.client.protocol.shared_key[:16].hex()}...\n"
             else:
                 debug_text += "  ✗ No Shared Key\n"
             
-            if hasattr(self.client, 'protocol') and hasattr(self.client.protocol,
-                                                            'encryption_key') and self.client.protocol.encryption_key:
+            if self.client.protocol and self.client.protocol.encryption_key:
                 debug_text += f"  ✓ Encryption Key: {self.client.protocol.encryption_key[:16].hex()}...\n"
             else:
                 debug_text += "  ✗ No Encryption Key\n"
             
-            if hasattr(self.client, 'protocol') and hasattr(self.client.protocol,
-                                                            'mac_key') and self.client.protocol.mac_key:
+            if self.client.protocol and self.client.protocol.mac_key:
                 debug_text += f"  ✓ MAC Key: {self.client.protocol.mac_key[:16].hex()}...\n"
             else:
                 debug_text += "  ✗ No MAC Key\n"
             
             # Chain Keys and Counters
             debug_text += "\nCHAIN KEYS & COUNTERS:\n"
-            if hasattr(self.client, 'protocol') and hasattr(self.client.protocol,
-                                                            'send_chain_key') and self.client.protocol.send_chain_key:
+            if self.client.protocol and self.client.protocol.send_chain_key:
                 debug_text += f"  Send Chain Key: {self.client.protocol.send_chain_key[:16].hex()}...\n"
             else:
                 debug_text += "  Send Chain Key: Not initialized\n"
             
-            if hasattr(self.client, 'protocol') and hasattr(self.client.protocol,
-                                                            'receive_chain_key') and self.client.protocol.receive_chain_key:
+            if self.client.protocol and self.client.protocol.receive_chain_key:
                 debug_text += f"  Receive Chain Key: {self.client.protocol.receive_chain_key[:16].hex()}...\n"
             else:
                 debug_text += "  Receive Chain Key: Not initialized\n"
             
-            if hasattr(self.client, 'protocol') and hasattr(self.client.protocol, 'message_counter'):
+            if self.client.protocol:
                 debug_text += f"  Message Counter (Out): {self.client.protocol.message_counter}\n"
             else:
                 debug_text += "  Message Counter (Out): 0\n"
             
-            if hasattr(self.client, 'protocol') and hasattr(self.client.protocol, 'peer_counter'):
+            if self.client.protocol:
                 debug_text += f"  Peer Counter (In): {self.client.protocol.peer_counter}\n"
             else:
                 debug_text += "  Peer Counter (In): 0\n"
             
             # Public Keys
             debug_text += "\nPUBLIC KEYS:\n"
-            if hasattr(self.client, 'protocol') and hasattr(self.client.protocol,
-                                                            'own_public_key') and self.client.protocol.own_public_key:
+            if self.client.protocol and self.client.protocol.own_public_key:
                 debug_text += f"  Own Public Key: {self.client.protocol.own_public_key[:16].hex()}...\n"
             else:
                 debug_text += "  Own Public Key: Not generated\n"
             
-            if hasattr(self.client, 'protocol') and hasattr(self.client.protocol,
-                                                            'peer_public_key') and self.client.protocol.peer_public_key:
+            if self.client.protocol and self.client.protocol.peer_public_key:
                 debug_text += f"  Peer Public Key: {self.client.protocol.peer_public_key[:16].hex()}...\n"
             else:
                 debug_text += "  Peer Public Key: Not received\n"
             
             # Key Verification
             debug_text += "\nKEY VERIFICATION:\n"
-            if hasattr(self.client, 'protocol') and hasattr(self.client.protocol, 'peer_key_verified'):
+            if self.client.protocol:
                 if self.client.protocol.peer_key_verified:
                     debug_text += "  ✓ Peer Key Verified\n"
                 else:
@@ -619,27 +610,28 @@ class DebugChatGUI(ChatGUI):
             # Connection Status
             debug_text += "\nCONNECTION STATUS:\n"
             debug_text += f"  Connected: {'Yes' if self.connected else 'No'}\n"
-            if hasattr(self.client, 'socket') and self.client.socket:
+            if self.client.socket:
                 debug_text += "  Socket: Active\n"
             else:
                 debug_text += "  Socket: Inactive\n"
             
             # Keepalive Status
             debug_text += "\nKEEPALIVE STATUS:\n"
-            if hasattr(self.client, 'last_keepalive_received') and self.client.last_keepalive_received:
+            if getattr(self.client, 'last_keepalive_received', None):
                 last_received = time.strftime('%H:%M:%S', time.localtime(self.client.last_keepalive_received))
                 debug_text += f"  Last Keepalive Received: {last_received}\n"
             else:
                 debug_text += "  Last Keepalive Received: None\n"
             
-            if hasattr(self.client, 'last_keepalive_sent') and self.client.last_keepalive_sent:
+            if getattr(self.client, 'last_keepalive_sent', None):
                 last_sent = time.strftime('%H:%M:%S', time.localtime(self.client.last_keepalive_sent))
                 debug_text += f"  Last Keepalive Sent: {last_sent}\n"
             else:
                 debug_text += "  Last Keepalive Sent: None\n"
             
-            if hasattr(self.client, 'respond_to_keepalive'):
-                status = "Enabled" if self.client.respond_to_keepalive else "Disabled"
+            respond_to_keepalive = getattr(self.client, 'respond_to_keepalive', None)
+            if respond_to_keepalive is not None:
+                status = "Enabled" if respond_to_keepalive else "Disabled"
                 debug_text += f"  Keepalive Responses: {status}\n"
             else:
                 debug_text += "  Keepalive Responses: Unknown\n"
@@ -656,7 +648,7 @@ class DebugChatGUI(ChatGUI):
         except Exception as e:
             # Fallback debug info if there's an error
             error_text = f"Debug Info Error: {e}\n"
-            error_text += f"Client exists: {hasattr(self, 'client')}\n"
+            error_text += f"Client exists: {self.client is not None}\n"
             error_text += f"Connected: {self.connected}\n"
             
             self.debug_display.config(state=tk.NORMAL) # type: ignore # type: ignore
@@ -666,7 +658,7 @@ class DebugChatGUI(ChatGUI):
     
     def toggle_keepalive_responses(self):
         """Toggle whether the client responds to keepalive messages."""
-        if not hasattr(self, 'client') or not self.client:
+        if not self.client:
             return
         
         # Toggle the flag
@@ -693,11 +685,11 @@ class DebugChatGUI(ChatGUI):
     
     def toggle_delivery_confirmations(self):
         """Toggle whether the client sends delivery confirmations."""
-        if not hasattr(self, 'client') or not self.client:
+        if not self.client:
             return
         
         # Toggle the flag
-        self.client.send_delivery_confirmations = not getattr(self.client, 'send_delivery_confirmations', True)
+        self.client.send_delivery_confirmations = not self.client.send_delivery_confirmations
         
         # Update button text
         if self.client.send_delivery_confirmations:
@@ -720,7 +712,7 @@ class DebugChatGUI(ChatGUI):
     
     def send_malformed_message(self):
         """Send a malformed message to test error handling."""
-        if not hasattr(self, 'client') or not self.client or not self.client.socket:
+        if not self.client or not self.client.socket:
             return
         
         try:
@@ -737,7 +729,7 @@ class DebugChatGUI(ChatGUI):
     
     def set_chain_keys(self):
         """Set custom chain keys for testing."""
-        if not hasattr(self, 'client') or not self.client or not hasattr(self.client, 'protocol'):
+        if not self.client or not self.client.protocol:
             return
         
         try:
@@ -764,9 +756,9 @@ class DebugChatGUI(ChatGUI):
             receive_key_entry.pack(fill=tk.X, padx=10, pady=5) # type: ignore
             
             # Pre-fill with current values if available
-            if hasattr(self.client.protocol, 'send_chain_key') and self.client.protocol.send_chain_key:
+            if self.client.protocol.send_chain_key:
                 send_key_entry.insert(0, self.client.protocol.send_chain_key.hex())
-            if hasattr(self.client.protocol, 'receive_chain_key') and self.client.protocol.receive_chain_key:
+            if self.client.protocol.receive_chain_key:
                 receive_key_entry.insert(0, self.client.protocol.receive_chain_key.hex())
             
             # Warning label
@@ -818,11 +810,11 @@ class DebugChatGUI(ChatGUI):
     
     def force_disconnect(self):
         """Force disconnect without proper cleanup."""
-        if not hasattr(self, 'client') or not self.client:
+        if not self.client:
             return
         
         try:
-            if hasattr(self.client, 'socket') and self.client.socket:
+            if self.client.socket:
                 self.client.socket.close()
             self.connected = False
             self.connect_btn.config(text="Connect")
@@ -833,7 +825,7 @@ class DebugChatGUI(ChatGUI):
     
     def force_key_reset(self):
         """Force reset all cryptographic keys."""
-        if not hasattr(self, 'client') or not self.client or not hasattr(self.client, 'protocol'):
+        if not self.client or not self.client.protocol:
             return
         
         try:
@@ -855,7 +847,7 @@ class DebugChatGUI(ChatGUI):
     
     def view_key_fingerprints(self):
         """View key fingerprints in a dialog."""
-        if not hasattr(self, 'client') or not self.client or not hasattr(self.client, 'protocol'):
+        if not self.client or not self.client.protocol:
             return
         
         try:
@@ -881,21 +873,21 @@ class DebugChatGUI(ChatGUI):
             fingerprint_text = "=== KEY FINGERPRINTS ===\n\n"
             
             # Own public key fingerprint
-            if hasattr(self.client.protocol, 'own_public_key') and self.client.protocol.own_public_key:
+            if self.client.protocol.own_public_key:
                 own_fp = hashlib.sha256(self.client.protocol.own_public_key).hexdigest()[:32]
                 fingerprint_text += f"Own Public Key:\n{own_fp}\n\n"
             else:
                 fingerprint_text += "Own Public Key: Not available\n\n"
             
             # Peer public key fingerprint
-            if hasattr(self.client.protocol, 'peer_public_key') and self.client.protocol.peer_public_key:
+            if self.client.protocol.peer_public_key:
                 peer_fp = hashlib.sha256(self.client.protocol.peer_public_key).hexdigest()[:32]
                 fingerprint_text += f"Peer Public Key:\n{peer_fp}\n\n"
             else:
                 fingerprint_text += "Peer Public Key: Not available\n\n"
             
             # Shared key fingerprint
-            if hasattr(self.client.protocol, 'shared_key') and self.client.protocol.shared_key:
+            if self.client.protocol.shared_key:
                 shared_fp = hashlib.sha256(self.client.protocol.shared_key).hexdigest()[:32]
                 fingerprint_text += f"Shared Key:\n{shared_fp}\n\n"
             else:
@@ -910,7 +902,7 @@ class DebugChatGUI(ChatGUI):
     
     def simulate_network_latency(self):
         """Simulate network latency by delaying message sending."""
-        if not hasattr(self, 'client') or not self.client:
+        if not self.client:
             return
         
         try:
@@ -975,7 +967,7 @@ class DebugChatGUI(ChatGUI):
     
     def send_stale_message(self):
         """Send a stale message (with an old counter value) to test replay protection."""
-        if not hasattr(self, 'client') or not self.client or not self.client.socket:
+        if not self.client or not self.client.socket:
             return
         
         try:
@@ -1083,7 +1075,7 @@ class DebugChatGUI(ChatGUI):
     
     def simulate_packet_loss(self):
         """Simulate packet loss by randomly dropping messages."""
-        if not hasattr(self, 'client') or not self.client:
+        if not self.client:
             return
         
         try:
@@ -1182,7 +1174,7 @@ class DebugChatGUI(ChatGUI):
     
     def send_duplicate_message(self):
         """Send the same message multiple times to test duplicate detection."""
-        if not hasattr(self, 'client') or not self.client or not self.client.socket:
+        if not self.client or not self.client.socket:
             return
         
         try:
@@ -1304,7 +1296,7 @@ class DebugChatGUI(ChatGUI):
     
     def set_message_counter(self):
         """Set the message counter to a specific value."""
-        if not hasattr(self, 'client') or not self.client or not hasattr(self.client, 'protocol'):
+        if not self.client or not self.client.protocol:
             return
         
         try:
@@ -1335,9 +1327,8 @@ class DebugChatGUI(ChatGUI):
             )
             send_counter_entry.pack(fill=tk.X, padx=20, pady=(0, 10)) # type: ignore
             
-            # Pre-fill with current value if available
-            if hasattr(self.client.protocol, 'message_counter'):
-                send_counter_entry.insert(0, str(self.client.protocol.message_counter))
+            # Pre-fill with current value
+            send_counter_entry.insert(0, str(self.client.protocol.message_counter))
             
             # Peer counter input
             tk.Label(
@@ -1359,8 +1350,7 @@ class DebugChatGUI(ChatGUI):
             peer_counter_entry.pack(fill=tk.X, padx=20, pady=(0, 10)) # type: ignore
             
             # Pre-fill with current value if available
-            if hasattr(self.client.protocol, 'peer_counter'):
-                peer_counter_entry.insert(0, str(self.client.protocol.peer_counter))
+            peer_counter_entry.insert(0, str(self.client.protocol.peer_counter))
             
             # Warning label
             warning_label = tk.Label(
@@ -1425,7 +1415,7 @@ class DebugChatGUI(ChatGUI):
     
     def test_protocol_version(self):
         """Test protocol version compatibility by sending messages with different versions."""
-        if not hasattr(self, 'client') or not self.client or not self.client.socket:
+        if not self.client or not self.client.socket:
             return
         
         try:
@@ -1738,11 +1728,8 @@ def main():
     root = TkinterDnD.Tk()
     root.title("Secure Chat Client (DEBUG)")
     
-    # Load theme colours
-    theme_colors = load_theme_colors()
-    
     # Create GUI
-    gui = DebugChatGUI(root, theme_colors)
+    gui = DebugChatGUI(root)
     
     # Override the client creation to use our GUI-aware version
     def gui_connect():
