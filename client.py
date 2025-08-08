@@ -700,7 +700,7 @@ class SecureChatClient:
                 compression_text = "compressed" if compressed else "uncompressed"
                 print(f"File received successfully ({compression_text}): {output_path}")
                 
-                # Send completion message
+                # Send the completion message
                 complete_msg = self.protocol.create_file_complete_message(transfer_id)
                 send_message(self.socket, complete_msg)
                 

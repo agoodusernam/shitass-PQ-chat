@@ -194,7 +194,7 @@ class SecureChatProtocol:
         """Derive encryption and MAC keys from shared secret using HKDF."""
         # Derive 64 bytes: 32 for AES-GCM, 32 for HMAC
         hkdf = HKDF(
-            algorithm=hashes.SHA256(),
+            algorithm=hashes.SHA3_512(),
             length=64,
             salt=b"ReallyCoolAndSecureSalt",
             info=b"key_derivation"
@@ -204,14 +204,14 @@ class SecureChatProtocol:
         # Initialize chain keys for perfect forward secrecy
         self._initialize_chain_keys(shared_secret)
         
-        return derived[:32], derived[32:]  # encryption_key, mac_key
+        return derived[:len(derived)//2], derived[len(derived)//2:]  # encryption_key, mac_key
     
     def _initialize_chain_keys(self, shared_secret: bytes) -> None:
         """Initialize separate chain keys for sending and receiving."""
         # Derive a root chain key that both parties will use as the starting point
         chain_hkdf = HKDF(
-            algorithm=hashes.SHA256(),
-            length=32,
+            algorithm=hashes.SHA3_512(),
+            length=64,
             salt=b"ReallyCoolAndSecureSalt",
             info=b"chain_key_root"
         )
@@ -228,54 +228,28 @@ class SecureChatProtocol:
     def _derive_message_key(chain_key: bytes, counter: int) -> bytes:
         """Derive a message key from the chain key and counter."""
         hkdf = HKDF(
-            algorithm=hashes.SHA256(),
-            length=32,
+            algorithm=hashes.SHA3_512(),
+            length=64,
             salt=b"ReallyCoolAndSecureSalt",
             info=f"message_key_{counter}".encode()
         )
-        return hkdf.derive(chain_key)
+        return hkdf.derive(chain_key)[:32]
     
     @staticmethod
     def _ratchet_chain_key(chain_key: bytes, counter: int) -> bytes:
         """Advance the chain key (ratchet forward)."""
         hkdf = HKDF(
-            algorithm=hashes.SHA256(),
-            length=32,
+            algorithm=hashes.SHA3_512(),
+            length=64,
             salt=b"ReallyCoolAndSecureSalt",
             info=f"chain_key_{counter}".encode()
         )
         return hkdf.derive(chain_key)
     
-    def _fast_ratchet_chain_key(self, initial_chain_key: bytes, start_counter: int, end_counter: int) -> bytes:
-        """Efficiently ratchet chain key over large counter gaps using batched operations."""
-        if end_counter <= start_counter:
-            return initial_chain_key
-        
-        # For very large gaps, we can use a more efficient approach
-        # Instead of ratcheting one by one, we'll use a single HKDF operation
-        # that incorporates the counter range
-        gap_size = end_counter - start_counter
-        
-        if gap_size <= 10:
-            # For small gaps, use normal ratcheting
-            current_key = initial_chain_key
-            for i in range(start_counter + 1, end_counter + 1):
-                current_key = self._ratchet_chain_key(current_key, i)
-            return current_key
-        
-        # For large gaps, use a single HKDF operation with the gap info
-        hkdf = HKDF(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=b"ReallyCoolAndSecureSalt",
-            info=f"fast_ratchet_{start_counter}_to_{end_counter}".encode()
-        )
-        return hkdf.derive(initial_chain_key)
-    
     def generate_key_fingerprint(self, public_key: bytes) -> str:
         """Generate a human-readable word-based fingerprint for a public key."""
         # Create SHA-256 hash of the public key
-        key_hash = hashlib.sha256(public_key).digest()
+        key_hash = hashlib.sha3_256(public_key).digest()
         
         # Load the wordlist
         wordlist = self._load_wordlist()
@@ -495,27 +469,27 @@ class SecureChatProtocol:
         self.send_chain_key = self._ratchet_chain_key(self.send_chain_key, self.message_counter)
         
         # Create AAD from message metadata for authentication
+        nonce: bytes = os.urandom(32)
         aad_data = {
-            "version": PROTOCOL_VERSION,
             "type": MessageType.ENCRYPTED_MESSAGE,
-            "counter": self.message_counter
+            "counter": self.message_counter,
+            "nonce" : base64.b64encode(nonce).decode('utf-8')
         }
         aad = json.dumps(aad_data, sort_keys=True).encode('utf-8')
         
         # Encrypt with AES-GCM using the unique message key and AAD
         aesgcm: AESGCM = AESGCM(message_key)
-        nonce: bytes = os.urandom(12)
+        
         ciphertext: bytes = aesgcm.encrypt(nonce, plaintext.encode('utf-8'), aad)
         
         # Securely delete the message key
         message_key = b'\x00' * len(message_key)
         del message_key
         
-        # Create authenticated message with counter outside the ciphertext
+        # Create authenticated message
         encrypted_message = {
-            "version":    PROTOCOL_VERSION,
             "type":       MessageType.ENCRYPTED_MESSAGE,
-            "counter":    self.message_counter,  # Counter is now in plaintext
+            "counter":    self.message_counter,
             "nonce":      base64.b64encode(nonce).decode('utf-8'),
             "ciphertext": base64.b64encode(ciphertext).decode('utf-8')
         }
@@ -535,23 +509,16 @@ class SecureChatProtocol:
             nonce = base64.b64decode(message["nonce"])
             ciphertext = base64.b64decode(message["ciphertext"])
             counter = message["counter"]
-            version = message["version"]
             
             # Check for replay attacks or very old messages
             if counter <= self.peer_counter:
                 raise ValueError(
                     f"Replay attack or out-of-order message detected. Expected > {self.peer_counter}, got {counter}")
             
-            # IMPORTANT: Don't modify state until decryption succeeds
-            # Calculate chain key state WITHOUT modifying current state
-            steps_to_advance = counter - self.peer_counter
             
-            if steps_to_advance > 100:
-                temp_chain_key = self._fast_ratchet_chain_key(self.receive_chain_key, self.peer_counter, counter - 1)
-            else:
-                temp_chain_key = self.receive_chain_key
-                for i in range(self.peer_counter + 1, counter):
-                    temp_chain_key = self._ratchet_chain_key(temp_chain_key, i)
+            temp_chain_key = self.receive_chain_key
+            for i in range(self.peer_counter + 1, counter):
+                temp_chain_key = self._ratchet_chain_key(temp_chain_key, i)
             
             # Derive the message key for the current message
             message_key = self._derive_message_key(temp_chain_key, counter)
@@ -561,9 +528,9 @@ class SecureChatProtocol:
             
             # Create AAD from message metadata for authentication verification
             aad_data = {
-                "version": version,
                 "type": MessageType.ENCRYPTED_MESSAGE,
-                "counter": counter
+                "counter": counter,
+                "nonce": base64.b64encode(nonce).decode('utf-8')
             }
             aad = json.dumps(aad_data, sort_keys=True).encode('utf-8')
             
@@ -689,7 +656,7 @@ class SecureChatProtocol:
         file_name = os.path.basename(file_path)
         
         # Calculate file hash for integrity verification (of original uncompressed file)
-        file_hash = hashlib.sha256()
+        file_hash = hashlib.sha3_512()
         with open(file_path, 'rb') as f:
             while chunk := f.read(8192):
                 file_hash.update(chunk)
@@ -708,10 +675,10 @@ class SecureChatProtocol:
             # Fallback to estimation if chunking fails
             print(f"Warning: Could not pre-calculate chunks, using estimation: {e}")
             total_chunks = (file_size + SEND_CHUNK_SIZE - 1) // SEND_CHUNK_SIZE
-            total_processed_size = file_size if not compress else file_size // 2  # Rough estimate
+            total_processed_size = file_size if not compress else int(file_size * 0.85)  # Rough estimate
         
         # Generate unique transfer ID
-        transfer_id = hashlib.sha256(f"{file_name}{file_size}{file_hash.hexdigest()}".encode()).hexdigest()[:16]
+        transfer_id = hashlib.sha3_512(f"{file_name}{file_size}{file_hash.hexdigest()}".encode()).hexdigest()[:16]
         
         metadata = {
             "version": PROTOCOL_VERSION,
@@ -774,18 +741,26 @@ class SecureChatProtocol:
         
         # Encrypt header and chunk data separately but in one operation
         aesgcm = AESGCM(message_key)
-        nonce = os.urandom(12)
+        nonce = os.urandom(32)
+        
+        # Create AAD from counter and nonce for authentication
+        aad_data = {
+            "type": MessageType.FILE_CHUNK,
+            "counter": self.message_counter,
+            "nonce": base64.b64encode(nonce).decode('utf-8')
+        }
+        aad = json.dumps(aad_data, sort_keys=True).encode('utf-8')
         
         # Combine header length + header + chunk data for encryption
         header_len = struct.pack('!H', len(header_json))  # 2 bytes for header length
         plaintext = header_len + header_json + chunk_data
-        ciphertext = aesgcm.encrypt(nonce, plaintext, None)
+        ciphertext = aesgcm.encrypt(nonce, plaintext, aad)
         
         # Securely delete the message key
         message_key = b'\x00' * len(message_key)
         del message_key
         
-        # Pack counter (4 bytes) + nonce (12 bytes) + ciphertext
+        # Pack counter (4 bytes) + nonce (32 bytes) + ciphertext
         counter_bytes = struct.pack('!I', self.message_counter)
         return counter_bytes + nonce + ciphertext
     
@@ -900,12 +875,12 @@ class SecureChatProtocol:
         
         try:
             # Extract counter, nonce, and ciphertext from the message
-            if len(encrypted_data) < 16:  # 4 bytes for counter + 12 for nonce
+            if len(encrypted_data) < 36:  # 4 bytes for counter + 32 for nonce
                 raise ValueError("Invalid chunk message format")
             
             counter = struct.unpack('!I', encrypted_data[:4])[0]
-            nonce = encrypted_data[4:16]
-            ciphertext = encrypted_data[16:]
+            nonce = encrypted_data[4:36]
+            ciphertext = encrypted_data[36:]
             
             # Check for replay attacks or very old messages
             if counter <= self.peer_counter:
@@ -913,21 +888,24 @@ class SecureChatProtocol:
                         f"Replay attack or out-of-order message detected. Expected > {self.peer_counter}, got {counter}")
             
             # Advance the chain key to the correct state for this message
-            steps_to_advance = counter - self.peer_counter
-            
-            if steps_to_advance > 100:  # Use fast ratcheting for large gaps
-                temp_chain_key = self._fast_ratchet_chain_key(self.receive_chain_key, self.peer_counter, counter - 1)
-            else:  # Ratchet forward one by one for smaller gaps
-                temp_chain_key = self.receive_chain_key
-                for i in range(self.peer_counter + 1, counter):
-                    temp_chain_key = self._ratchet_chain_key(temp_chain_key, i)
+            temp_chain_key = self.receive_chain_key
+            for i in range(self.peer_counter + 1, counter):
+                temp_chain_key = self._ratchet_chain_key(temp_chain_key, i)
             
             # Derive the message key for the current message
             message_key = self._derive_message_key(temp_chain_key, counter)
             
-            # Decrypt the chunk payload
+            # Create AAD from counter and nonce for authentication verification
+            aad_data = {
+                "type": MessageType.FILE_CHUNK,
+                "counter": counter,
+                "nonce": base64.b64encode(nonce).decode('utf-8')
+            }
+            aad = json.dumps(aad_data, sort_keys=True).encode('utf-8')
+            
+            # Decrypt the chunk payload with AAD verification
             aesgcm = AESGCM(message_key)
-            plaintext = aesgcm.decrypt(nonce, ciphertext, None)
+            plaintext = aesgcm.decrypt(nonce, ciphertext, aad)
             
             # Parse the decrypted header and extract chunk data
             if len(plaintext) < 2:
@@ -1036,7 +1014,7 @@ class SecureChatProtocol:
         Args:
             transfer_id: The transfer ID
             output_path: Final output path for the file
-            expected_hash: Expected SHA256 hash of the original file
+            expected_hash: Expected SHA3-512 hash of the original file
             compressed: Whether the received data is compressed (default: True for backward compatibility)
         """
         if transfer_id not in self.received_chunks or transfer_id not in self.temp_file_paths:
@@ -1073,7 +1051,7 @@ class SecureChatProtocol:
                 final_file_path = temp_decompressed_path
             
             # Calculate hash of the final file
-            file_hash = hashlib.sha256()
+            file_hash = hashlib.sha3_512()
             with open(final_file_path, 'rb') as f:
                 while chunk := f.read(8192):  # Read in small chunks to avoid memory issues
                     file_hash.update(chunk)

@@ -874,21 +874,21 @@ class DebugChatGUI(ChatGUI):
             
             # Own public key fingerprint
             if self.client.protocol.own_public_key:
-                own_fp = hashlib.sha256(self.client.protocol.own_public_key).hexdigest()[:32]
+                own_fp = hashlib.sha3_256(self.client.protocol.own_public_key).hexdigest()[:32]
                 fingerprint_text += f"Own Public Key:\n{own_fp}\n\n"
             else:
                 fingerprint_text += "Own Public Key: Not available\n\n"
             
             # Peer public key fingerprint
             if self.client.protocol.peer_public_key:
-                peer_fp = hashlib.sha256(self.client.protocol.peer_public_key).hexdigest()[:32]
+                peer_fp = hashlib.sha3_256(self.client.protocol.peer_public_key).hexdigest()[:32]
                 fingerprint_text += f"Peer Public Key:\n{peer_fp}\n\n"
             else:
                 fingerprint_text += "Peer Public Key: Not available\n\n"
             
             # Shared key fingerprint
             if self.client.protocol.shared_key:
-                shared_fp = hashlib.sha256(self.client.protocol.shared_key).hexdigest()[:32]
+                shared_fp = hashlib.sha3_256(self.client.protocol.shared_key).hexdigest()[:32]
                 fingerprint_text += f"Shared Key:\n{shared_fp}\n\n"
             else:
                 fingerprint_text += "Shared Key: Not available\n\n"
