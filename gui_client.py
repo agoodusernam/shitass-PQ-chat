@@ -1458,26 +1458,29 @@ class GUISecureChatClient(SecureChatClient):
                 message: dict = json.loads(decrypted_text)
                 message_type = message.get("type")
                 
-                if message_type == MessageType.DUMMY_MESSAGE:
-                    # This is a dummy message for traffic analysis prevention - ignore it
-                    pass
-                elif message_type == MessageType.FILE_METADATA:
-                    self.handle_file_metadata(decrypted_text)
-                elif message_type == MessageType.FILE_ACCEPT:
-                    self.handle_file_accept(decrypted_text)
-                elif message_type == MessageType.FILE_REJECT:
-                    self.handle_file_reject(decrypted_text)
-                elif message_type == MessageType.FILE_COMPLETE:
-                    self.handle_file_complete(decrypted_text)
-                elif message_type == MessageType.DELIVERY_CONFIRMATION:
-                    self.handle_delivery_confirmation(message)
-                else:
-                    # It's a regular chat message
-                    if self.gui:
-                        self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Other user: {decrypted_text}",
-                                                                               is_message=True))
-                    # Send delivery confirmation for text messages only
-                    self._send_delivery_confirmation(received_message_counter)
+                match message_type:
+                    case MessageType.EMERGENCY_CLOSE:
+                        self.handle_emergency_close(message_data)
+                    case MessageType.DUMMY_MESSAGE:
+                        # This is a dummy message for traffic analysis prevention - ignore it
+                        pass
+                    case MessageType.FILE_METADATA:
+                        self.handle_file_metadata(decrypted_text)
+                    case MessageType.FILE_ACCEPT:
+                        self.handle_file_accept(decrypted_text)
+                    case MessageType.FILE_REJECT:
+                        self.handle_file_reject(decrypted_text)
+                    case MessageType.FILE_COMPLETE:
+                        self.handle_file_complete(decrypted_text)
+                    case MessageType.DELIVERY_CONFIRMATION:
+                        self.handle_delivery_confirmation(message)
+                    case _:
+                        # It's a regular chat message
+                        if self.gui:
+                            self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Other user: {decrypted_text}",
+                                                                                   is_message=True))
+                        # Send delivery confirmation for text messages only
+                        self._send_delivery_confirmation(received_message_counter)
             
             except (json.JSONDecodeError, TypeError):
                 # If it's not JSON, it's a regular chat message
@@ -1525,32 +1528,44 @@ class GUISecureChatClient(SecureChatClient):
     def handle_emergency_close(self, message_data: bytes) -> None:
         """Handle emergency close message from the other client - override to display in GUI."""
         try:
-            message = json.loads(message_data.decode('utf-8'))
-            close_message = message.get("message", "Emergency close received")
-            
             if self.gui:
                 # Display emergency close message in GUI
                 self.gui.root.after(0, lambda: self.gui.append_to_chat("🚨 EMERGENCY CLOSE RECEIVED"))
                 self.gui.root.after(0, lambda: self.gui.append_to_chat(f"The other client has activated emergency close."))
-                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Message: {close_message}"))
                 self.gui.root.after(0, lambda: self.gui.append_to_chat("Connection will be terminated immediately."))
+                
+                # Show popup notification
+                self.gui.root.after(0, lambda: messagebox.showwarning(
+                    "Emergency Close Activated",
+                    "The other client has activated emergency close.\nThe connection will be terminated immediately."
+                ))
+                
+                # Use the GUI's emergency close function to properly close everything
+                self.gui.root.after(0, lambda: self.gui.emergency_close())
             else:
                 # Fallback to console output if no GUI
                 print(f"\n{'=' * 50}")
                 print("🚨 EMERGENCY CLOSE RECEIVED")
                 print(f"The other client has activated emergency close.")
-                print(f"Message: {close_message}")
                 print("Connection will be terminated immediately.")
                 print(f"{'=' * 50}")
-            
-            # Immediately disconnect
-            self.disconnect()
+                
+                # Immediately disconnect
+                self.disconnect()
         
         except Exception as e:
             if self.gui:
                 self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error handling emergency close: {e}"))
+                # Still try to show a popup even if there was an error
+                self.gui.root.after(0, lambda: messagebox.showerror(
+                    "Emergency Close Error",
+                    f"Error handling emergency close: {e}\nThe connection will be terminated."
+                ))
+                # Force disconnect
+                self.gui.root.after(0, lambda: self.gui.emergency_close())
             else:
                 print(f"Error handling emergency close: {e}")
+                self.disconnect()
     
     def handle_key_exchange_init(self, message_data: bytes):
         """Handle key exchange initiation - override to display warnings in GUI."""

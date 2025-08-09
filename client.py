@@ -9,6 +9,7 @@ import json
 import sys
 import os
 import time
+
 from shared import SecureChatProtocol, send_message, receive_message, MessageType, PROTOCOL_VERSION
 
 
@@ -48,7 +49,7 @@ class SecureChatClient:
         self.receive_thread = None
         
         # File transfer state
-        self.pending_file_transfers = {}  # Track outgoing file transfers
+        self.pending_file_transfers: dict = {}  # Track outgoing file transfers
         self.active_file_metadata = {}    # Track incoming file metadata
         self._last_progress_shown = {}    # Track file transfer progress display
         
@@ -166,8 +167,6 @@ class SecureChatClient:
                 elif message_type == MessageType.DELIVERY_CONFIRMATION:
                     if self.key_exchange_complete:
                         self.handle_delivery_confirmation(message_data)
-                elif message_type == MessageType.EMERGENCY_CLOSE:
-                    self.handle_emergency_close(message_data)
                 elif message_type == MessageType.KEY_EXCHANGE_COMPLETE:
                     self.handle_key_exchange_complete()
                 elif message_type == MessageType.INITIATE_KEY_EXCHANGE:
@@ -409,26 +408,29 @@ class SecureChatClient:
             try:
                 message = json.loads(decrypted_text)
                 message_type = message.get("type")
-
-                if message_type == MessageType.DUMMY_MESSAGE:
-                    # This is a dummy message, ignore it
-                    pass
-                elif message_type == MessageType.FILE_METADATA:
-                    self.handle_file_metadata(decrypted_text)
-                elif message_type == MessageType.FILE_ACCEPT:
-                    self.handle_file_accept(decrypted_text)
-                elif message_type == MessageType.FILE_REJECT:
-                    self.handle_file_reject(decrypted_text)
-                elif message_type == MessageType.FILE_COMPLETE:
-                    self.handle_file_complete(decrypted_text)
-                elif message_type == MessageType.DELIVERY_CONFIRMATION:
-                    # Don't send delivery confirmation for delivery confirmations
-                    pass
-                else:
-                    # It's a regular chat message if it's not a file-related type
-                    print(f"\nOther user: {decrypted_text}")
-                    # Send delivery confirmation for text messages only
-                    self._send_delivery_confirmation(received_message_counter)
+                
+                match message_type:
+                    case MessageType.EMERGENCY_CLOSE:
+                        self.handle_emergency_close(message_data)
+                    case MessageType.DUMMY_MESSAGE:
+                        # This is a dummy message, ignore it
+                        pass
+                    case MessageType.FILE_METADATA:
+                        self.handle_file_metadata(decrypted_text)
+                    case MessageType.FILE_ACCEPT:
+                        self.handle_file_accept(decrypted_text)
+                    case MessageType.FILE_REJECT:
+                        self.handle_file_reject(decrypted_text)
+                    case MessageType.FILE_COMPLETE:
+                        self.handle_file_complete(decrypted_text)
+                    case MessageType.DELIVERY_CONFIRMATION:
+                        # Don't send delivery confirmation for delivery confirmations
+                        pass
+                    case _:
+                        # It's a regular chat message if it's not a file-related type
+                        print(f"\nOther user: {decrypted_text}")
+                        # Send delivery confirmation for text messages only
+                        self._send_delivery_confirmation(received_message_counter)
             
             except (json.JSONDecodeError, TypeError):
                 # If it's not JSON, it's a regular chat message
@@ -475,8 +477,18 @@ class SecureChatClient:
             print(f"Error handling key exchange reset: {e}")
     
     def send_emergency_close(self) -> None:
-        """Send an emergency close message to notify the other client."""
+        """Send an emergency close message to notify the other client.
+        
+        Uses a pre-encrypted emergency close message for immediate sending,
+        bypassing the queue system. The message is encrypted so the server
+        cannot detect that it's an emergency close.
+        """
         try:
+            # Use the protocol's emergency close method that bypasses the queue
+            if self.protocol.send_emergency_close():
+                return
+                
+            # Fallback to unencrypted emergency close if pre-encrypted message fails
             emergency_message = {
                 "version": PROTOCOL_VERSION,
                 "type": MessageType.EMERGENCY_CLOSE,
@@ -616,6 +628,9 @@ class SecureChatClient:
             
             print(f"File transfer accepted. Sending {transfer_info['metadata']['filename']}...")
             
+            # Start tracking the sending transfer in the protocol
+            self.protocol.start_sending_transfer(transfer_id, transfer_info['metadata'])
+            
             # Start sending file chunks in a separate thread to avoid blocking message processing
             chunk_thread = threading.Thread(
                 target=self._send_file_chunks,
@@ -637,6 +652,8 @@ class SecureChatClient:
             if transfer_id in self.pending_file_transfers:
                 filename = self.pending_file_transfers[transfer_id]["metadata"]["filename"]
                 print(f"File transfer rejected: {filename} - {reason}")
+                # Clean up transfer tracking
+                self.protocol.stop_sending_transfer(transfer_id)
                 del self.pending_file_transfers[transfer_id]
             
         except Exception as e:
@@ -728,6 +745,7 @@ class SecureChatClient:
                 print(f"File transfer completed: {filename}")
                 del self.pending_file_transfers[transfer_id]
             
+            
         except Exception as e:
             print(f"Error handling file completion: {e}")
     
@@ -784,8 +802,13 @@ class SecureChatClient:
             
             print("File chunks sent successfully.")
             
+            # Stop tracking the sending transfer
+            self.protocol.stop_sending_transfer(transfer_id)
+            
         except Exception as e:
             print(f"Error sending file chunks: {e}")
+            # Stop tracking on error as well
+            self.protocol.stop_sending_transfer(transfer_id)
     
     def start_chat(self):
         """Start the interactive chat interface."""
