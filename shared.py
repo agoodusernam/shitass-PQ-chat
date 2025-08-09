@@ -7,8 +7,13 @@ import hashlib
 import shutil
 import gzip
 import io
+import threading
+import time
+import random
+from collections import deque
 from enum import IntEnum
-from typing import Generator
+from typing import Final
+from collections.abc import Generator
 
 try:
     from kyber_py.ml_kem import ML_KEM_1024
@@ -19,7 +24,7 @@ except ImportError:
     print("Required cryptographic libraries not found.")
     raise ImportError("Please install the required libraries with pip install -r requirements.txt")
 # Protocol constants
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION: Final[int] = 2
 
 class MessageType(IntEnum):
     """Enumeration of all message types used in the secure chat protocol."""
@@ -42,13 +47,15 @@ class MessageType(IntEnum):
     SERVER_FULL = 17
     KEY_EXCHANGE_COMPLETE = 18
     SERVER_VERSION_INFO = 19
+    DUMMY_MESSAGE = 20
 
 # File transfer constants
-SEND_CHUNK_SIZE = 1024 * 1024  # 1 MiB chunks for sending
+SEND_CHUNK_SIZE: Final[int] = 1024 * 1024  # 1 MiB chunks for sending
 
 # Maps protocol versions to compatible versions for key exchange and message processing
-PROTOCOL_COMPATIBILITY: dict[int, list[int]] = {
-    1: [1]
+PROTOCOL_COMPATIBILITY: Final[dict[int, list[int]]] = {
+    1: [1],
+    2: [2],
 }
 
 def bytes_to_human_readable(size: int) -> str:
@@ -150,8 +157,18 @@ class SecureChatProtocol:
         self.temp_file_paths: dict = {}  # Track temporary file paths for receiving chunks
         self.open_file_handles: dict = {}  # Track open file handles for active transfers
         
+        # Message queuing system for traffic analysis prevention
+        self.message_queue: deque = deque()  # FIFO queue for outgoing messages
+        self.socket = None  # Socket reference for sending messages
+        self.sender_thread = None  # Background thread for sending messages
+        self.sender_running = False  # Flag to control sender thread
+        self.sender_lock = threading.Lock()  # Lock for thread-safe queue operations
+        
     def reset_key_exchange(self) -> None:
         """Reset all cryptographic state to initial values for key exchange restart."""
+        # Stop sender thread if running
+        self.stop_sender_thread()
+        
         self.shared_key = None
         self.message_counter = 0
         self.peer_counter = 0
@@ -164,6 +181,10 @@ class SecureChatProtocol:
         # Clear file transfer state as well
         self.file_transfers = {}
         self.received_chunks = {}
+        
+        # Clear message queue
+        with self.sender_lock:
+            self.message_queue.clear()
         
         # Close any open file handles
         for file_handle in self.open_file_handles.values():
@@ -183,6 +204,83 @@ class SecureChatProtocol:
                 pass  # Don't really care if it fails to delete, it's a temporary file.
                       # The OS should clean up the files eventually on its own either way.
         self.temp_file_paths = {}
+    
+    def start_sender_thread(self, socket) -> None:
+        """Start the background sender thread for message queuing."""
+        if self.sender_thread is not None and self.sender_thread.is_alive():
+            return  # Thread already running
+        
+        self.socket = socket
+        self.sender_running = True
+        self.sender_thread = threading.Thread(target=self._sender_loop, daemon=True)
+        self.sender_thread.start()
+    
+    def stop_sender_thread(self) -> None:
+        """Stop the background sender thread."""
+        self.sender_running = False
+        if self.sender_thread is not None and self.sender_thread.is_alive():
+            self.sender_thread.join(timeout=1.0)  # Wait up to 1 second for thread to stop
+        self.sender_thread = None
+        self.socket = None
+    
+    def queue_message(self, encrypted_data: bytes) -> None:
+        """Add an encrypted message to the send queue."""
+        with self.sender_lock:
+            self.message_queue.append(encrypted_data)
+    
+    def _generate_dummy_message(self) -> bytes:
+        """Generate a dummy message with random data between 24-1536 bytes."""
+        # Generate random data between 24 and 1536 bytes
+        data_size = random.randint(24, 1536)
+        dummy_data = os.urandom(data_size)
+        
+        # Create a JSON message with DUMMY_MESSAGE type
+        dummy_message = {
+            "type": MessageType.DUMMY_MESSAGE,
+            "data": base64.b64encode(dummy_data).decode('utf-8')
+        }
+        
+        # Convert to JSON string for encrypt_message (it expects a string)
+        dummy_text = json.dumps(dummy_message)
+        
+        # Encrypt the dummy message like a real message
+        return self.encrypt_message(dummy_text)
+    
+    def _sender_loop(self) -> None:
+        """Background thread loop that sends messages every 500ms."""
+        while self.sender_running:
+            try:
+                message_to_send = None
+                
+                # Check if there's a message in the queue
+                with self.sender_lock:
+                    if self.message_queue:
+                        message_to_send = self.message_queue.popleft()
+                
+                # If no real message, generate a dummy message
+                if message_to_send is None:
+                    if self.shared_key and self.send_chain_key:  # Only send dummy if encryption is ready
+                        try:
+                            message_to_send = self._generate_dummy_message()
+                        except Exception:
+                            # If dummy message generation fails, skip this cycle
+                            pass
+                
+                # Send the message if we have one and a socket
+                if message_to_send is not None and self.socket is not None:
+                    try:
+                        send_message(self.socket, message_to_send)
+                    except Exception:
+                        # If sending fails, the connection is likely broken
+                        # The main thread will handle reconnection
+                        pass
+                
+                # Wait 500ms before next cycle
+                time.sleep(0.5)
+                
+            except Exception:
+                # Continue running even if there's an unexpected error
+                time.sleep(0.5)
         
     def generate_keypair(self) -> tuple[bytes, bytes]:
         """Generate ML-KEM keypair for key exchange."""
@@ -468,6 +566,22 @@ class SecureChatProtocol:
         # Ratchet the send chain key forward for the next message
         self.send_chain_key = self._ratchet_chain_key(self.send_chain_key, self.message_counter)
         
+        # Convert plaintext to bytes
+        plaintext_bytes = plaintext.encode('utf-8')
+        
+        # Add padding to prevent message size analysis
+        # Pad to next KiB boundary (1KiB, 2KiB, 3KiB, etc.)
+        kib = 1024
+        current_size = len(plaintext_bytes)
+        current_kib = (current_size + kib - 1) // kib  # Ceiling division
+        target_size = current_kib * kib
+        if target_size == current_size:
+            target_size += kib  # If already at boundary, go to next KiB
+        
+        padding_needed = target_size - current_size
+        # Use null bytes for padding (will be removed during decryption)
+        padded_plaintext = plaintext_bytes + b'\x00' * padding_needed
+        
         # Create AAD from message metadata for authentication
         nonce: bytes = os.urandom(32)
         aad_data = {
@@ -480,7 +594,7 @@ class SecureChatProtocol:
         # Encrypt with AES-GCM using the unique message key and AAD
         aesgcm: AESGCM = AESGCM(message_key)
         
-        ciphertext: bytes = aesgcm.encrypt(nonce, plaintext.encode('utf-8'), aad)
+        ciphertext: bytes = aesgcm.encrypt(nonce, padded_plaintext, aad)
         
         # Securely delete the message key
         message_key = b'\x00' * len(message_key)
@@ -537,6 +651,12 @@ class SecureChatProtocol:
             # Decrypt with the derived message key and verify AAD
             aesgcm = AESGCM(message_key)
             decrypted_data = aesgcm.decrypt(nonce, ciphertext, aad)
+            
+            # Remove padding (null bytes) that was added during encryption
+            # Find the first null byte and truncate there
+            null_index = decrypted_data.find(b'\x00')
+            if null_index != -1:
+                decrypted_data = decrypted_data[:null_index]
             
             self.receive_chain_key = new_chain_key
             self.peer_counter = counter

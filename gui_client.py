@@ -1458,7 +1458,10 @@ class GUISecureChatClient(SecureChatClient):
                 message: dict = json.loads(decrypted_text)
                 message_type = message.get("type")
                 
-                if message_type == MessageType.FILE_METADATA:
+                if message_type == MessageType.DUMMY_MESSAGE:
+                    # This is a dummy message for traffic analysis prevention - ignore it
+                    pass
+                elif message_type == MessageType.FILE_METADATA:
                     self.handle_file_metadata(decrypted_text)
                 elif message_type == MessageType.FILE_ACCEPT:
                     self.handle_file_accept(decrypted_text)

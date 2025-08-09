@@ -371,6 +371,10 @@ class SecureChatClient:
                 print("Communication will proceed but may not be secure.")
             
             self.verification_complete = True
+            
+            # Start the sender thread for message queuing
+            self.protocol.start_sender_thread(self.socket)
+            
             print("\nYou can now start chatting!")
             print("Type your messages and press Enter to send.")
             print("Type '/quit' to exit.")
@@ -406,7 +410,10 @@ class SecureChatClient:
                 message = json.loads(decrypted_text)
                 message_type = message.get("type")
 
-                if message_type == MessageType.FILE_METADATA:
+                if message_type == MessageType.DUMMY_MESSAGE:
+                    # This is a dummy message, ignore it
+                    pass
+                elif message_type == MessageType.FILE_METADATA:
                     self.handle_file_metadata(decrypted_text)
                 elif message_type == MessageType.FILE_ACCEPT:
                     self.handle_file_accept(decrypted_text)
@@ -441,7 +448,7 @@ class SecureChatClient:
             print(f"\nError sending delivery confirmation: {e}")
     
     def handle_key_exchange_reset(self, message_data: bytes) -> None:
-        """Handle key exchange reset message when other client disconnects."""
+        """Handle key exchange reset message when the other client disconnects."""
         try:
             message = json.loads(message_data.decode('utf-8'))
             reset_message = message.get("message", "Key exchange reset")
@@ -473,7 +480,6 @@ class SecureChatClient:
             emergency_message = {
                 "version": PROTOCOL_VERSION,
                 "type": MessageType.EMERGENCY_CLOSE,
-                "message": "Emergency close activated"
             }
             message_data = json.dumps(emergency_message).encode('utf-8')
             send_message(self.socket, message_data)
@@ -483,12 +489,9 @@ class SecureChatClient:
     def handle_emergency_close(self, message_data: bytes) -> None:
         """Handle emergency close message from the other client."""
         try:
-            message = json.loads(message_data.decode('utf-8'))
-            close_message = message.get("message", "Emergency close received")
             print(f"\n{'='*50}")
             print("EMERGENCY CLOSE RECEIVED")
             print("The other client has activated emergency close.")
-            print(f"Message: {close_message}")
             print("Connection will be terminated immediately.")
             print(f"{'='*50}")
             
@@ -506,7 +509,7 @@ class SecureChatClient:
             print(f"Error handling emergency close: {e}")
     
     def send_message(self, text: str) -> bool | None:
-        """Encrypt and send a chat message."""
+        """Encrypt and queue a chat message for sending."""
         if not self.key_exchange_complete:
             print("Cannot send messages - key exchange not complete")
             return False
@@ -522,7 +525,7 @@ class SecureChatClient:
             
         try:
             encrypted_data = self.protocol.encrypt_message(text)
-            send_message(self.socket, encrypted_data)
+            self.protocol.queue_message(encrypted_data)
             return True
             
         except Exception as e:
@@ -843,6 +846,10 @@ class SecureChatClient:
         """Disconnect from the server."""
         if self.connected:
             self.connected = False
+            
+            # Stop the sender thread first
+            self.protocol.stop_sender_thread()
+            
             try:
                 if self.socket:
                     self.socket.close()
