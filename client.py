@@ -164,9 +164,6 @@ class SecureChatClient:
                     self.handle_key_exchange_reset(message_data)
                 elif message_type == MessageType.KEEP_ALIVE:
                     self.handle_keepalive()
-                elif message_type == MessageType.DELIVERY_CONFIRMATION:
-                    if self.key_exchange_complete:
-                        self.handle_delivery_confirmation(message_data)
                 elif message_type == MessageType.KEY_EXCHANGE_COMPLETE:
                     self.handle_key_exchange_complete()
                 elif message_type == MessageType.INITIATE_KEY_EXCHANGE:
@@ -218,16 +215,14 @@ class SecureChatClient:
         except Exception as e:
             print(f"\nError handling keepalive: {e}")
     
-    def handle_delivery_confirmation(self, message_data: bytes) -> None:
+    def handle_delivery_confirmation(self, message: str) -> None:
         """Handle delivery confirmation messages from the peer.
         
         Args:
-            message_data (bytes): The raw delivery confirmation message data.
+            message (str): The decrypted delivery confirmation message.
         """
         try:
-            decrypted_text = self.protocol.decrypt_message(message_data)
-            confirmation = json.loads(decrypted_text)
-            confirmed_counter = confirmation.get("confirmed_counter")
+            confirmation = json.loads(decrypted_text).get("confirmed_counter")
             print(f"\n✓ Message {confirmed_counter} delivered")
             
         except Exception as e:
@@ -396,6 +391,14 @@ class SecureChatClient:
         except Exception as e:
             print(f"Error handling verification message: {e}")
     
+    
+    def display_regular_message(self, message: str, error=False) -> None:
+        """Display a regular chat message."""
+        if error:
+            print(f"\nError: {message}")
+        else:
+            print(f"\nOther user: {message}")
+    
     def handle_encrypted_message(self, message_data: bytes) -> None:
         """Handle encrypted chat messages."""
         try:
@@ -406,8 +409,7 @@ class SecureChatClient:
             
             # Attempt to parse the decrypted text as a JSON message
             try:
-                message = json.loads(decrypted_text)
-                message_type = message.get("type")
+                message_type: int = json.loads(decrypted_text).get("type")
                 
                 match message_type:
                     case MessageType.EMERGENCY_CLOSE:
@@ -424,25 +426,25 @@ class SecureChatClient:
                     case MessageType.FILE_COMPLETE:
                         self.handle_file_complete(decrypted_text)
                     case MessageType.DELIVERY_CONFIRMATION:
-                        # Don't send delivery confirmation for delivery confirmations
-                        pass
+                        if self.key_exchange_complete:
+                            self.handle_delivery_confirmation(decrypted_text)
                     case _:
                         # It's a regular chat message if it's not a file-related type
-                        print(f"\nOther user: {decrypted_text}")
-                        # Send delivery confirmation for text messages only
+                        self.display_regular_message(decrypted_text)
                         self._send_delivery_confirmation(received_message_counter)
             
             except (json.JSONDecodeError, TypeError):
                 # If it's not JSON, it's a regular chat message
-                print(f"\nOther user: {decrypted_text}")
+                self.display_regular_message(decrypted_text)
                 # Send delivery confirmation for text messages only
                 self._send_delivery_confirmation(received_message_counter)
             
         except Exception as e:
-            print(f"\nFailed to decrypt message: {e}")
+            self.display_regular_message(str(e), error=True)
     
     def _send_delivery_confirmation(self, confirmed_counter: int) -> None:
         """Send a delivery confirmation for a received text message."""
+        print("delivery confirmation sent, client.py")
         try:
             confirmation_data = self.protocol.create_delivery_confirmation_message(confirmed_counter)
             send_message(self.socket, confirmation_data)

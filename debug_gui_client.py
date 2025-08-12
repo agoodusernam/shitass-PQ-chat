@@ -1743,7 +1743,6 @@ def main():
             gui.client = DebugGUISecureChatClient(host, port, gui)
             
             # Start connection in a separate thread
-            # noinspection DuplicatedCode
             def connect_thread():
                 try:
                     if gui.client.connect():

@@ -3,7 +3,7 @@
 Secure chat server using socketserver.ThreadingTCPServer.
 Rewritten to use proper socketserver architecture instead of manual socket handling.
 """
-
+import socket
 import socketserver
 import threading
 import json
@@ -159,9 +159,9 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
 # noinspection PyBroadException
 class SecureChatRequestHandler(socketserver.BaseRequestHandler):
     """Handles individual client connections."""
-    server: 'SecureChatServer'  # Type hint
+    server: 'SecureChatServer'
     
-    def __init__(self, request, client_address, server):
+    def __init__(self, request: socket.socket | tuple[bytes, socket.socket], client_address: str, server: SecureChatServer):
         self.client_id = None
         self.protocol = SecureChatProtocol()
         self.connected = True
@@ -184,14 +184,12 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             try:
                 rejection_message = {
                     "type": MessageType.SERVER_FULL,
-                    "message": "Server only supports 2 clients. Connection rejected."
                 }
                 message_data = json.dumps(rejection_message).encode('utf-8')
                 send_message(self.request, message_data)
                 print(f"Rejected connection from {self.client_address} - server full")
             except:
                 pass
-            # Don't call super().setup() to prevent further processing
             return
         
         super().setup()

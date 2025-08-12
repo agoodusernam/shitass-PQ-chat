@@ -1444,60 +1444,20 @@ class GUISecureChatClient(SecureChatClient):
             if self.gui:
                 self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Error displaying received image: {e}"))
     
-    def handle_encrypted_message(self, message_data: bytes):
-        """Handle encrypted chat messages - override to send to GUI."""
-        try:
-            decrypted_text = self.protocol.decrypt_message(message_data)
-            
-            # Get the message counter that was just processed for delivery confirmation
-            received_message_counter = self.protocol.peer_counter
-            
-            # Attempt to parse the decrypted text as a JSON message
-            try:
-                
-                message: dict = json.loads(decrypted_text)
-                message_type = message.get("type")
-                
-                match message_type:
-                    case MessageType.EMERGENCY_CLOSE:
-                        self.handle_emergency_close(message_data)
-                    case MessageType.DUMMY_MESSAGE:
-                        # This is a dummy message for traffic analysis prevention - ignore it
-                        pass
-                    case MessageType.FILE_METADATA:
-                        self.handle_file_metadata(decrypted_text)
-                    case MessageType.FILE_ACCEPT:
-                        self.handle_file_accept(decrypted_text)
-                    case MessageType.FILE_REJECT:
-                        self.handle_file_reject(decrypted_text)
-                    case MessageType.FILE_COMPLETE:
-                        self.handle_file_complete(decrypted_text)
-                    case MessageType.DELIVERY_CONFIRMATION:
-                        self.handle_delivery_confirmation(message)
-                    case _:
-                        # It's a regular chat message
-                        if self.gui:
-                            self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Other user: {decrypted_text}",
-                                                                                   is_message=True))
-                        # Send delivery confirmation for text messages only
-                        self._send_delivery_confirmation(received_message_counter)
-            
-            except (json.JSONDecodeError, TypeError):
-                # If it's not JSON, it's a regular chat message
-                if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Other user: {decrypted_text}",
-                                                                           is_message=True))
-                # Send delivery confirmation for text messages only
-                self._send_delivery_confirmation(received_message_counter)
-        
-        except Exception as e:
-            if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Failed to decrypt message: {e}"))
+    def display_regular_message(self, message: str, error=False) -> None:
+        """Display a regular chat message."""
+        if self.gui:
+            if error:
+                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Error: {message}"))
             else:
-                print(f"\nFailed to decrypt message: {e}")
+                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Other user: {message}",
+                                                                       is_message=True))
+        else:
+            super().display_regular_message(message, error)
     
     def _send_delivery_confirmation(self, confirmed_counter: int) -> None:
         """Send a delivery confirmation for a received text message."""
+        print("delivery confirmation sent, GUI_client.py")
         try:
             confirmation_data = self.protocol.create_delivery_confirmation_message(confirmed_counter)
             send_message(self.socket, confirmation_data)
@@ -1507,10 +1467,10 @@ class GUISecureChatClient(SecureChatClient):
             else:
                 print(f"\nError sending delivery confirmation: {e}")
     
-    def handle_delivery_confirmation(self, message_data: dict) -> None:
+    def handle_delivery_confirmation(self, message_data: str) -> None:
         """Handle delivery confirmation messages from the peer - override to update GUI."""
         try:
-            confirmed_counter = message_data.get("confirmed_counter")
+            confirmed_counter = json.loads(message_data).get("confirmed_counter")
             # Update the GUI to show the message was delivered
             if self.gui and confirmed_counter:
                 self.gui.root.after(0, lambda: self.gui.update_message_delivery_status(confirmed_counter))
