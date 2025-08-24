@@ -648,7 +648,7 @@ class SecureChatProtocol:
         padded_plaintext = plaintext_bytes + b'\x00' * padding_needed
         
         # Create AAD from message metadata for authentication
-        nonce: bytes = os.urandom(32)
+        nonce: bytes = os.urandom(12)
         aad_data = {
             "type": MessageType.ENCRYPTED_MESSAGE,
             "counter": next_counter,
@@ -705,7 +705,7 @@ class SecureChatProtocol:
         padded_plaintext = plaintext_bytes + b'\x00' * padding_needed
         
         # Create AAD from message metadata for authentication
-        nonce: bytes = os.urandom(32)
+        nonce: bytes = os.urandom(12)
         aad_data = {
             "type": MessageType.ENCRYPTED_MESSAGE,
             "counter": self.message_counter,
@@ -986,7 +986,7 @@ class SecureChatProtocol:
         
         # Encrypt header and chunk data separately but in one operation
         aesgcm = AESGCM(message_key)
-        nonce = os.urandom(32)
+        nonce = os.urandom(12)
         
         # Create AAD from counter and nonce for authentication
         aad_data = {
@@ -1005,7 +1005,7 @@ class SecureChatProtocol:
         message_key = b'\x00' * len(message_key)
         del message_key
         
-        # Pack counter (4 bytes) + nonce (32 bytes) + ciphertext
+        # Pack counter (4 bytes) + nonce (12 bytes) + ciphertext
         counter_bytes = struct.pack('!I', self.message_counter)
         return counter_bytes + nonce + ciphertext
     
@@ -1120,12 +1120,12 @@ class SecureChatProtocol:
         
         try:
             # Extract counter, nonce, and ciphertext from the message
-            if len(encrypted_data) < 36:  # 4 bytes for counter + 32 for nonce
+            if len(encrypted_data) < 16:  # 4 bytes for counter + 12 for nonce
                 raise ValueError("Invalid chunk message format")
             
             counter = struct.unpack('!I', encrypted_data[:4])[0]
-            nonce = encrypted_data[4:36]
-            ciphertext = encrypted_data[36:]
+            nonce = encrypted_data[4:16]
+            ciphertext = encrypted_data[16:]
             
             # Check for replay attacks or very old messages
             if counter <= self.peer_counter:

@@ -444,7 +444,6 @@ class SecureChatClient:
     
     def _send_delivery_confirmation(self, confirmed_counter: int) -> None:
         """Send a delivery confirmation for a received text message."""
-        print("delivery confirmation sent, client.py")
         try:
             confirmation_data = self.protocol.create_delivery_confirmation_message(confirmed_counter)
             send_message(self.socket, confirmation_data)
