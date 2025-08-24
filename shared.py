@@ -901,9 +901,9 @@ class SecureChatProtocol:
         file_name = os.path.basename(file_path)
         
         # Calculate file hash for integrity verification (of original uncompressed file)
-        file_hash = hashlib.sha3_512()
+        file_hash = hashlib.blake2b(digest_size=32)
         with open(file_path, 'rb') as f:
-            while chunk := f.read(8192):
+            while chunk := f.read(16384):
                 file_hash.update(chunk)
         
         # Calculate the actual number of chunks that will be sent
@@ -1290,15 +1290,15 @@ class SecureChatProtocol:
                     with gzip.GzipFile(fileobj=compressed_file, mode='rb') as gzip_file:
                         with open(temp_decompressed_path, 'wb') as decompressed_file:
                             # Decompress in chunks to avoid memory issues
-                            while chunk := gzip_file.read(8192):
+                            while chunk := gzip_file.read(16384):
                                 decompressed_file.write(chunk)
                 
                 final_file_path = temp_decompressed_path
             
             # Calculate hash of the final file
-            file_hash = hashlib.sha3_512()
+            file_hash = hashlib.blake2b(digest_size=32)
             with open(final_file_path, 'rb') as f:
-                while chunk := f.read(8192):  # Read in small chunks to avoid memory issues
+                while chunk := f.read(16384):  # Read in small chunks to avoid memory issues
                     file_hash.update(chunk)
             
             # Verify file integrity
