@@ -27,6 +27,7 @@ except ImportError:
 # Protocol constants
 PROTOCOL_VERSION: Final[int] = 2
 
+
 class MessageType(IntEnum):
     """Enumeration of all message types used in the secure chat protocol."""
     KEY_EXCHANGE_INIT = 1
@@ -49,6 +50,8 @@ class MessageType(IntEnum):
     KEY_EXCHANGE_COMPLETE = 18
     SERVER_VERSION_INFO = 19
     DUMMY_MESSAGE = 20
+    EPHEMERAL_MODE_CHANGE = 21
+
 
 # File transfer constants
 SEND_CHUNK_SIZE: Final[int] = 1024 * 1024  # 1 MiB chunks for sending
@@ -58,6 +61,7 @@ PROTOCOL_COMPATIBILITY: Final[dict[int, list[int]]] = {
     1: [1],
     2: [2],
 }
+
 
 def bytes_to_human_readable(size: int) -> str:
     """Convert a byte count to a human-readable format with appropriate units.
@@ -71,13 +75,14 @@ def bytes_to_human_readable(size: int) -> str:
     """
     if size < 1024:
         return f"{size} B"
-    elif size < 1024**2:
+    elif size < 1024 ** 2:
         return f"{size / 1024:.1f} KB"
-    elif size < 1024**3:
-        return f"{size / 1024**2:.1f} MB"
+    elif size < 1024 ** 3:
+        return f"{size / 1024 ** 2:.1f} MB"
     else:
-        return f"{size / 1024**3:.1f} GB"
-        
+        return f"{size / 1024 ** 3:.1f} GB"
+
+
 class StreamingGzipCompressor:
     """A streaming gzip compressor that yields compressed chunks as they're ready."""
     
@@ -117,6 +122,7 @@ class SecureChatProtocol:
     """
     SecureChatProtocol - Implements the cryptographic protocol for secure chat using ML-KEM and AES-GCM.
     """
+    
     # noinspection PyUnresolvedReferences
     def __init__(self) -> None:
         """Initialize the secure chat protocol with default cryptographic state.
@@ -149,8 +155,8 @@ class SecureChatProtocol:
         self.own_public_key: bytes | None = None
         self.private_key: bytes | None = None  # Initialize private key properly
         # Perfect Forward Secrecy - Key Ratcheting
-        self.send_chain_key: bytes | None = None    # For encrypting outgoing messages
-        self.receive_chain_key: bytes | None = None # For decrypting incoming messages
+        self.send_chain_key: bytes | None = None  # For encrypting outgoing messages
+        self.receive_chain_key: bytes | None = None  # For decrypting incoming messages
         self.seen_counters: set[int] = set()  # Track seen counters for replay protection
         
         # File transfer state
@@ -170,7 +176,7 @@ class SecureChatProtocol:
         # Pre-encrypted emergency close message
         self.pre_encrypted_emergency_close: bytes | None = None
         self.send_dummy_messages: bool = True
-        
+    
     def reset_key_exchange(self) -> None:
         """Reset all cryptographic state to initial values for key exchange restart."""
         # Stop sender thread if running
@@ -202,7 +208,7 @@ class SecureChatProtocol:
                 file_handle.close()
             except:
                 pass  # Ignore errors closing file handles; they may already be closed.
-                      # If they are still open, the OS will close them eventually.
+                # If they are still open, the OS will close them eventually.
         self.open_file_handles = {}
         
         # Clean up any temporary files
@@ -212,7 +218,7 @@ class SecureChatProtocol:
                     os.remove(temp_path)
             except:
                 pass  # Don't really care if it fails to delete, it's a temporary file.
-                      # The OS should clean up the files eventually on its own either way.
+                # The OS should clean up the files eventually on its own either way.
         self.temp_file_paths = {}
         self.sending_transfers = {}
     
@@ -259,7 +265,7 @@ class SecureChatProtocol:
         """Add an encrypted message to the send queue."""
         with self.sender_lock:
             self.message_queue.append(encrypted_data)
-            
+    
     def send_emergency_close(self) -> bool:
         """Send a pre-encrypted emergency close message directly, bypassing the queue.
         
@@ -268,7 +274,7 @@ class SecureChatProtocol:
         """
         if not self.socket or not self.pre_encrypted_emergency_close:
             return False
-            
+        
         try:
             # Send the pre-encrypted emergency close message directly
             send_message(self.socket, self.pre_encrypted_emergency_close)
@@ -335,11 +341,11 @@ class SecureChatProtocol:
                 
                 # Wait 500ms before next cycle
                 time.sleep(0.5)
-                
+            
             except Exception:
                 # Continue running even if there's an unexpected error
                 time.sleep(0.5)
-        
+    
     def generate_keypair(self) -> tuple[bytes, bytes]:
         """Generate ML-KEM keypair for key exchange."""
         public_key, private_key = ML_KEM_1024.keygen()
@@ -350,26 +356,26 @@ class SecureChatProtocol:
         """Derive encryption and MAC keys from shared secret using HKDF."""
         # Derive 64 bytes: 32 for AES-GCM, 32 for HMAC
         hkdf = HKDF(
-            algorithm=hashes.SHA3_512(),
-            length=64,
-            salt=b"ReallyCoolAndSecureSalt",
-            info=b"key_derivation"
+                algorithm=hashes.SHA3_512(),
+                length=64,
+                salt=b"ReallyCoolAndSecureSalt",
+                info=b"key_derivation"
         )
         derived = hkdf.derive(shared_secret)
         
         # Initialize chain keys for perfect forward secrecy
         self._initialize_chain_keys(shared_secret)
         
-        return derived[:len(derived)//2], derived[len(derived)//2:]  # encryption_key, mac_key
+        return derived[:len(derived) // 2], derived[len(derived) // 2:]  # encryption_key, mac_key
     
     def _initialize_chain_keys(self, shared_secret: bytes) -> None:
         """Initialize separate chain keys for sending and receiving."""
         # Derive a root chain key that both parties will use as the starting point
         chain_hkdf = HKDF(
-            algorithm=hashes.SHA3_512(),
-            length=64,
-            salt=b"ReallyCoolAndSecureSalt",
-            info=b"chain_key_root"
+                algorithm=hashes.SHA3_512(),
+                length=64,
+                salt=b"ReallyCoolAndSecureSalt",
+                info=b"chain_key_root"
         )
         
         root_chain_key = chain_hkdf.derive(shared_secret)
@@ -384,10 +390,10 @@ class SecureChatProtocol:
     def _derive_message_key(chain_key: bytes, counter: int) -> bytes:
         """Derive a message key from the chain key and counter."""
         hkdf = HKDF(
-            algorithm=hashes.SHA3_512(),
-            length=64,
-            salt=b"ReallyCoolAndSecureSalt",
-            info=f"message_key_{counter}".encode()
+                algorithm=hashes.SHA3_512(),
+                length=64,
+                salt=b"ReallyCoolAndSecureSalt",
+                info=f"message_key_{counter}".encode()
         )
         return hkdf.derive(chain_key)[:32]
     
@@ -395,10 +401,10 @@ class SecureChatProtocol:
     def _ratchet_chain_key(chain_key: bytes, counter: int) -> bytes:
         """Advance the chain key (ratchet forward)."""
         hkdf = HKDF(
-            algorithm=hashes.SHA3_512(),
-            length=64,
-            salt=b"ReallyCoolAndSecureSalt",
-            info=f"chain_key_{counter}".encode()
+                algorithm=hashes.SHA3_512(),
+                length=64,
+                salt=b"ReallyCoolAndSecureSalt",
+                info=f"chain_key_{counter}".encode()
         )
         return hkdf.derive(chain_key)
     
@@ -417,12 +423,10 @@ class SecureChatProtocol:
         # Display 5 words per line for better readability
         msg = "\n"
         for i in range(0, len(words), 5):
-            msg += " ".join(words[i:i+5]) + "\n"
-            
+            msg += " ".join(words[i:i + 5]) + "\n"
+        
         return msg.strip()
-        
     
-        
     @staticmethod
     def _load_wordlist() -> list:
         """Load the EFF large wordlist."""
@@ -432,7 +436,8 @@ class SecureChatProtocol:
                 return [line.strip() for line in f if line.strip()]
         except FileNotFoundError:
             # Fallback if wordlist file is not found
-            raise FileNotFoundError("eff_large_wordlist.txt not found. Please ensure the wordlist file is in the same directory as shared.py")
+            raise FileNotFoundError(
+                "eff_large_wordlist.txt not found. Please ensure the wordlist file is in the same directory as shared.py")
     
     @staticmethod
     def _hash_to_words(hash_bytes: bytes, wordlist: list, num_words: int = 20) -> list:
@@ -489,9 +494,9 @@ class SecureChatProtocol:
     def create_key_verification_message(self, verified: bool) -> bytes:
         """Create a key verification status message."""
         message = {
-            "version": PROTOCOL_VERSION,
-            "type": MessageType.KEY_VERIFICATION,
-            "verified": verified,
+            "version":             PROTOCOL_VERSION,
+            "type":                MessageType.KEY_VERIFICATION,
+            "verified":            verified,
             "own_key_fingerprint": self.get_own_key_fingerprint() if self.own_public_key else ""
         }
         return json.dumps(message).encode('utf-8')
@@ -505,7 +510,7 @@ class SecureChatProtocol:
                 raise ValueError("Invalid message type")
             
             return {
-                "verified": message.get("verified", False),
+                "verified":         message.get("verified", False),
                 "peer_fingerprint": message.get("own_key_fingerprint", "")
             }
         except Exception as e:
@@ -525,8 +530,8 @@ class SecureChatProtocol:
     def create_key_exchange_init(public_key: bytes) -> bytes:
         """Create initial key exchange message."""
         message = {
-            "version": PROTOCOL_VERSION,
-            "type": MessageType.KEY_EXCHANGE_INIT,
+            "version":    PROTOCOL_VERSION,
+            "type":       MessageType.KEY_EXCHANGE_INIT,
             "public_key": base64.b64encode(public_key).decode('utf-8')
         }
         return json.dumps(message).encode('utf-8')
@@ -534,8 +539,8 @@ class SecureChatProtocol:
     def create_key_exchange_response(self, ciphertext: bytes) -> bytes:
         """Create key exchange response message."""
         message = {
-            "version": PROTOCOL_VERSION,
-            "type": MessageType.KEY_EXCHANGE_RESPONSE,
+            "version":    PROTOCOL_VERSION,
+            "type":       MessageType.KEY_EXCHANGE_RESPONSE,
             "ciphertext": base64.b64encode(ciphertext).decode('utf-8'),
             "public_key": base64.b64encode(self.own_public_key).decode('utf-8') if self.own_public_key else ""
         }
@@ -650,9 +655,9 @@ class SecureChatProtocol:
         # Create AAD from message metadata for authentication
         nonce: bytes = os.urandom(12)
         aad_data = {
-            "type": MessageType.ENCRYPTED_MESSAGE,
+            "type":    MessageType.ENCRYPTED_MESSAGE,
             "counter": next_counter,
-            "nonce" : base64.b64encode(nonce).decode('utf-8')
+            "nonce":   base64.b64encode(nonce).decode('utf-8')
         }
         aad = json.dumps(aad_data, sort_keys=True).encode('utf-8')
         
@@ -707,9 +712,9 @@ class SecureChatProtocol:
         # Create AAD from message metadata for authentication
         nonce: bytes = os.urandom(12)
         aad_data = {
-            "type": MessageType.ENCRYPTED_MESSAGE,
+            "type":    MessageType.ENCRYPTED_MESSAGE,
             "counter": self.message_counter,
-            "nonce" : base64.b64encode(nonce).decode('utf-8')
+            "nonce":   base64.b64encode(nonce).decode('utf-8')
         }
         aad = json.dumps(aad_data, sort_keys=True).encode('utf-8')
         
@@ -752,8 +757,7 @@ class SecureChatProtocol:
             # Check for replay attacks or very old messages
             if counter <= self.peer_counter:
                 raise ValueError(
-                    f"Replay attack or out-of-order message detected. Expected > {self.peer_counter}, got {counter}")
-            
+                        f"Replay attack or out-of-order message detected. Expected > {self.peer_counter}, got {counter}")
             
             temp_chain_key = self.receive_chain_key
             for i in range(self.peer_counter + 1, counter):
@@ -767,9 +771,9 @@ class SecureChatProtocol:
             
             # Create AAD from message metadata for authentication verification
             aad_data = {
-                "type": MessageType.ENCRYPTED_MESSAGE,
+                "type":    MessageType.ENCRYPTED_MESSAGE,
                 "counter": counter,
-                "nonce": base64.b64encode(nonce).decode('utf-8')
+                "nonce":   base64.b64encode(nonce).decode('utf-8')
             }
             aad = json.dumps(aad_data, sort_keys=True).encode('utf-8')
             
@@ -825,7 +829,7 @@ class SecureChatProtocol:
         # Create completion message
         complete_message = {
             "version": PROTOCOL_VERSION,
-            "type": "key_exchange_complete"
+            "type":    "key_exchange_complete"
         }
         return json.dumps(complete_message).encode('utf-8')
     
@@ -840,10 +844,10 @@ class SecureChatProtocol:
         
         # Create verification request message
         verification_request = {
-            "version": PROTOCOL_VERSION,
-            "type": MessageType.KEY_VERIFICATION,
+            "version":           PROTOCOL_VERSION,
+            "type":              MessageType.KEY_VERIFICATION,
             "verification_type": "verification_request",
-            "words": words
+            "words":             words
         }
         return json.dumps(verification_request).encode('utf-8')
     
@@ -860,19 +864,19 @@ class SecureChatProtocol:
             if verification_type == "verification_request":
                 # Return the words for user confirmation
                 return {
-                    "type": "verification_request",
+                    "type":  "verification_request",
                     "words": message["words"]
                 }
             elif verification_type == "verification_response":
                 # Process peer's verification response
                 peer_verified = message["verified"]
                 return {
-                    "type": "verification_response",
+                    "type":     "verification_response",
                     "verified": peer_verified
                 }
             else:
                 raise ValueError(f"Unknown verification type: {verification_type}")
-                
+        
         except Exception as e:
             raise ValueError(f"Failed to handle key verification message: {e}")
     
@@ -883,15 +887,16 @@ class SecureChatProtocol:
         
         # Create verification response message
         verification_response = {
-            "version": PROTOCOL_VERSION,
-            "type": MessageType.KEY_VERIFICATION,
+            "version":           PROTOCOL_VERSION,
+            "type":              MessageType.KEY_VERIFICATION,
             "verification_type": "verification_response",
-            "verified": verified
+            "verified":          verified
         }
         return json.dumps(verification_response).encode('utf-8')
     
     # File transfer methods
-    def create_file_metadata_message(self, file_path: str, return_metadata: bool = False, compress: bool = True) -> bytes | tuple[bytes, dict]:
+    def create_file_metadata_message(self, file_path: str, return_metadata: bool = False,
+                                     compress: bool = True) -> bytes | tuple[bytes, dict]:
         """Create a file metadata message for file transfer initiation."""
         
         if not os.path.exists(file_path):
@@ -926,14 +931,14 @@ class SecureChatProtocol:
         transfer_id = hashlib.sha3_512(f"{file_name}{file_size}{file_hash.hexdigest()}".encode()).hexdigest()[:16]
         
         metadata = {
-            "version": PROTOCOL_VERSION,
-            "type": MessageType.FILE_METADATA,
-            "transfer_id": transfer_id,
-            "filename": file_name,
-            "file_size": file_size,  # Original file size for integrity verification
-            "file_hash": file_hash.hexdigest(),  # Hash of original file
-            "total_chunks": total_chunks,  # Actual number of chunks
-            "compressed": compress,  # Whether the transfer is compressed
+            "version":        PROTOCOL_VERSION,
+            "type":           MessageType.FILE_METADATA,
+            "transfer_id":    transfer_id,
+            "filename":       file_name,
+            "file_size":      file_size,  # Original file size for integrity verification
+            "file_hash":      file_hash.hexdigest(),  # Hash of original file
+            "total_chunks":   total_chunks,  # Actual number of chunks
+            "compressed":     compress,  # Whether the transfer is compressed
             "processed_size": total_processed_size  # Total processed size for progress tracking
         }
         
@@ -946,8 +951,8 @@ class SecureChatProtocol:
     def create_file_accept_message(self, transfer_id: str) -> bytes:
         """Create a file acceptance message."""
         message = {
-            "version": PROTOCOL_VERSION,
-            "type": MessageType.FILE_ACCEPT,
+            "version":     PROTOCOL_VERSION,
+            "type":        MessageType.FILE_ACCEPT,
             "transfer_id": transfer_id
         }
         return self.encrypt_message(json.dumps(message))
@@ -955,10 +960,10 @@ class SecureChatProtocol:
     def create_file_reject_message(self, transfer_id: str, reason: str = "User declined") -> bytes:
         """Create a file rejection message."""
         message = {
-            "version": PROTOCOL_VERSION,
-            "type": MessageType.FILE_REJECT,
+            "version":     PROTOCOL_VERSION,
+            "type":        MessageType.FILE_REJECT,
             "transfer_id": transfer_id,
-            "reason": reason
+            "reason":      reason
         }
         return self.encrypt_message(json.dumps(message))
     
@@ -990,9 +995,9 @@ class SecureChatProtocol:
         
         # Create AAD from counter and nonce for authentication
         aad_data = {
-            "type": MessageType.FILE_CHUNK,
+            "type":    MessageType.FILE_CHUNK,
             "counter": self.message_counter,
-            "nonce": base64.b64encode(nonce).decode('utf-8')
+            "nonce":   base64.b64encode(nonce).decode('utf-8')
         }
         aad = json.dumps(aad_data, sort_keys=True).encode('utf-8')
         
@@ -1012,8 +1017,8 @@ class SecureChatProtocol:
     def create_file_complete_message(self, transfer_id: str) -> bytes:
         """Create a file transfer completion message."""
         message = {
-            "version": PROTOCOL_VERSION,
-            "type": MessageType.FILE_COMPLETE,
+            "version":     PROTOCOL_VERSION,
+            "type":        MessageType.FILE_COMPLETE,
             "transfer_id": transfer_id
         }
         return self.encrypt_message(json.dumps(message))
@@ -1021,8 +1026,8 @@ class SecureChatProtocol:
     def create_delivery_confirmation_message(self, confirmed_message_counter: int) -> bytes:
         """Create a delivery confirmation message for a received text message."""
         message = {
-            "version": PROTOCOL_VERSION,
-            "type": MessageType.DELIVERY_CONFIRMATION,
+            "version":           PROTOCOL_VERSION,
+            "type":              MessageType.DELIVERY_CONFIRMATION,
             "confirmed_counter": confirmed_message_counter
         }
         return self.encrypt_message(json.dumps(message))
@@ -1070,7 +1075,7 @@ class SecureChatProtocol:
                     # Yield any remaining data
                     if pending_data:
                         yield pending_data
-                        
+            
             except Exception as e:
                 # Clean up on error
                 try:
@@ -1090,7 +1095,7 @@ class SecureChatProtocol:
                             break
                         
                         yield file_chunk
-                        
+            
             except Exception as e:
                 raise e
     
@@ -1102,13 +1107,14 @@ class SecureChatProtocol:
                 raise ValueError("Invalid message type")
             
             return {
-                "transfer_id": message["transfer_id"],
-                "filename": message["filename"],
-                "file_size": message["file_size"],
-                "file_hash": message["file_hash"],
-                "total_chunks": message["total_chunks"],
-                "compressed": message.get("compressed", True),  # Default to compressed for backward compatibility
-                "processed_size": message.get("processed_size", message.get("compressed_size", 0))  # Support old field name
+                "transfer_id":    message["transfer_id"],
+                "filename":       message["filename"],
+                "file_size":      message["file_size"],
+                "file_hash":      message["file_hash"],
+                "total_chunks":   message["total_chunks"],
+                "compressed":     message.get("compressed", True),  # Default to compressed for backward compatibility
+                "processed_size": message.get("processed_size", message.get("compressed_size", 0))
+                # Support old field name
             }
         except Exception as e:
             raise ValueError(f"File metadata processing failed: {e}")
@@ -1142,9 +1148,9 @@ class SecureChatProtocol:
             
             # Create AAD from counter and nonce for authentication verification
             aad_data = {
-                "type": MessageType.FILE_CHUNK,
+                "type":    MessageType.FILE_CHUNK,
                 "counter": counter,
-                "nonce": base64.b64encode(nonce).decode('utf-8')
+                "nonce":   base64.b64encode(nonce).decode('utf-8')
             }
             aad = json.dumps(aad_data, sort_keys=True).encode('utf-8')
             
@@ -1229,7 +1235,7 @@ class SecureChatProtocol:
             
             # Flush to ensure data is written to disk
             file_handle.flush()
-            
+        
         except (OSError, IOError) as e:
             raise ValueError(f"Failed to write chunk {chunk_index} at position {position}: {e}")
         
@@ -1328,7 +1334,7 @@ class SecureChatProtocol:
             # Clean up the temporary received file (if different from final file)
             if compressed and os.path.exists(temp_received_path):
                 os.remove(temp_received_path)
-            
+        
         except Exception as e:
             # Clean up any temporary files on error
             if os.path.exists(temp_received_path):
@@ -1343,28 +1349,32 @@ class SecureChatProtocol:
         
         return True
 
+
 def create_error_message(error_text: str) -> bytes:
-    """Create an error message."""
+    """Create an error message"""
     message = {
         "version": PROTOCOL_VERSION,
-        "type": MessageType.ERROR,
-        "error": error_text
+        "type":    MessageType.ERROR,
+        "error":   error_text
     }
     return json.dumps(message).encode('utf-8')
+
 
 def create_reset_message() -> bytes:
     """Create a key exchange reset message."""
     message = {
         "version": PROTOCOL_VERSION,
-        "type": MessageType.KEY_EXCHANGE_RESET,
+        "type":    MessageType.KEY_EXCHANGE_RESET,
         "message": "Key exchange reset - other client disconnected"
     }
     return json.dumps(message).encode('utf-8')
+
 
 def send_message(sock, data: bytes):
     """Send a length-prefixed message over a socket."""
     length = struct.pack('!I', len(data))
     sock.send(length + data)
+
 
 def receive_message(sock) -> bytes:
     """Receive a length-prefixed message from a socket."""

@@ -54,7 +54,7 @@ except ImportError:
     TkinterDnD = None  # type: ignore
 
 from client import SecureChatClient
-from shared import bytes_to_human_readable, send_message, MessageType
+from shared import bytes_to_human_readable, send_message, MessageType, PROTOCOL_VERSION
 
 GUI_VERSION = 17
 
@@ -330,7 +330,10 @@ class ChatGUI:
         self.connected = False
         
         # Ephemeral mode state
-        self.ephemeral_mode = False
+        # Modes: "OFF", "LOCAL", "GLOBAL"
+        self.ephemeral_mode = "OFF"
+        self.ephemeral_global_owner_id = None  # owner client id when mode is GLOBAL
+        self.local_client_id = str(uuid.uuid4())  # unique id for this client instance
         self.ephemeral_messages = {}  # Track messages with timestamps for removal
         self.message_counter = 0  # Counter for unique message IDs
         
@@ -525,14 +528,20 @@ class ChatGUI:
         self.message_entry.bind("<Button-1>", self.on_text_change)
         self.message_entry.bind("<Button-3>", self.show_spellcheck_menu)
         
-        # Ephemeral mode button (with gap before Send File)
-        self.ephemeral_btn = tk.Button(
-                self.input_frame, text="Ephemeral", command=self.toggle_ephemeral_mode,
-                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,  # type: ignore
-                activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
-                font=("Consolas", 9)
+        # Ephemeral mode dropdown (OFF, LOCAL, GLOBAL)
+        self.ephemeral_mode_var = tk.StringVar(value="OFF")
+        self.ephemeral_menu = tk.OptionMenu(
+                self.input_frame,
+                self.ephemeral_mode_var,
+                "OFF", "LOCAL", "GLOBAL",
+                command=self.on_ephemeral_change
         )
-        self.ephemeral_btn.pack(side=tk.RIGHT, padx=(0, 5))  # type: ignore
+        # Basic styling to match theme (not all OptionMenu elements honor bg/fg across platforms)
+        try:
+            self.ephemeral_menu.config(bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR, relief=tk.FLAT)  # type: ignore
+        except Exception:
+            pass
+        self.ephemeral_menu.pack(side=tk.RIGHT, padx=(0, 5))  # type: ignore
         
         # File Transfer window button
         self.file_transfer_btn = tk.Button(
@@ -566,7 +575,10 @@ class ChatGUI:
         self.message_entry.config(state=tk.DISABLED)  # type: ignore
         self.send_btn.config(state=tk.DISABLED)  # type: ignore
         self.send_file_btn.config(state=tk.DISABLED)  # type: ignore
-        self.ephemeral_btn.config(state=tk.DISABLED)  # type: ignore
+        try:
+            self.ephemeral_menu.config(state=tk.DISABLED)  # type: ignore
+        except Exception:
+            pass
         self.file_transfer_btn.config(state=tk.DISABLED)  # type: ignore
         
         # Start ephemeral message cleanup thread
@@ -627,7 +639,7 @@ class ChatGUI:
         formatted_time = time.strftime("%H:%M:%S")
         
         # If ephemeral mode is enabled and this is a message, track it
-        if self.ephemeral_mode and is_message:
+        if (self.ephemeral_mode in ("LOCAL", "GLOBAL")) and is_message:
             self.message_counter += 1
             message_id = f"msg_{self.message_counter}"
             self.ephemeral_messages[message_id] = time.time()
@@ -683,7 +695,7 @@ class ChatGUI:
             self.chat_display.tag_add(tag_id, start_index, end_index)
             
             # Handle ephemeral mode for sent messages
-            if self.ephemeral_mode and is_message:
+            if (self.ephemeral_mode in ("LOCAL", "GLOBAL")) and is_message:
                 self.ephemeral_messages[tag_id] = time.time()
         
         # Play notification sound and show Windows notification if this is a message from another user
@@ -825,7 +837,10 @@ class ChatGUI:
         self.message_entry.config(state=tk.NORMAL)  # type: ignore
         self.send_btn.config(state=tk.NORMAL)  # type: ignore
         self.send_file_btn.config(state=tk.NORMAL)  # type: ignore
-        self.ephemeral_btn.config(state=tk.NORMAL)  # type: ignore
+        try:
+            self.ephemeral_menu.config(state=tk.NORMAL)  # type: ignore
+        except Exception:
+            pass
         self.file_transfer_btn.config(state=tk.NORMAL)  # type: ignore
         self.message_entry.focus()
         self.update_status("Connected, waiting for other client")
@@ -841,7 +856,10 @@ class ChatGUI:
         self.message_entry.config(state=tk.DISABLED)  # type: ignore
         self.send_btn.config(state=tk.DISABLED)  # type: ignore
         self.send_file_btn.config(state=tk.DISABLED)  # type: ignore
-        self.ephemeral_btn.config(state=tk.DISABLED)  # type: ignore
+        try:
+            self.ephemeral_menu.config(state=tk.DISABLED)  # type: ignore
+        except Exception:
+            pass
         self.file_transfer_btn.config(state=tk.DISABLED)  # type: ignore
         self.append_to_chat("Disconnected from server.")
         self.update_status("Not Connected")
@@ -946,6 +964,31 @@ class ChatGUI:
                 transfer_id = list(self.client.pending_file_requests.keys())[-1]
                 metadata = self.client.pending_file_requests[transfer_id]
                 try:
+                    # Prompt for save location with filename pre-filled
+                    initial_file = metadata.get('filename', 'received_file')
+                    _, ext = os.path.splitext(initial_file)
+                    selected_path = filedialog.asksaveasfilename(
+                        title="Save incoming file as...",
+                        initialfile=initial_file,
+                        defaultextension=ext if ext else "",
+                        filetypes=[("All files", "*.*")]
+                    )
+                    if not selected_path:
+                        # User canceled: send rejection and clean up
+                        reject_msg = self.client.protocol.create_file_reject_message(transfer_id)
+                        send_message(self.client.socket, reject_msg)
+                        self.file_transfer_window.add_transfer_message("File transfer rejected.")
+                        self.append_to_chat(f"❌ Rejected file transfer: {initial_file} (save canceled)")
+                        del self.client.pending_file_requests[transfer_id]
+                        if transfer_id in self.client.active_file_metadata:
+                            del self.client.active_file_metadata[transfer_id]
+                        self.message_entry.delete("1.0", tk.END)
+                        return "break"
+                    # Persist chosen save path for later reassembly
+                    if transfer_id in self.client.active_file_metadata:
+                        self.client.active_file_metadata[transfer_id]['save_path'] = selected_path
+                    else:
+                        metadata['save_path'] = selected_path
                     # Send acceptance
                     accept_msg = self.client.protocol.create_file_accept_message(transfer_id)
                     send_message(self.client.socket, accept_msg)
@@ -1005,6 +1048,31 @@ class ChatGUI:
                 transfer_id = list(self.client.pending_file_requests.keys())[-1]
                 metadata = self.client.pending_file_requests[transfer_id]
                 try:
+                    # Prompt for save location with filename pre-filled
+                    initial_file = metadata.get('filename', 'received_file')
+                    _, ext = os.path.splitext(initial_file)
+                    selected_path = filedialog.asksaveasfilename(
+                        title="Save incoming file as...",
+                        initialfile=initial_file,
+                        defaultextension=ext if ext else "",
+                        filetypes=[("All files", "*.*")]
+                    )
+                    if not selected_path:
+                        # User canceled: send rejection and clean up
+                        reject_msg = self.client.protocol.create_file_reject_message(transfer_id)
+                        send_message(self.client.socket, reject_msg)
+                        self.file_transfer_window.add_transfer_message("File transfer rejected.")
+                        self.append_to_chat(f"❌ Rejected file transfer: {initial_file} (save canceled)")
+                        del self.client.pending_file_requests[transfer_id]
+                        if transfer_id in self.client.active_file_metadata:
+                            del self.client.active_file_metadata[transfer_id]
+                        self.message_entry.delete("1.0", tk.END)
+                        return "break"
+                    # Persist chosen save path for later reassembly
+                    if transfer_id in self.client.active_file_metadata:
+                        self.client.active_file_metadata[transfer_id]['save_path'] = selected_path
+                    else:
+                        metadata['save_path'] = selected_path
                     # Send acceptance
                     accept_msg = self.client.protocol.create_file_accept_message(transfer_id)
                     send_message(self.client.socket, accept_msg)
@@ -1354,11 +1422,11 @@ class ChatGUI:
         def cleanup_thread():
             while True:
                 try:
-                    if self.ephemeral_mode and self.ephemeral_messages:
+                    if (self.ephemeral_mode in ("LOCAL", "GLOBAL")) and self.ephemeral_messages:
                         current_time = time.time()
                         # Find messages older than 30 seconds
                         expired_message_ids = []
-                        for message_id, timestamp in self.ephemeral_messages.items():
+                        for message_id, timestamp in list(self.ephemeral_messages.items()):
                             if current_time - timestamp >= 30.0:
                                 expired_message_ids.append(message_id)
                         
@@ -1373,23 +1441,105 @@ class ChatGUI:
         
         threading.Thread(target=cleanup_thread, daemon=True).start()
     
-    def toggle_ephemeral_mode(self):
-        """Toggle ephemeral mode on/off."""
-        if not self.ephemeral_mode:
-            # About to enable ephemeral mode
-            self.ephemeral_mode = True
-            self.ephemeral_btn.config(bg=self.theme_colors.get("EPHEMERAL_ACTIVE_BG", "#ff6b6b"), fg=self.theme_colors.get("EPHEMERAL_ACTIVE_FG", "#ffffff"), text="Ephemeral ON")  # type: ignore
-            self.append_to_chat("Ephemeral mode enabled - messages will disappear after 30 seconds", is_message=True)
+    def on_ephemeral_change(self, value):
+        """Handle dropdown selection for ephemeral mode: OFF, LOCAL, GLOBAL."""
+        try:
+            selected = str(value).upper()
+        except Exception:
+            selected = "OFF"
+        # Enforce owner lock when currently in GLOBAL owned by someone else
+        if self.ephemeral_mode == "GLOBAL" and self.ephemeral_global_owner_id and self.ephemeral_global_owner_id != self.local_client_id:
+            if selected != "GLOBAL":
+                # Revert selection and inform user
+                self.root.after(0, lambda: self.ephemeral_mode_var.set("GLOBAL"))
+                self.append_to_chat("Global ephemeral mode was enabled by the other user. Only they can disable it.")
+                return
+        # Apply selection
+        if selected == "LOCAL":
+            # If we were the GLOBAL owner, inform peer to disable global
+            was_global_owner = (self.ephemeral_mode == "GLOBAL" and self.ephemeral_global_owner_id == self.local_client_id)
+            previous_owner = self.ephemeral_global_owner_id
+            self.ephemeral_mode = "LOCAL"
+            self.ephemeral_global_owner_id = None
+            self.append_to_chat("Local ephemeral mode enabled - your messages will disappear after 30 seconds")
+            # Broadcast OFF if we were the global owner
+            if was_global_owner and self.connected and self.client and self.client.key_exchange_complete:
+                self.send_ephemeral_mode_change("OFF", previous_owner)
+            self.update_ephemeral_ui()
+        elif selected == "GLOBAL":
+            # Require secure session to announce globally
+            if not (self.connected and self.client and self.client.key_exchange_complete):
+                self.append_to_chat("Cannot enable global ephemeral before secure session is established.")
+                self.root.after(0, lambda: self.ephemeral_mode_var.set(self.ephemeral_mode))
+                return
+            self.ephemeral_mode = "GLOBAL"
+            self.ephemeral_global_owner_id = self.local_client_id
+            self.append_to_chat("Global ephemeral mode enabled - only you can disable it")
+            # Broadcast to peer
+            self.send_ephemeral_mode_change("GLOBAL", self.ephemeral_global_owner_id)
+            self.update_ephemeral_ui()
         else:
-            # About to disable ephemeral mode
-            self.append_to_chat("Ephemeral mode disabled.", is_message=True)
-            self.ephemeral_mode = False
-            self.ephemeral_btn.config(bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, text="Ephemeral")  # type: ignore
-            
-            # Remove all existing ephemeral messages
+            # OFF
+            if self.ephemeral_mode == "GLOBAL" and self.ephemeral_global_owner_id and self.ephemeral_global_owner_id != self.local_client_id:
+                # Not allowed to turn off
+                self.append_to_chat("Only the user who enabled global ephemeral mode can disable it.")
+                self.root.after(0, lambda: self.ephemeral_mode_var.set("GLOBAL"))
+                return
+            # Turn off locally and broadcast OFF if we are the owner
+            was_global_owner = (self.ephemeral_mode == "GLOBAL" and self.ephemeral_global_owner_id == self.local_client_id)
+            self.ephemeral_mode = "OFF"
+            previous_owner = self.ephemeral_global_owner_id
+            self.ephemeral_global_owner_id = None
+            self.append_to_chat("Ephemeral mode disabled.")
+            # Remove all existing ephemeral messages locally
             all_message_ids = list(self.ephemeral_messages.keys())
             if all_message_ids:
                 self.remove_ephemeral_messages(all_message_ids)
+            # Broadcast OFF if we owned the global state
+            if was_global_owner and self.connected and self.client and self.client.key_exchange_complete:
+                self.send_ephemeral_mode_change("OFF", previous_owner)
+            self.update_ephemeral_ui()
+    
+    def send_ephemeral_mode_change(self, mode: str, owner_id: str | None):
+        """Send an encrypted EPHEMERAL_MODE_CHANGE message to the peer."""
+        try:
+            if not (self.client and self.client.socket and self.client.protocol):
+                return
+            payload = {
+                "version": PROTOCOL_VERSION,
+                "type": MessageType.EPHEMERAL_MODE_CHANGE,
+                "mode": mode,
+                "owner_id": owner_id,
+            }
+            encrypted = self.client.protocol.encrypt_message(json.dumps(payload))
+            send_message(self.client.socket, encrypted)
+        except Exception as e:
+            self.append_to_chat(f"Error sending ephemeral mode change: {e}")
+    
+    def update_ephemeral_ui(self):
+        """Update dropdown UI state and color based on current ephemeral mode and ownership."""
+        try:
+            # Color feedback
+            if self.ephemeral_mode == "GLOBAL":
+                bg = self.theme_colors.get("EPHEMERAL_GLOBAL_BG", "#6bff6b")
+                fg = self.theme_colors.get("EPHEMERAL_GLOBAL_FG", "#ffffff")
+            elif self.ephemeral_mode == "LOCAL":
+                bg = self.theme_colors.get("EPHEMERAL_ACTIVE_BG", "#ff6b6b")
+                fg = self.theme_colors.get("EPHEMERAL_ACTIVE_FG", "#ffffff")
+            else:
+                bg = self.BUTTON_BG_COLOR
+                fg = self.FG_COLOR
+            self.ephemeral_menu.config(bg=bg, fg=fg, activebackground=self.BUTTON_ACTIVE_BG, activeforeground=fg)  # type: ignore
+        except Exception:
+            pass
+        # Lock control if global owned by peer
+        try:
+            if self.ephemeral_mode == "GLOBAL" and self.ephemeral_global_owner_id and self.ephemeral_global_owner_id != self.local_client_id:
+                self.ephemeral_menu.config(state=tk.DISABLED)  # type: ignore
+            else:
+                self.ephemeral_menu.config(state=tk.NORMAL)  # type: ignore
+        except Exception:
+            pass
     
     def remove_ephemeral_messages(self, message_ids):
         """Remove ephemeral messages from the chat display."""
@@ -1457,7 +1607,6 @@ class GUISecureChatClient(SecureChatClient):
     
     def _send_delivery_confirmation(self, confirmed_counter: int) -> None:
         """Send a delivery confirmation for a received text message."""
-        print("delivery confirmation sent, GUI_client.py")
         try:
             confirmation_data = self.protocol.create_delivery_confirmation_message(confirmed_counter)
             send_message(self.socket, confirmation_data)
@@ -1485,6 +1634,61 @@ class GUISecureChatClient(SecureChatClient):
             else:
                 print(f"\nError handling delivery confirmation: {e}")
     
+    def handle_ephemeral_mode_change(self, decrypted_message: str) -> None:
+        """Override: apply peer's ephemeral mode changes to GUI state."""
+        try:
+            message = json.loads(decrypted_message)
+            if message.get("type") != MessageType.EPHEMERAL_MODE_CHANGE:
+                return
+            mode = str(message.get("mode", "OFF")).upper()
+            owner_id = message.get("owner_id")
+
+            if not self.gui:
+                # No GUI attached; nothing to update visually
+                return
+
+            def set_global():
+                self.gui.ephemeral_mode = "GLOBAL"
+                self.gui.ephemeral_global_owner_id = owner_id
+                try:
+                    self.gui.ephemeral_mode_var.set("GLOBAL")
+                except Exception:
+                    pass
+                self.gui.append_to_chat("Peer enabled GLOBAL ephemeral mode. Only the enabler can disable it.")
+                self.gui.update_ephemeral_ui()
+
+            def set_off_from_owner():
+                # Switch OFF only when performed by the recorded owner
+                self.gui.ephemeral_mode = "OFF"
+                self.gui.ephemeral_global_owner_id = None
+                try:
+                    self.gui.ephemeral_mode_var.set("OFF")
+                except Exception:
+                    pass
+                self.gui.append_to_chat("Peer disabled GLOBAL ephemeral mode.")
+                # Remove existing ephemeral messages locally
+                ids = list(self.gui.ephemeral_messages.keys())
+                if ids:
+                    self.gui.remove_ephemeral_messages(ids)
+                self.gui.update_ephemeral_ui()
+
+            if mode == "GLOBAL":
+                self.gui.root.after(0, set_global)
+            elif mode == "OFF":
+                # Only honor OFF from the owner who enabled GLOBAL
+                if self.gui.ephemeral_mode == "GLOBAL" and self.gui.ephemeral_global_owner_id == owner_id:
+                    self.gui.root.after(0, set_off_from_owner)
+                else:
+                    self.gui.root.after(0, lambda: self.gui.append_to_chat(
+                        "Peer attempted to disable GLOBAL ephemeral mode but is not the owner; ignoring."))
+            elif mode == "LOCAL":
+                # Local preference is informational only
+                self.gui.root.after(0, lambda: self.gui.append_to_chat(
+                    "Peer changed local ephemeral preference (no enforcement)."))
+        except Exception as e:
+            if self.gui:
+                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error handling ephemeral mode change: {e}"))
+
     def handle_emergency_close(self, message_data: bytes) -> None:
         """Handle emergency close message from the other client - override to display in GUI."""
         try:
@@ -1550,7 +1754,7 @@ class GUISecureChatClient(SecureChatClient):
                 print(f"Key exchange init error: {e}")
     
     def handle_key_exchange_response(self, message_data: bytes):
-        """Handle key exchange response - override to send to GUI."""
+        """Handle key exchange response - override to send to GUI. """
         try:
             if self.private_key is not None:
                 if self.gui:
@@ -1778,14 +1982,17 @@ class GUISecureChatClient(SecureChatClient):
                     ))
                 
                 # Reassemble file
-                output_path = os.path.join(os.getcwd(), metadata["filename"])
-                
-                # Handle filename conflicts
-                counter = 1
-                base_name, ext = os.path.splitext(metadata["filename"])
-                while os.path.exists(output_path):
-                    output_path = os.path.join(os.getcwd(), f"{base_name}_{counter}{ext}")
-                    counter += 1
+                # Use user-selected save path if provided; otherwise default to CWD with conflict handling
+                if 'save_path' in metadata and metadata['save_path']:
+                    output_path = metadata['save_path']
+                else:
+                    output_path = os.path.join(os.getcwd(), metadata["filename"])
+                    # Handle filename conflicts
+                    counter = 1
+                    base_name, ext = os.path.splitext(metadata["filename"])
+                    while os.path.exists(output_path):
+                        output_path = os.path.join(os.getcwd(), f"{base_name}_{counter}{ext}")
+                        counter += 1
                 
                 try:
                     # Get compression status from metadata
@@ -1932,6 +2139,8 @@ def load_theme_colors():
         "SPEED_LABEL_COLOR":              "#4CAF50",
         "EPHEMERAL_ACTIVE_BG":            "#ff6b6b",
         "EPHEMERAL_ACTIVE_FG":            "#ffffff",
+        "EPHEMERAL_GLOBAL_BG":            "#6bff6b",
+        "EPHEMERAL_GLOBAL_FG":            "#ffffff",
         "SPELLCHECK_ERROR_COLOR":         "#ff0000"
     }
     

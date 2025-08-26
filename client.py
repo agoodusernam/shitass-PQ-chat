@@ -137,7 +137,7 @@ class SecureChatClient:
             (for optimized file chunks). The method first tries JSON parsing for
             control messages (including keepalives), then falls back to binary
             file chunk processing if JSON parsing fails.
-
+            
             All exceptions are caught and logged to prevent crashes.
         """
         try:
@@ -428,6 +428,8 @@ class SecureChatClient:
                     case MessageType.DELIVERY_CONFIRMATION:
                         if self.key_exchange_complete:
                             self.handle_delivery_confirmation(decrypted_text)
+                    case MessageType.EPHEMERAL_MODE_CHANGE:
+                        self.handle_ephemeral_mode_change(decrypted_text)
                     case _:
                         # It's a regular chat message if it's not a file-related type
                         self.display_regular_message(decrypted_text)
@@ -570,6 +572,22 @@ class SecureChatClient:
             
         except Exception as e:
             print(f"Failed to send file: {e}")
+    
+    def handle_ephemeral_mode_change(self, decrypted_message: str) -> None:
+        """Handle incoming ephemeral mode change from peer (console feedback)."""
+        try:
+            message = json.loads(decrypted_message)
+            if message.get("type") != MessageType.EPHEMERAL_MODE_CHANGE:
+                return
+            mode = str(message.get("mode", "OFF")).upper()
+            owner_id = message.get("owner_id")
+            if mode == "GLOBAL":
+                print("\nPeer enabled GLOBAL ephemeral mode. Only the enabler can disable it.")
+            elif mode == "OFF":
+                print("\nPeer disabled GLOBAL ephemeral mode.")
+
+        except Exception as e:
+            print(f"\nError handling ephemeral mode change: {e}")
     
     def handle_file_metadata(self, decrypted_message: str) -> None:
         """Handle incoming file metadata."""
