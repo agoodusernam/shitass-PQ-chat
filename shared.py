@@ -25,7 +25,7 @@ except ImportError:
     print("Required cryptographic libraries not found.")
     raise ImportError("Please install the required libraries with pip install -r requirements.txt")
 # Protocol constants
-PROTOCOL_VERSION: Final[int] = 2
+PROTOCOL_VERSION: Final[float] = 2.1
 
 
 class MessageType(IntEnum):
@@ -51,15 +51,18 @@ class MessageType(IntEnum):
     SERVER_VERSION_INFO = 19
     DUMMY_MESSAGE = 20
     EPHEMERAL_MODE_CHANGE = 21
+    DUMMY_DELIVERY_CONFIRMATION = 22
 
 
 # File transfer constants
 SEND_CHUNK_SIZE: Final[int] = 1024 * 1024  # 1 MiB chunks for sending
 
 # Maps protocol versions to compatible versions for key exchange and message processing
-PROTOCOL_COMPATIBILITY: Final[dict[int, list[int]]] = {
+# Some features may be limited when using older versions
+PROTOCOL_COMPATIBILITY: Final[dict[float, list[float]]] = {
     1: [1],
-    2: [2],
+    2: [2, 2.1],
+    2.1: [2, 2.1],
 }
 
 
@@ -261,10 +264,22 @@ class SecureChatProtocol:
         self.sender_thread = None
         self.socket = None
     
-    def queue_message(self, encrypted_data: bytes) -> None:
-        """Add an encrypted message to the send queue."""
+    def queue_message(self, message) -> None:
+        """Add a message to the send queue.
+        
+        The message can be one of the following:
+        - bytes: already-prepared data to send as-is (control or pre-encrypted)
+        - str: plaintext to be encrypted and sent
+        - dict: JSON-serializable object to be encrypted and sent
+        - tuple: instruction for the sender loop, supported forms:
+            ("encrypt_text", str)
+            ("encrypt_json", dict)
+            ("file_chunk", transfer_id: str, chunk_index: int, chunk_data: bytes)
+            ("plaintext", bytes)  # send as-is (control)
+            ("encrypted", bytes)  # send as-is (already encrypted)
+        """
         with self.sender_lock:
-            self.message_queue.append(encrypted_data)
+            self.message_queue.append(message)
     
     def send_emergency_close(self) -> bool:
         """Send a pre-encrypted emergency close message directly, bypassing the queue.
@@ -310,30 +325,73 @@ class SecureChatProtocol:
         return self.encrypt_message(dummy_text)
     
     def _sender_loop(self) -> None:
-        """Background thread loop that sends messages every 500ms."""
+        """Background thread loop that sends messages every 500ms.
+        
+        This loop is responsible for performing encryption for all queued
+        non-control messages before sending them over the socket.
+        Control messages (key exchange, explicit plaintext items) are sent as-is.
+        """
         while self.sender_running:
             try:
-                message_to_send = None
+                item = None
                 
                 # Check if there's a message in the queue
                 with self.sender_lock:
                     if self.message_queue:
-                        message_to_send = self.message_queue.popleft()
+                        item = self.message_queue.popleft()
                 
                 # If no real message, generate a dummy message
                 # Skip dummy messages during file transfers
-                if message_to_send is None and self.send_dummy_messages and not self.has_active_file_transfers():
+                if item is None and self.send_dummy_messages and not self.has_active_file_transfers():
                     if self.shared_key and self.send_chain_key:  # Only send dummy if encryption is ready
                         try:
-                            message_to_send = self._generate_dummy_message()
+                            item = self._generate_dummy_message()  # already encrypted bytes
                         except Exception:
                             # If dummy message generation fails, skip this cycle
                             pass
                 
-                # Send the message if we have one and a socket
-                if message_to_send is not None and self.socket is not None:
+                # Resolve the queue item into bytes to send
+                to_send: bytes | None = None
+                if item is not None:
                     try:
-                        send_message(self.socket, message_to_send)
+                        # Already bytes -> send as-is
+                        if isinstance(item, (bytes, bytearray)):
+                            to_send = bytes(item)
+                        # Plaintext string -> encrypt
+                        elif isinstance(item, str):
+                            if self.shared_key and self.send_chain_key:
+                                to_send = self.encrypt_message(item)
+                        # JSON object -> encrypt
+                        elif isinstance(item, dict):
+                            if self.shared_key and self.send_chain_key:
+                                to_send = self.encrypt_message(json.dumps(item))
+                        # Instruction tuple
+                        elif isinstance(item, tuple) and item:
+                            kind = item[0]
+                            if kind == "encrypt_text" and len(item) >= 2:
+                                text = item[1]
+                                if isinstance(text, str) and self.shared_key and self.send_chain_key:
+                                    to_send = self.encrypt_message(text)
+                            elif kind == "encrypt_json" and len(item) >= 2:
+                                obj = item[1]
+                                if isinstance(obj, dict) and self.shared_key and self.send_chain_key:
+                                    to_send = self.encrypt_message(json.dumps(obj))
+                            elif kind == "file_chunk" and len(item) >= 4:
+                                transfer_id, chunk_index, chunk_data = item[1], item[2], item[3]
+                                if isinstance(transfer_id, str) and isinstance(chunk_index, int) and isinstance(chunk_data, (bytes, bytearray)):
+                                    to_send = self.create_file_chunk_message(transfer_id, chunk_index, bytes(chunk_data))
+                            elif kind in ("plaintext", "encrypted") and len(item) >= 2:
+                                data = item[1]
+                                if isinstance(data, (bytes, bytearray)):
+                                    to_send = bytes(data)
+                    except Exception:
+                        # If preparing this item fails, drop it and continue
+                        to_send = None
+                
+                # Send the message if we have one and a socket
+                if to_send is not None and self.socket is not None:
+                    try:
+                        send_message(self.socket, to_send)
                     except Exception:
                         # If sending fails, the connection is likely broken
                         # The main thread will handle reconnection

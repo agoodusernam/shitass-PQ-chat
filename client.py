@@ -447,8 +447,13 @@ class SecureChatClient:
     def _send_delivery_confirmation(self, confirmed_counter: int) -> None:
         """Send a delivery confirmation for a received text message."""
         try:
-            confirmation_data = self.protocol.create_delivery_confirmation_message(confirmed_counter)
-            send_message(self.socket, confirmation_data)
+            # Queue delivery confirmation as JSON; loop will encrypt
+            message = {
+                "version": PROTOCOL_VERSION,
+                "type": MessageType.DELIVERY_CONFIRMATION,
+                "confirmed_counter": confirmed_counter,
+            }
+            self.protocol.queue_message(("encrypt_json", message))
         except Exception as e:
             print(f"\nError sending delivery confirmation: {e}")
     
@@ -539,8 +544,8 @@ class SecureChatClient:
             print("Sending message to unverified peer")
             
         try:
-            encrypted_data = self.protocol.encrypt_message(text)
-            self.protocol.queue_message(encrypted_data)
+            # Queue plaintext; sender loop will handle encryption
+            self.protocol.queue_message(text)
             return True
             
         except Exception as e:
@@ -565,8 +570,8 @@ class SecureChatClient:
                 "compress": compress
             }
             
-            # Send metadata to peer
-            send_message(self.socket, metadata_msg)
+            # Send metadata to peer via queue (loop will encrypt)
+            self.protocol.queue_message(("encrypt_json", metadata))
             compression_text = "compressed" if compress else "uncompressed"
             print(f"File transfer request sent: {metadata['filename']} ({metadata['file_size']} bytes, {compression_text})")
             
@@ -608,23 +613,34 @@ class SecureChatClient:
                 try:
                     response = input("Accept file? (yes/no): ").lower().strip()
                     if response in ['yes', 'y']:
-                        # Send acceptance
-                        accept_msg = self.protocol.create_file_accept_message(transfer_id)
-                        send_message(self.socket, accept_msg)
+                        # Send acceptance via queue (loop will encrypt)
+                        self.protocol.queue_message(("encrypt_json", {
+                            "version": PROTOCOL_VERSION,
+                            "type": MessageType.FILE_ACCEPT,
+                            "transfer_id": transfer_id,
+                        }))
                         print("File transfer accepted. Waiting for file...")
                         
                     elif response in ['no', 'n']:
-                        # Send rejection
-                        reject_msg = self.protocol.create_file_reject_message(transfer_id)
-                        send_message(self.socket, reject_msg)
+                        # Send rejection via queue (loop will encrypt)
+                        self.protocol.queue_message(("encrypt_json", {
+                            "version": PROTOCOL_VERSION,
+                            "type": MessageType.FILE_REJECT,
+                            "transfer_id": transfer_id,
+                            "reason": "User declined",
+                        }))
                         print("File transfer rejected.")
                         del self.active_file_metadata[transfer_id]
                     else:
                         print("Please enter 'yes' or 'no'")
                 except (EOFError, KeyboardInterrupt):
-                    # Send rejection on interrupt
-                    reject_msg = self.protocol.create_file_reject_message(transfer_id)
-                    send_message(self.socket, reject_msg)
+                    # Send rejection on interrupt via queue
+                    self.protocol.queue_message(("encrypt_json", {
+                        "version": PROTOCOL_VERSION,
+                        "type": MessageType.FILE_REJECT,
+                        "transfer_id": transfer_id,
+                        "reason": "User canceled",
+                    }))
                     print("File transfer rejected.")
                     del self.active_file_metadata[transfer_id]
                     break
@@ -739,9 +755,12 @@ class SecureChatClient:
                 compression_text = "compressed" if compressed else "uncompressed"
                 print(f"File received successfully ({compression_text}): {output_path}")
                 
-                # Send the completion message
-                complete_msg = self.protocol.create_file_complete_message(transfer_id)
-                send_message(self.socket, complete_msg)
+                # Send the completion message via queue (loop will encrypt)
+                self.protocol.queue_message(("encrypt_json", {
+                    "version": PROTOCOL_VERSION,
+                    "type": MessageType.FILE_COMPLETE,
+                    "transfer_id": transfer_id,
+                }))
                 
             except Exception as e:
                 print(f"File reassembly failed: {e}")
@@ -811,8 +830,8 @@ class SecureChatClient:
             chunk_generator = self.protocol.chunk_file(file_path, compress=compress)
             
             for i, chunk in enumerate(chunk_generator):
-                chunk_msg = self.protocol.create_file_chunk_message(transfer_id, i, chunk)
-                send_message(self.socket, chunk_msg)
+                # Queue chunk instruction; loop will encrypt and send
+                self.protocol.queue_message(("file_chunk", transfer_id, i, chunk))
                 
                 # Show progress
                 progress = ((i + 1) / total_chunks) * 100

@@ -5,6 +5,7 @@ import json
 import random
 import tkinter as tk
 from tkinter import scrolledtext, messagebox, filedialog
+
 from tkinterdnd2 import TkinterDnD, DND_FILES
 import time
 import threading
@@ -19,12 +20,13 @@ class DebugFileTransferWindow(FileTransferWindow):
     """Debug version of FileTransferWindow - extends base with debug features."""
     pass
 
+#TODO: Update to be compatible with new ChatGUI structure
 
 # noinspection DuplicatedCode,PyAttributeOutsideInit
 class DebugChatGUI(ChatGUI):
     """Debug version of ChatGUI - extends base with debug features."""
     
-    def __init__(self, root):
+    def __init__(self, root) -> None:
         # Initialize debug-specific attributes
         self.debug_visible = True  # Show debug panel by default
         self.last_debug_update = 0
@@ -37,7 +39,7 @@ class DebugChatGUI(ChatGUI):
         # Add debug-specific UI elements
         self._setup_debug_ui()
     
-    def _setup_debug_ui(self):
+    def _setup_debug_ui(self) -> None:
         """Initialize debug-specific UI setup.
         
         This method is called after the parent constructor to set up any
@@ -50,7 +52,7 @@ class DebugChatGUI(ChatGUI):
         # Start periodic debug info updates
         self._start_debug_timer()
     
-    def _start_debug_timer(self):
+    def _start_debug_timer(self) -> None:
         """Start the periodic debug info update timer."""
         if self.debug_visible:
             # Schedule the next debug update
@@ -59,7 +61,7 @@ class DebugChatGUI(ChatGUI):
                     self._periodic_debug_update
             )
     
-    def _periodic_debug_update(self):
+    def _periodic_debug_update(self) -> None:
         """Periodic callback to update debug information."""
         # noinspection PyBroadException
         try:
@@ -73,13 +75,13 @@ class DebugChatGUI(ChatGUI):
             # Schedule the next update
             self._start_debug_timer()
     
-    def _stop_debug_timer(self):
+    def _stop_debug_timer(self) -> None:
         """Stop the periodic debug info update timer."""
         if self.debug_timer_id:
             self.root.after_cancel(self.debug_timer_id)
             self.debug_timer_id = None
     
-    def create_widgets(self):
+    def create_widgets(self) -> None:
         """Override create_widgets to create proper side-by-side layout."""
         # Create the main layout with debug panels from the start
         # Main frame
@@ -240,7 +242,7 @@ class DebugChatGUI(ChatGUI):
         self._create_debug_display()
         self._create_debug_action_buttons()
     
-    def _create_debug_display(self):
+    def _create_debug_display(self) -> None:
         """Create the debug information display area."""
         self.debug_display = scrolledtext.ScrolledText(
                 self.debug_frame,
@@ -255,7 +257,7 @@ class DebugChatGUI(ChatGUI):
         )
         self.debug_display.pack(fill=tk.BOTH, expand=True, padx=5) # type: ignore
     
-    def _create_debug_action_buttons(self):
+    def _create_debug_action_buttons(self) -> None:
         """Create all debug action buttons."""
         # Debug Actions label
         debug_actions_label = tk.Label(
@@ -270,7 +272,7 @@ class DebugChatGUI(ChatGUI):
         # Create all debug buttons
         self._create_debug_buttons()
     
-    def _create_debug_buttons(self):
+    def _create_debug_buttons(self) -> None:
         """Create individual debug action buttons."""
         # Keepalive toggle button
         self.keepalive_toggle_btn = tk.Button(

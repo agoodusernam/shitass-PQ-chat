@@ -975,8 +975,12 @@ class ChatGUI:
                     )
                     if not selected_path:
                         # User canceled: send rejection and clean up
-                        reject_msg = self.client.protocol.create_file_reject_message(transfer_id)
-                        send_message(self.client.socket, reject_msg)
+                        self.client.protocol.queue_message(("encrypt_json", {
+                            "version": PROTOCOL_VERSION,
+                            "type": MessageType.FILE_REJECT,
+                            "transfer_id": transfer_id,
+                            "reason": "User canceled",
+                        }))
                         self.file_transfer_window.add_transfer_message("File transfer rejected.")
                         self.append_to_chat(f"❌ Rejected file transfer: {initial_file} (save canceled)")
                         del self.client.pending_file_requests[transfer_id]
@@ -990,8 +994,11 @@ class ChatGUI:
                     else:
                         metadata['save_path'] = selected_path
                     # Send acceptance
-                    accept_msg = self.client.protocol.create_file_accept_message(transfer_id)
-                    send_message(self.client.socket, accept_msg)
+                    self.client.protocol.queue_message(("encrypt_json", {
+                        "version": PROTOCOL_VERSION,
+                        "type": MessageType.FILE_ACCEPT,
+                        "transfer_id": transfer_id,
+                    }))
                     self.file_transfer_window.add_transfer_message(
                         f"File transfer accepted: {metadata['filename']}")
                     self.append_to_chat(f"✅ Accepted file transfer: {metadata['filename']}")
@@ -1024,8 +1031,12 @@ class ChatGUI:
                 metadata = self.client.pending_file_requests[transfer_id]
                 try:
                     # Send rejection
-                    reject_msg = self.client.protocol.create_file_reject_message(transfer_id)
-                    send_message(self.client.socket, reject_msg)
+                    self.client.protocol.queue_message(("encrypt_json", {
+                        "version": PROTOCOL_VERSION,
+                        "type": MessageType.FILE_REJECT,
+                        "transfer_id": transfer_id,
+                        "reason": "User declined",
+                    }))
                     self.file_transfer_window.add_transfer_message("File transfer rejected.")
                     self.append_to_chat(f"❌ Rejected file transfer: {metadata['filename']}")
                     # Remove from pending requests and active metadata
@@ -1059,8 +1070,12 @@ class ChatGUI:
                     )
                     if not selected_path:
                         # User canceled: send rejection and clean up
-                        reject_msg = self.client.protocol.create_file_reject_message(transfer_id)
-                        send_message(self.client.socket, reject_msg)
+                        self.client.protocol.queue_message(("encrypt_json", {
+                            "version": PROTOCOL_VERSION,
+                            "type": MessageType.FILE_REJECT,
+                            "transfer_id": transfer_id,
+                            "reason": "User canceled",
+                        }))
                         self.file_transfer_window.add_transfer_message("File transfer rejected.")
                         self.append_to_chat(f"❌ Rejected file transfer: {initial_file} (save canceled)")
                         del self.client.pending_file_requests[transfer_id]
@@ -1074,8 +1089,11 @@ class ChatGUI:
                     else:
                         metadata['save_path'] = selected_path
                     # Send acceptance
-                    accept_msg = self.client.protocol.create_file_accept_message(transfer_id)
-                    send_message(self.client.socket, accept_msg)
+                    self.client.protocol.queue_message(("encrypt_json", {
+                        "version": PROTOCOL_VERSION,
+                        "type": MessageType.FILE_ACCEPT,
+                        "transfer_id": transfer_id,
+                    }))
                     self.file_transfer_window.add_transfer_message(
                         f"File transfer accepted: {metadata['filename']}")
                     self.append_to_chat(f"✅ Accepted file transfer: {metadata['filename']}")
@@ -1095,8 +1113,12 @@ class ChatGUI:
                 metadata = self.client.pending_file_requests[transfer_id]
                 try:
                     # Send rejection
-                    reject_msg = self.client.protocol.create_file_reject_message(transfer_id)
-                    send_message(self.client.socket, reject_msg)
+                    self.client.protocol.queue_message(("encrypt_json", {
+                        "version": PROTOCOL_VERSION,
+                        "type": MessageType.FILE_REJECT,
+                        "transfer_id": transfer_id,
+                        "reason": "User declined",
+                    }))
                     self.file_transfer_window.add_transfer_message("File transfer rejected.")
                     self.append_to_chat(f"❌ Rejected file transfer: {metadata['filename']}")
                     # Remove from pending requests and active metadata
@@ -1511,8 +1533,7 @@ class ChatGUI:
                 "mode": mode,
                 "owner_id": owner_id,
             }
-            encrypted = self.client.protocol.encrypt_message(json.dumps(payload))
-            send_message(self.client.socket, encrypted)
+            self.client.protocol.queue_message(("encrypt_json", payload))
         except Exception as e:
             self.append_to_chat(f"Error sending ephemeral mode change: {e}")
     
@@ -1608,8 +1629,12 @@ class GUISecureChatClient(SecureChatClient):
     def _send_delivery_confirmation(self, confirmed_counter: int) -> None:
         """Send a delivery confirmation for a received text message."""
         try:
-            confirmation_data = self.protocol.create_delivery_confirmation_message(confirmed_counter)
-            send_message(self.socket, confirmation_data)
+            message = {
+                "version": PROTOCOL_VERSION,
+                "type": MessageType.DELIVERY_CONFIRMATION,
+                "confirmed_counter": confirmed_counter,
+            }
+            self.protocol.queue_message(("encrypt_json", message))
         except Exception as e:
             if self.gui:
                 self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error sending delivery confirmation: {e}"))
@@ -1705,7 +1730,7 @@ class GUISecureChatClient(SecureChatClient):
                 ))
                 
                 # Use the GUI's emergency close function to properly close everything
-                self.gui.root.after(0, lambda: self.gui.emergency_close())
+                self.gui.emergency_close()
             else:
                 # Fallback to console output if no GUI
                 print(f"\n{'=' * 50}")
@@ -1726,7 +1751,7 @@ class GUISecureChatClient(SecureChatClient):
                     f"Error handling emergency close: {e}\nThe connection will be terminated."
                 ))
                 # Force disconnect
-                self.gui.root.after(0, lambda: self.gui.emergency_close())
+                self.gui.emergency_close()
             else:
                 print(f"Error handling emergency close: {e}")
                 self.disconnect()
@@ -2004,14 +2029,14 @@ class GUISecureChatClient(SecureChatClient):
                         self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
                             f"File received successfully ({compression_text}): {output_path}"))
                         # Clear speed when transfer completes
-                        self.gui.root.after(0, lambda: self.gui.file_transfer_window.clear_speed())
+                        self.gui.file_transfer_window.clear_speed()
                     
                     # Display image if it's an image file
                     self._display_received_image(output_path)
                     
-                    # Send completion message
+                    # Send completion message via queue (already encrypted bytes)
                     complete_msg = self.protocol.create_file_complete_message(transfer_id)
-                    send_message(self.socket, complete_msg)
+                    self.protocol.queue_message(("encrypted", complete_msg))
                 
                 except Exception as e:
                     if self.gui:
@@ -2040,7 +2065,7 @@ class GUISecureChatClient(SecureChatClient):
                     self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
                         f"File transfer completed: {filename}"))
                     # Clear speed when transfer completes
-                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.clear_speed())
+                    self.gui.file_transfer_window.clear_speed()
                 del self.pending_file_transfers[transfer_id]
         
         except Exception as e:
@@ -2062,8 +2087,8 @@ class GUISecureChatClient(SecureChatClient):
             bytes_transferred = 0
             
             for i, chunk in enumerate(chunk_generator):
-                chunk_msg = self.protocol.create_file_chunk_message(transfer_id, i, chunk)
-                send_message(self.socket, chunk_msg)
+                # Queue chunk instruction; loop will encrypt and send
+                self.protocol.queue_message(("file_chunk", transfer_id, i, chunk))
                 
                 # Update bytes transferred
                 bytes_transferred += len(chunk)
@@ -2093,7 +2118,7 @@ class GUISecureChatClient(SecureChatClient):
                 self.gui.root.after(0, lambda comp_text=compression_text: self.gui.file_transfer_window.add_transfer_message(
                     f"File chunks sent successfully ({comp_text})."))
                 # Clear speed when transfer completes
-                self.gui.root.after(0, lambda: self.gui.file_transfer_window.clear_speed())
+                self.gui.file_transfer_window.clear_speed()
         
         except Exception as e:
             if self.gui:
@@ -2183,7 +2208,8 @@ def load_theme_colors():
             for color in missing_colors:
                 theme_colors[color] = default_colors[color]
             
-            json.dump(theme_colors, open("theme.json", "w"), indent=4)
+            with open("theme.json", "w") as f:
+                json.dump(theme_colors, f, indent=4)
         
         return theme_colors
     except PermissionError:
