@@ -66,8 +66,8 @@ def get_image_from_clipboard() -> Image.Image | None:
         image = ImageGrab.grabclipboard()
         if isinstance(image, Image.Image):
             return image
-        else:
-            return None
+        
+        return None
     except Exception:
         return None
 
@@ -646,9 +646,9 @@ class ChatGUI:
             
             # Add invisible marker for tracking using tags
             # The tag is applied to the entire line including the newline character
-            start_index = self.chat_display.index(f"end-1c")
+            start_index = self.chat_display.index("end-1c")
             self.chat_display.insert(tk.END, f"[{formatted_time}] {text}\n")
-            end_index = self.chat_display.index(f"end-1c")
+            end_index = self.chat_display.index("end-1c")
             self.chat_display.tag_add(message_id, start_index, end_index)
         else:
             self.chat_display.insert(tk.END, f"[{formatted_time}] {text}\n")
@@ -1025,7 +1025,7 @@ class ChatGUI:
                     self.append_to_chat(f"Verification error: {e}")
                 self.message_entry.delete("1.0", tk.END)
                 return "break"
-            elif self.client.pending_file_requests:
+            if self.client.pending_file_requests:
                 # Handle file transfer rejection when no verification is pending
                 transfer_id = list(self.client.pending_file_requests.keys())[-1]
                 metadata = self.client.pending_file_requests[transfer_id]
@@ -1418,7 +1418,7 @@ class ChatGUI:
         try:
             if self.connected and self.client:
                 # Send emergency close message as quickly as possible
-                self.client.send_emergency_close()
+                self.client.protocol.send_emergency_close()
                 # Force immediate disconnect without waiting
                 self.client.connected = False
                 if self.client.socket:
@@ -1429,8 +1429,7 @@ class ChatGUI:
         except Exception as e:
             # Even if there's an error, still close the application
             print(f"Error during emergency close: {e}")
-            self.root.quit()
-            self.root.destroy()
+            sys.exit(1)
     
     def on_closing(self):
         """Handle window closing."""
@@ -1720,7 +1719,7 @@ class GUISecureChatClient(SecureChatClient):
             if self.gui:
                 # Display emergency close message in GUI
                 self.gui.root.after(0, lambda: self.gui.append_to_chat("🚨 EMERGENCY CLOSE RECEIVED"))
-                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"The other client has activated emergency close."))
+                self.gui.root.after(0, lambda: self.gui.append_to_chat("The other client has activated emergency close."))
                 self.gui.root.after(0, lambda: self.gui.append_to_chat("Connection will be terminated immediately."))
                 
                 # Show popup notification
@@ -1735,7 +1734,7 @@ class GUISecureChatClient(SecureChatClient):
                 # Fallback to console output if no GUI
                 print(f"\n{'=' * 50}")
                 print("🚨 EMERGENCY CLOSE RECEIVED")
-                print(f"The other client has activated emergency close.")
+                print("The other client has activated emergency close.")
                 print("Connection will be terminated immediately.")
                 print(f"{'=' * 50}")
                 
@@ -2175,7 +2174,7 @@ def load_theme_colors():
         if messagebox.askyesno("Theme Configuration",
                                "No theme.json file found. Would you like to create one with the default colors?"):
             try:
-                with open("theme.json", "w") as f:
+                with open("theme.json", "w", encoding="utf-8") as f:
                     json.dump(default_colors, f, indent=4)
                 messagebox.showinfo("Theme Created", "theme.json has been created with default colors.")
             except PermissionError:
@@ -2186,7 +2185,7 @@ def load_theme_colors():
     
     # Load colors from theme.json
     try:
-        with open("theme.json", "r") as f:
+        with open("theme.json", "r", encoding="utf-8") as f:
             theme_colors = json.load(f)
         
         # Validate theme format
@@ -2204,11 +2203,11 @@ def load_theme_colors():
         if missing_colors:
             messagebox.showwarning("Theme Warning",
                                    f"Missing colors in theme.json: {', '.join(missing_colors)}. Using defaults for " +
-                                   f"these and saving the default values for the missing values.")
+                                   "these and saving the default values for the missing values.")
             for color in missing_colors:
                 theme_colors[color] = default_colors[color]
             
-            with open("theme.json", "w") as f:
+            with open("theme.json", "w", encoding="utf-8") as f:
                 json.dump(theme_colors, f, indent=4)
         
         return theme_colors

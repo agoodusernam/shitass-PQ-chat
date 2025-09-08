@@ -1,4 +1,5 @@
 # shared.py - Shared cryptographic utilities and protocol definitions
+# pylint: disable=trailing-whitespace, line-too-long
 import base64
 import os
 import json
@@ -8,6 +9,7 @@ import hashlib
 import shutil
 import gzip
 import io
+from io import BufferedRandom
 import threading
 import time
 import random
@@ -78,12 +80,12 @@ def bytes_to_human_readable(size: int) -> str:
     """
     if size < 1024:
         return f"{size} B"
-    elif size < 1024 ** 2:
+    if size < 1024 ** 2:
         return f"{size / 1024:.1f} KB"
-    elif size < 1024 ** 3:
+    if size < 1024 ** 3:
         return f"{size / 1024 ** 2:.1f} MB"
-    else:
-        return f"{size / 1024 ** 3:.1f} GB"
+    
+    return f"{size / 1024 ** 3:.1f} GB"
 
 
 class StreamingGzipCompressor:
@@ -146,7 +148,6 @@ class SecureChatProtocol:
             seen_counters (set): Set of seen message counters for replay protection.
             file_transfers (dict): Dictionary tracking ongoing file transfers.
             received_chunks (dict): Buffer for received file chunks during transfer.
-            pre_encrypted_emergency_close (bytes | None): Pre-encrypted emergency close message.
         """
         self.mac_key: bytes
         self.encryption_key: bytes
@@ -166,7 +167,7 @@ class SecureChatProtocol:
         self.file_transfers: dict[str, dict] = {}  # Track ongoing file transfers
         self.received_chunks: dict[str, set[int]] = {}  # Track received chunk indices (set of indices per transfer)
         self.temp_file_paths: dict[str, str] = {}  # Track temporary file paths for receiving chunks
-        self.open_file_handles: dict[str, TextIOWrapper] = {}  # Track open file handles for active transfers
+        self.open_file_handles: dict[str, BufferedRandom] = {}  # Track open file handles for active transfers
         self.sending_transfers: dict[str, dict] = {}  # Track outgoing file transfers
         
         # Message queuing system for traffic analysis prevention
@@ -176,8 +177,6 @@ class SecureChatProtocol:
         self.sender_running: bool = False  # Flag to control sender thread
         self.sender_lock: threading.Lock = threading.Lock()  # Lock for thread-safe queue operations
         
-        # Pre-encrypted emergency close message
-        self.pre_encrypted_emergency_close: bytes | None = None
         self.send_dummy_messages: bool = True
     
     def reset_key_exchange(self) -> None:
@@ -197,9 +196,6 @@ class SecureChatProtocol:
         # Clear file transfer state as well
         self.file_transfers = {}
         self.received_chunks = {}
-        
-        # Reset pre-encrypted emergency close message
-        self.pre_encrypted_emergency_close = None
         
         # Clear message queue
         with self.sender_lock:
@@ -282,28 +278,31 @@ class SecureChatProtocol:
             self.message_queue.append(message)
     
     def send_emergency_close(self) -> bool:
-        """Send a pre-encrypted emergency close message directly, bypassing the queue.
+        """Send an emergency close message immediately, bypassing the queue.
+        
+        Behavior:
+            - If encryption is ready, encrypt immediately and send over the socket.
+            - If encryption is not ready, send plaintext immediately.
         
         Returns:
             bool: True if the message was sent successfully, False otherwise.
         """
-        if not self.socket or not self.pre_encrypted_emergency_close:
-            return False
-        
         try:
-            # Send the pre-encrypted emergency close message directly
-            send_message(self.socket, self.pre_encrypted_emergency_close)
-            
-            # Increment the counter since we've used the next value
-            self.message_counter += 1
-            
-            # Ratchet the chain key forward
-            if self.send_chain_key:
-                self.send_chain_key = self._ratchet_chain_key(self.send_chain_key, self.message_counter)
-            
+            if not self.socket:
+                return False
+            emergency_message = {
+                "version": PROTOCOL_VERSION,
+                "type":    MessageType.EMERGENCY_CLOSE,
+            }
+            if self.shared_key and self.send_chain_key:
+                # Encrypt immediately using normal ratcheting
+                encrypted = self.encrypt_message(json.dumps(emergency_message))
+                send_message(self.socket, encrypted)
+            else:
+                # Fall back to plaintext immediate send
+                send_message(self.socket, json.dumps(emergency_message).encode('utf-8'))
             return True
         except Exception:
-            # If sending fails, the connection is likely broken
             return False
     
     def _generate_dummy_message(self) -> bytes:
@@ -674,69 +673,6 @@ class SecureChatProtocol:
         except Exception as e:
             raise ValueError(f"Key exchange response failed: {e}")
     
-    def _encrypt_emergency_close(self) -> bytes | None:
-        """Pre-encrypt an emergency close message for immediate use."""
-        if not self.shared_key or not self.send_chain_key:
-            return None  # Cannot encrypt without shared key
-        
-        # Create the emergency close message
-        emergency_message = {
-            "version": PROTOCOL_VERSION,
-            "type":    MessageType.EMERGENCY_CLOSE,
-        }
-        
-        # Convert to JSON string
-        plaintext = json.dumps(emergency_message)
-        
-        # Use the next counter value (message_counter + 1)
-        next_counter = self.message_counter + 1
-        
-        # Derive unique message key for this message
-        message_key = self._derive_message_key(self.send_chain_key, next_counter)
-        
-        # Convert plaintext to bytes
-        plaintext_bytes = plaintext.encode('utf-8')
-        
-        # Add padding to prevent message size analysis
-        # Pad to next KiB boundary (1KiB, 2KiB, 3KiB, etc.)
-        kib = 1024
-        current_size = len(plaintext_bytes)
-        current_kib = (current_size + kib - 1) // kib  # Ceiling division
-        target_size = current_kib * kib
-        if target_size == current_size:
-            target_size += kib  # If already at boundary, go to next KiB
-        
-        padding_needed = target_size - current_size
-        # Use null bytes for padding (will be removed during decryption)
-        padded_plaintext = plaintext_bytes + b'\x00' * padding_needed
-        
-        # Create AAD from message metadata for authentication
-        nonce: bytes = os.urandom(12)
-        aad_data = {
-            "type":    MessageType.ENCRYPTED_MESSAGE,
-            "counter": next_counter,
-            "nonce":   base64.b64encode(nonce).decode('utf-8')
-        }
-        aad = json.dumps(aad_data, sort_keys=True).encode('utf-8')
-        
-        # Encrypt with AES-GCM using the unique message key and AAD
-        aesgcm: AESGCM = AESGCM(message_key)
-        
-        ciphertext: bytes = aesgcm.encrypt(nonce, padded_plaintext, aad)
-        
-        # Securely delete the message key
-        message_key = b'\x00' * len(message_key)
-        del message_key
-        
-        # Create authenticated message
-        encrypted_message = {
-            "type":       MessageType.ENCRYPTED_MESSAGE,
-            "counter":    next_counter,
-            "nonce":      base64.b64encode(nonce).decode('utf-8'),
-            "ciphertext": base64.b64encode(ciphertext).decode('utf-8')
-        }
-        
-        return json.dumps(encrypted_message).encode('utf-8')
     
     def encrypt_message(self, plaintext: str) -> bytes:
         """Encrypt a message with authentication and replay protection using perfect forward secrecy."""
@@ -792,9 +728,6 @@ class SecureChatProtocol:
             "nonce":      base64.b64encode(nonce).decode('utf-8'),
             "ciphertext": base64.b64encode(ciphertext).decode('utf-8')
         }
-        
-        # Pre-encrypt the emergency close message with the next counter
-        self.pre_encrypted_emergency_close = self._encrypt_emergency_close()
         
         return json.dumps(encrypted_message).encode('utf-8')
     
@@ -871,7 +804,7 @@ class SecureChatProtocol:
     def handle_key_exchange_init(self, message_data: bytes) -> bytes:
         """Handle key exchange initiation from peer and return response."""
         # Process the init message and get shared secret + ciphertext
-        shared_secret, ciphertext, _ = self.process_key_exchange_init(message_data)
+        _, ciphertext, _ = self.process_key_exchange_init(message_data)
         
         # Create and return the response message
         return self.create_key_exchange_response(ciphertext)
@@ -882,7 +815,7 @@ class SecureChatProtocol:
             raise ValueError("No private key available for key exchange response")
         
         # Process the response to get shared secret
-        shared_secret = self.process_key_exchange_response(message_data, self.private_key)
+        self.process_key_exchange_response(message_data, self.private_key)
         
         # Create completion message
         complete_message = {

@@ -10,7 +10,7 @@ import sys
 import os
 import time
 
-from shared import SecureChatProtocol, send_message, receive_message, MessageType, PROTOCOL_VERSION
+from shared import SecureChatProtocol, send_message, receive_message, MessageType, PROTOCOL_VERSION, PROTOCOL_COMPATIBILITY
 
 
 # noinspection PyUnresolvedReferences,PyBroadException
@@ -147,33 +147,34 @@ class SecureChatClient:
                 message = json.loads(message_data.decode('utf-8'))
                 message_type = MessageType(message.get("type"))
                 
-                if message_type == MessageType.KEY_EXCHANGE_INIT:
-                    self.handle_key_exchange_init(message_data)
-                elif message_type == MessageType.KEY_EXCHANGE_RESPONSE:
-                    self.handle_key_exchange_response(message_data)
-                elif message_type == MessageType.ENCRYPTED_MESSAGE:
-                    if self.key_exchange_complete:
-                        self.handle_encrypted_message(message_data)
-                    else:
-                        print("\nReceived encrypted message before key exchange complete")
-                elif message_type == MessageType.ERROR:
-                    print(f"\nServer error: {message.get('error', 'Unknown error')}")
-                elif message_type == MessageType.KEY_VERIFICATION:
-                    self.handle_key_verification_message(message_data)
-                elif message_type == MessageType.KEY_EXCHANGE_RESET:
-                    self.handle_key_exchange_reset(message_data)
-                elif message_type == MessageType.KEEP_ALIVE:
-                    self.handle_keepalive()
-                elif message_type == MessageType.KEY_EXCHANGE_COMPLETE:
-                    self.handle_key_exchange_complete()
-                elif message_type == MessageType.INITIATE_KEY_EXCHANGE:
-                    self.initiate_key_exchange()
-                elif message_type == MessageType.SERVER_FULL:
-                    self.handle_server_full()
-                elif message_type == MessageType.SERVER_VERSION_INFO:
-                    self.handle_server_version_info(message_data)
-                else:
-                    print(f"\nUnknown message type: {message_type}")
+                match message_type:
+                    case MessageType.KEY_EXCHANGE_INIT:
+                        self.handle_key_exchange_init(message_data)
+                    case MessageType.KEY_EXCHANGE_RESPONSE:
+                        self.handle_key_exchange_response(message_data)
+                    case MessageType.ENCRYPTED_MESSAGE:
+                        if self.key_exchange_complete:
+                            self.handle_encrypted_message(message_data)
+                        else:
+                            print("\nReceived encrypted message before key exchange complete")
+                    case MessageType.ERROR:
+                        print(f"\nServer error: {message.get('error', 'Unknown error')}")
+                    case MessageType.KEY_VERIFICATION:
+                        self.handle_key_verification_message(message_data)
+                    case MessageType.KEY_EXCHANGE_RESET:
+                        self.handle_key_exchange_reset(message_data)
+                    case MessageType.KEEP_ALIVE:
+                        self.handle_keepalive()
+                    case MessageType.KEY_EXCHANGE_COMPLETE:
+                        self.handle_key_exchange_complete()
+                    case MessageType.INITIATE_KEY_EXCHANGE:
+                        self.initiate_key_exchange()
+                    case MessageType.SERVER_FULL:
+                        self.handle_server_full()
+                    case MessageType.SERVER_VERSION_INFO:
+                        self.handle_server_version_info(message_data)
+                    case _:
+                        print(f"\nUnknown message type: {message_type}")
                 return  # Successfully processed as JSON message
             
             except (json.JSONDecodeError, UnicodeDecodeError):
@@ -484,28 +485,6 @@ class SecureChatClient:
         except Exception as e:
             print(f"Error handling key exchange reset: {e}")
     
-    def send_emergency_close(self) -> None:
-        """Send an emergency close message to notify the other client.
-        
-        Uses a pre-encrypted emergency close message for immediate sending,
-        bypassing the queue system. The message is encrypted so the server
-        cannot detect that it's an emergency close.
-        """
-        try:
-            # Use the protocol's emergency close method that bypasses the queue
-            if self.protocol.send_emergency_close():
-                return
-                
-            # Fallback to unencrypted emergency close if pre-encrypted message fails
-            emergency_message = {
-                "version": PROTOCOL_VERSION,
-                "type": MessageType.EMERGENCY_CLOSE,
-            }
-            message_data = json.dumps(emergency_message).encode('utf-8')
-            send_message(self.socket, message_data)
-        except Exception:
-            return
-    
     def handle_emergency_close(self, message_data: bytes) -> None:
         """Handle emergency close message from the other client."""
         try:
@@ -807,7 +786,6 @@ class SecureChatClient:
             if self.server_protocol_version != PROTOCOL_VERSION:
                 print(f"⚠️ Protocol version mismatch: Client v{PROTOCOL_VERSION}, Server v{self.server_protocol_version}")
                 # Use local compatibility matrix since server no longer sends it
-                from shared import PROTOCOL_COMPATIBILITY
                 client_compatible_versions = PROTOCOL_COMPATIBILITY.get(PROTOCOL_VERSION, [PROTOCOL_VERSION])
                 if self.server_protocol_version in client_compatible_versions:
                     print("✅ Versions are compatible for communication")

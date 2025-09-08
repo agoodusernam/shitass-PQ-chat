@@ -180,13 +180,8 @@ class TestSecureChatProtocol(unittest.TestCase):
             derived_keys.append(key)
             return key
         
-        # Also stub out emergency-close pre-encryption to avoid extra key derivations
-        original_emergency_close = self.protocol1._encrypt_emergency_close
-        def no_emergency_close():
-            return None
         
         self.protocol1._derive_message_key = capture_derive_message_key
-        self.protocol1._encrypt_emergency_close = no_emergency_close
         
         try:
             # Send multiple messages
@@ -202,7 +197,6 @@ class TestSecureChatProtocol(unittest.TestCase):
         finally:
             # Restore patched methods
             self.protocol1._derive_message_key = original_derive_method
-            self.protocol1._encrypt_emergency_close = original_emergency_close
         
         print("✓ PFS message key uniqueness test passed")
 
