@@ -386,8 +386,9 @@ class SecureChatProtocol:
                                 data = item[1]
                                 if isinstance(data, (bytes, bytearray)):
                                     to_send = bytes(data)
-                    except Exception:
+                    except Exception as e:
                         # If preparing this item fails, drop it and continue
+                        print(f"An error occurred preparing message for sending: {e}")
                         to_send = None
                 
                 # Send the message if we have one and a socket
@@ -400,11 +401,11 @@ class SecureChatProtocol:
                         pass
                 
                 # Wait 500ms before next cycle
-                time.sleep(0.5)
+                time.sleep(0.25)
             
             except Exception:
                 # Continue running even if there's an unexpected error
-                time.sleep(0.5)
+                time.sleep(0.25)
     
     def generate_keypair(self) -> tuple[bytes, bytes]:
         """Generate ML-KEM keypair for key exchange."""
@@ -695,10 +696,10 @@ class SecureChatProtocol:
         plaintext_bytes = plaintext.encode('utf-8')
         
         # Add padding to prevent message size analysis
-        # Pad to next KiB boundary (1KiB, 2KiB, 3KiB, etc.)
-        kib = 1024
+        # Pad to next 512 Bytes
+        kib = 512
         current_size = len(plaintext_bytes)
-        current_kib = (current_size + kib - 1) // kib  # Ceiling division
+        current_kib = (current_size + kib - 1) // kib
         target_size = current_kib * kib
         if target_size == current_size:
             target_size += kib  # If already at boundary, go to next KiB
@@ -709,12 +710,12 @@ class SecureChatProtocol:
         
         # Create AAD from message metadata for authentication
         nonce: bytes = os.urandom(12)
-        aad_data = {
+        aad_data: dict[str, MessageType | int | str] = {
             "type":    MessageType.ENCRYPTED_MESSAGE,
             "counter": self.message_counter,
             "nonce":   base64.b64encode(nonce).decode('utf-8')
         }
-        aad = json.dumps(aad_data, sort_keys=True).encode('utf-8')
+        aad: bytes = json.dumps(aad_data, sort_keys=True).encode('utf-8')
         
         # Encrypt with AES-GCM using the unique message key and AAD
         aesgcm: AESGCM = AESGCM(message_key)
@@ -726,7 +727,7 @@ class SecureChatProtocol:
         del message_key
         
         # Create authenticated message
-        encrypted_message = {
+        encrypted_message: dict[str, MessageType | int | str] = {
             "type":       MessageType.ENCRYPTED_MESSAGE,
             "counter":    self.message_counter,
             "nonce":      base64.b64encode(nonce).decode('utf-8'),
