@@ -1,8 +1,8 @@
-#!/usr/bin/env python3
 """
 Secure chat server using socketserver.ThreadingTCPServer.
 Rewritten to use proper socketserver architecture instead of manual socket handling.
 """
+# pylint: disable=trailing-whitespace, broad-exception-caught, bare-except, too-many-instance-attributes
 import socket
 import socketserver
 import threading
@@ -10,8 +10,8 @@ import json
 import time
 from typing import Optional
 
-from shared import SecureChatProtocol, send_message, receive_message, create_error_message, create_reset_message, \
-    MessageType, PROTOCOL_VERSION
+from shared import SecureChatProtocol, send_message, receive_message, create_error_message, \
+    create_reset_message, MessageType, PROTOCOL_VERSION
 
 SERVER_VERSION = 5
 
@@ -161,7 +161,8 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
     """Handles individual client connections."""
     server: 'SecureChatServer'
     
-    def __init__(self, request: socket.socket | tuple[bytes, socket.socket], client_address: str, server: SecureChatServer):
+    def __init__(self, request: socket.socket | tuple[bytes, socket.socket], client_address: str,
+                 server: SecureChatServer) -> None:
         self.client_id = None
         self.protocol = SecureChatProtocol()
         self.connected = True
@@ -176,7 +177,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         super().__init__(request, client_address, server)
         
     
-    def setup(self):
+    def setup(self) -> None:
         """Called before handle() to perform initialization."""
         # Try to add this client to the server
         if not self.server.add_client(self):
@@ -189,6 +190,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                 send_message(self.request, message_data)
                 print(f"Rejected connection from {self.client_address} - server full")
             except:
+                # we don't care if this fails, the client is being rejected either way
                 pass
             return
         
@@ -197,7 +199,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         # Send server version information to the newly connected client
         self.send_server_version_info()
     
-    def handle(self):
+    def handle(self) -> None:
         """Main client handling loop."""
         # If client wasn't added (server full), don't process
         if self.client_id is None:
@@ -215,24 +217,24 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                     if not self.key_exchange_complete:
                         # Handle key exchange messages
                         self.handle_key_exchange(message_data)
-                    else:
-                        # Check if this is a verification message or keepalive response
-                        try:
-                            message = json.loads(message_data.decode('utf-8'))
-                            message_type = message.get("type")
-                            
-                            if message_type == MessageType.KEY_VERIFICATION:
-                                # Route verification messages
-                                self.route_verification_message(message_data)
-                            elif message_type == MessageType.KEEP_ALIVE_RESPONSE:
-                                # Handle keepalive response
-                                self.handle_keepalive_response(message_data)
-                            else:
-                                # Route encrypted messages to other client
-                                self.server.route_message(self.client_id, message_data)
-                        except (json.JSONDecodeError, UnicodeDecodeError):
-                            # This is likely an encrypted message (binary data)
+                        continue
+                    # Check if this is a verification message or keepalive response
+                    try:
+                        message = json.loads(message_data.decode('utf-8'))
+                        message_type = message.get("type")
+                        
+                        if message_type == MessageType.KEY_VERIFICATION:
+                            # Route verification messages
+                            self.route_verification_message(message_data)
+                        elif message_type == MessageType.KEEP_ALIVE_RESPONSE:
+                            # Handle keepalive response
+                            self.handle_keepalive_response(message_data)
+                        else:
+                            # Route encrypted messages to other client
                             self.server.route_message(self.client_id, message_data)
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        # This is likely an encrypted message (binary data)
+                        self.server.route_message(self.client_id, message_data)
                         
                 except ConnectionError:
                     break
@@ -243,21 +245,13 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         finally:
             self.disconnect()
     
-    def handle_key_exchange(self, message_data: bytes):
+    def handle_key_exchange(self, message_data: bytes)-> None:
         """Handle key exchange messages by routing them to the other client."""
         try:
             # Parse message to determine type for logging
             try:
                 message = json.loads(message_data.decode('utf-8'))
                 message_type = message.get("type")
-                
-                # Check for protocol version mismatch
-                if "version" in message:
-                    peer_version = message.get("version")
-                    if peer_version != PROTOCOL_VERSION:
-                        print(f"\nWARNING: Protocol version mismatch detected in message from {self.client_id}.")
-                        print(f"Server version: {PROTOCOL_VERSION}, Client version: {peer_version}")
-                        print("Communication between clients may not work properly.")
                 
             except (json.JSONDecodeError, UnicodeDecodeError):
                 # If we can't parse the message, assume it's binary key exchange data
@@ -267,7 +261,8 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             other_client = self.get_other_client()
             if other_client:
                 send_message(other_client.request, message_data)
-                print(f"Key exchange message (type {message_type}) routed from {self.client_id} to {other_client.client_id}")
+                print(f"Key exchange message (type {message_type}) routed from {self.client_id} to "
+                      f"{other_client.client_id}")
                 
                 # If this is a key exchange response, the key exchange is complete
                 if message_type == MessageType.KEY_EXCHANGE_RESPONSE:
@@ -286,7 +281,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             print(f"Key exchange routing error for {self.client_id}: {e}")
             self.server.broadcast_error("Key exchange failed")
     
-    def route_verification_message(self, message_data: bytes):
+    def route_verification_message(self, message_data: bytes) -> None:
         """Route key verification messages between clients."""
         try:
             # Route the verification message to the other client
@@ -302,7 +297,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             print(f"Verification routing error for {self.client_id}: {e}")
             self.server.broadcast_error("Verification failed")
     
-    def notify_key_exchange_complete(self):
+    def notify_key_exchange_complete(self) -> None:
         """Notify both clients that key exchange is complete."""
         try:
             complete_message = {
@@ -336,14 +331,14 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         """Check if the client is still connected."""
         return self.connected
     
-    def start_keepalive(self):
+    def start_keepalive(self) -> None:
         """Start the keepalive thread."""
         if self.keepalive_thread is None:
             self.keepalive_thread = threading.Thread(target=self.keepalive_loop)
             self.keepalive_thread.daemon = True
             self.keepalive_thread.start()
     
-    def keepalive_loop(self):
+    def keepalive_loop(self) -> None:
         """Keepalive loop to monitor client connection."""
         while self.connected:
             try:
@@ -359,7 +354,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                 print(f"Keepalive error for {self.client_id}: {e}")
                 break
     
-    def send_keepalive(self):
+    def send_keepalive(self) -> None:
         """Send a keepalive message to the client."""
         try:
             if self.waiting_for_keepalive_response:
@@ -383,7 +378,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             print(f"Failed to send keepalive to {self.client_id}: {e}")
             self.disconnect()
     
-    def handle_keepalive_response(self, message_data: bytes):
+    def handle_keepalive_response(self, message_data: bytes) -> None:
         """Handle keepalive response from client."""
         try:
             message = json.loads(message_data.decode('utf-8'))
@@ -394,7 +389,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         except Exception as e:
             print(f"Error handling keepalive response from {self.client_id}: {e}")
     
-    def send_server_version_info(self):
+    def send_server_version_info(self) -> None:
         """Send protocol version information to the client."""
         try:
             # Create protocol version message (only protocol version, no compatibility matrix or server version)
@@ -410,7 +405,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         except Exception as e:
             print(f"Error sending protocol version info to {self.client_id}: {e}")
     
-    def disconnect(self):
+    def disconnect(self) -> None:
         """Disconnect the client and clean up."""
         if self.connected:
             self.connected = False
@@ -427,7 +422,8 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                 print(f"Client {self.client_id} disconnected")
 
 
-def main():
+def main() -> None:
+    """Main entry point to start the secure chat server."""
     try:
         server = SecureChatServer()
         server.start_server()

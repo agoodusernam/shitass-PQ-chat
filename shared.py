@@ -365,6 +365,8 @@ class SecureChatProtocol:
                             to_send = bytes(item)
                         # Plaintext string -> encrypt
                         elif isinstance(item, (str, dict)):
+                            if isinstance(item, dict):
+                                item = json.dumps(item)
                             if self.shared_key and self.send_chain_key:
                                 to_send = self.encrypt_message(item)
                         # Instruction tuple
@@ -889,8 +891,8 @@ class SecureChatProtocol:
         return json.dumps(verification_response).encode('utf-8')
     
     # File transfer methods
-    def create_file_metadata_message(self, file_path: str, return_metadata: bool = False,
-                                     compress: bool = True) -> bytes | tuple[bytes, dict]:
+    def create_file_metadata_message(self, file_path: str,
+                                     compress: bool = True) -> tuple[bytes, dict[str, str | int | bool]]:
         """Create a file metadata message for file transfer initiation."""
         
         if not os.path.exists(file_path):
@@ -938,9 +940,8 @@ class SecureChatProtocol:
         
         encrypted_message = self.encrypt_message(json.dumps(metadata))
         
-        if return_metadata:
-            return encrypted_message, metadata
-        return encrypted_message
+        
+        return encrypted_message, metadata
     
     def create_file_accept_message(self, transfer_id: str) -> bytes:
         """Create a file acceptance message."""
@@ -1346,8 +1347,10 @@ def create_reset_message() -> bytes:
     return json.dumps(message).encode('utf-8')
 
 
-def send_message(sock: socket.socket, data: bytes):
+def send_message(sock: socket.socket | None, data: bytes):
     """Send a length-prefixed message over a socket."""
+    if not sock:
+        raise ValueError("Socket is None")
     length = struct.pack('!I', len(data))
     sent = sock.send(length + data)
     if sent != len(length + data):

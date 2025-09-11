@@ -326,7 +326,7 @@ class ChatGUI:
         self.root.configure(bg=self.BG_COLOR)
         
         # Chat client instance
-        self.client = None
+        self.client: GUISecureChatClient | None = None
         self.connected = False
         
         # Ephemeral mode state
@@ -1713,7 +1713,7 @@ class GUISecureChatClient(SecureChatClient):
             if self.gui:
                 self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error handling ephemeral mode change: {e}"))
 
-    def handle_emergency_close(self, message_data: bytes) -> None:
+    def handle_emergency_close(self) -> None:
         """Handle emergency close message from the other client - override to display in GUI."""
         try:
             if self.gui:

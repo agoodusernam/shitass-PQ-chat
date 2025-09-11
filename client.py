@@ -2,7 +2,7 @@
 Secure Chat Client with End-to-End Encryption
 It uses KRYSTALS KYBER protocol for secure key exchange and message encryption.
 """
-# pylint: disable=trailing-whitespace
+# pylint: disable=trailing-whitespace, broad-exception-caught
 import socket
 import threading
 import json
@@ -10,11 +10,17 @@ import sys
 import os
 import time
 
-from shared import SecureChatProtocol, send_message, receive_message, MessageType, PROTOCOL_VERSION, PROTOCOL_COMPATIBILITY
+from shared import (SecureChatProtocol, send_message, receive_message, MessageType,
+                    PROTOCOL_VERSION, PROTOCOL_COMPATIBILITY)
 
 
 # noinspection PyUnresolvedReferences,PyBroadException
 class SecureChatClient:
+    """
+    A secure chat client that connects to a server and communicates with another client
+    using end-to-end encryption. It supports text messaging, file transfers, and key
+    verification.
+    """
     
     def __init__(self, host='localhost', port=16384):
         """The secure chat client.
@@ -41,20 +47,19 @@ class SecureChatClient:
         self.host: str = host
         self.port: int = port
         self.socket: socket.socket | None = None
-        self.protocol = SecureChatProtocol()
-        self.connected = False
-        self.key_exchange_complete = False
-        self.verification_complete = False
-        self.username = ""
+        self.protocol: SecureChatProtocol = SecureChatProtocol()
+        self.connected: bool = False
+        self.key_exchange_complete: bool = False
+        self.verification_complete: bool = False
         self.receive_thread = None
         
         # File transfer state
-        self.pending_file_transfers: dict = {}  # Track outgoing file transfers
-        self.active_file_metadata = {}    # Track incoming file metadata
-        self._last_progress_shown = {}    # Track file transfer progress display
+        self.pending_file_transfers: dict = {}
+        self.active_file_metadata = {}
+        self._last_progress_shown = {}
         
         # Key exchange state
-        self.private_key = None  # Private key for key exchange
+        self.private_key = None
         
         # Server version information
         self.server_version = None
@@ -223,7 +228,7 @@ class SecureChatClient:
             message (str): The decrypted delivery confirmation message.
         """
         try:
-            confirmed_counter = json.loads(decrypted_text).get("confirmed_counter")
+            confirmed_counter = json.loads(message).get("confirmed_counter")
             print(f"\n✓ Message {confirmed_counter} delivered")
             
         except Exception as e:
@@ -414,7 +419,7 @@ class SecureChatClient:
                 
                 match message_type:
                     case MessageType.EMERGENCY_CLOSE:
-                        self.handle_emergency_close(message_data)
+                        self.handle_emergency_close()
                     case MessageType.DUMMY_MESSAGE:
                         # This is a dummy message, ignore it
                         pass
@@ -485,7 +490,7 @@ class SecureChatClient:
         except Exception as e:
             print(f"Error handling key exchange reset: {e}")
     
-    def handle_emergency_close(self, message_data: bytes) -> None:
+    def handle_emergency_close(self) -> None:
         """Handle emergency close message from the other client."""
         try:
             print(f"\n{'='*50}")
@@ -539,7 +544,7 @@ class SecureChatClient:
                 return
 
             # Create file metadata message
-            metadata_msg, metadata = self.protocol.create_file_metadata_message(file_path, return_metadata=True, compress=compress)
+            _, metadata = self.protocol.create_file_metadata_message(file_path, compress=compress)
             
             # Store file path for later sending
             transfer_id = metadata["transfer_id"]
@@ -564,7 +569,6 @@ class SecureChatClient:
             if message.get("type") != MessageType.EPHEMERAL_MODE_CHANGE:
                 return
             mode = str(message.get("mode", "OFF")).upper()
-            owner_id = message.get("owner_id")
             if mode == "GLOBAL":
                 print("\nPeer enabled GLOBAL ephemeral mode. Only the enabler can disable it.")
             elif mode == "OFF":
@@ -839,35 +843,38 @@ class SecureChatClient:
         
         try:
             while self.connected:
-                if self.key_exchange_complete and self.verification_complete:
-                    try:
-                        message = input()
-                        if message.lower() == '/quit':
-                            break
-                        if message.lower() == '/verify':
-                            self.start_key_verification()
-                        elif message.lower() == '/help':
-                            print("Commands:")
-                            print("  /quit - Exit the chat")
-                            print("  /verify - Start key verification")
-                            print("  /file <path> - Send a file")
-                            print("  /help - Show this help message")
-                        elif message.lower().startswith('/file '):
-                            file_path = message[6:].strip()
-                            if file_path:
-                                self.send_file(file_path)
-                            else:
-                                print("Usage: /file <path>")
-                        elif message.strip():
-                            if self.send_message(message):
-                                if self.protocol.is_peer_key_verified():
-                                    print(f"You: {message}")
-                                else:
-                                    print(f"You (unverified): {message}")
-                    except KeyboardInterrupt:
+                if not (self.key_exchange_complete and self.verification_complete):
+                    continue
+                try:
+                    message = input()
+                    if message.lower() == '/quit':
                         break
-                    except EOFError:
-                        break
+                    if message.lower() == '/verify':
+                        self.start_key_verification()
+                    elif message.lower() == '/help':
+                        print("Commands:")
+                        print("  /quit - Exit the chat")
+                        print("  /verify - Start key verification")
+                        print("  /file <path> - Send a file")
+                        print("  /help - Show this help message")
+                    elif message.lower().startswith('/file '):
+                        file_path = message[6:].strip()
+                        if file_path:
+                            self.send_file(file_path)
+                        else:
+                            print("Usage: /file <path>")
+                    elif message.strip():
+                        if not self.send_message(message):
+                            continue
+                            
+                        if self.protocol.is_peer_key_verified():
+                            print(f"You: {message}")
+                        else:
+                            print(f"You (unverified): {message}")
+                except KeyboardInterrupt:
+                    break
+                except EOFError:
+                    break
                 else:
                     # Wait for key exchange and verification to complete
                     time.sleep(0.1)
@@ -888,14 +895,14 @@ class SecureChatClient:
             try:
                 if self.socket:
                     self.socket.close()
-            except:
+            except Exception:
                 pass
             
             # Wait for receive thread to finish cleanly
             if self.receive_thread and self.receive_thread.is_alive():
                 try:
                     self.receive_thread.join(timeout=2.0)  # Wait up to 2 seconds
-                except:
+                except Exception:
                     pass
             
             print("\nDisconnected from server.")
