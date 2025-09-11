@@ -12,7 +12,6 @@ import io
 from io import BufferedRandom
 import threading
 import time
-import random
 from collections import deque
 from enum import IntEnum
 from typing import Final
@@ -23,9 +22,9 @@ try:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     from cryptography.hazmat.primitives.kdf.hkdf import HKDF
     from cryptography.hazmat.primitives import hashes
-except ImportError:
+except ImportError as exc:
     print("Required cryptographic libraries not found.")
-    raise ImportError("Please install the required libraries with pip install -r requirements.txt")
+    raise ImportError("Please install the required libraries with pip install -r requirements.txt") from exc
 # Protocol constants
 PROTOCOL_VERSION: Final[float] = 2.1
 
@@ -53,7 +52,6 @@ class MessageType(IntEnum):
     SERVER_VERSION_INFO = 19
     DUMMY_MESSAGE = 20
     EPHEMERAL_MODE_CHANGE = 21
-    DUMMY_DELIVERY_CONFIRMATION = 22
 
 
 # File transfer constants
@@ -148,6 +146,16 @@ class SecureChatProtocol:
             seen_counters (set): Set of seen message counters for replay protection.
             file_transfers (dict): Dictionary tracking ongoing file transfers.
             received_chunks (dict): Buffer for received file chunks during transfer.
+            temp_file_paths (dict): Temporary file paths for incoming file transfers.
+            open_file_handles (dict): Open file handles for writing incoming files.
+            sending_transfers (dict): Metadata for files being sent.
+            message_queue (deque): Queue for outgoing messages to prevent traffic analysis.
+            socket (socket.socket | None): The socket used for sending messages.
+            sender_thread (threading.Thread | None): Background thread for sending messages.
+            sender_running (bool): Whether the sender thread is running.
+            sender_lock (threading.Lock): Lock for synchronizing access to the message queue.
+            ack_counters (set): Set of message counters to be acknowledged when the next message is sent.
+            send_dummy_messages (bool): Whether to send dummy messages when idle.
         """
         self.mac_key: bytes
         self.encryption_key: bytes
@@ -157,25 +165,26 @@ class SecureChatProtocol:
         self.peer_public_key: bytes | None = None
         self.peer_key_verified = False
         self.own_public_key: bytes | None = None
-        self.private_key: bytes | None = None  # Initialize private key properly
+        self.private_key: bytes | None = None
         # Perfect Forward Secrecy - Key Ratcheting
-        self.send_chain_key: bytes | None = None  # For encrypting outgoing messages
-        self.receive_chain_key: bytes | None = None  # For decrypting incoming messages
-        self.seen_counters: set[int] = set()  # Track seen counters for replay protection
+        self.send_chain_key: bytes | None = None
+        self.receive_chain_key: bytes | None = None
+        self.seen_counters: set[int] = set()
         
         # File transfer state
-        self.file_transfers: dict[str, dict] = {}  # Track ongoing file transfers
-        self.received_chunks: dict[str, set[int]] = {}  # Track received chunk indices (set of indices per transfer)
-        self.temp_file_paths: dict[str, str] = {}  # Track temporary file paths for receiving chunks
-        self.open_file_handles: dict[str, BufferedRandom] = {}  # Track open file handles for active transfers
-        self.sending_transfers: dict[str, dict] = {}  # Track outgoing file transfers
+        self.file_transfers: dict[str, dict] = {}
+        self.received_chunks: dict[str, set[int]] = {}
+        self.temp_file_paths: dict[str, str] = {}
+        self.open_file_handles: dict[str, BufferedRandom] = {}
+        self.sending_transfers: dict[str, dict] = {}
         
         # Message queuing system for traffic analysis prevention
-        self.message_queue: deque = deque()  # FIFO queue for outgoing messages
-        self.socket: socket.socket | None = None  # Socket reference for sending messages
-        self.sender_thread: threading.Thread | None = None  # Background thread for sending messages
-        self.sender_running: bool = False  # Flag to control sender thread
-        self.sender_lock: threading.Lock = threading.Lock()  # Lock for thread-safe queue operations
+        self.message_queue: deque = deque()
+        self.socket: socket.socket | None = None
+        self.sender_thread: threading.Thread | None = None
+        self.sender_running: bool = False
+        self.sender_lock: threading.Lock = threading.Lock()
+        # self.ack_counters: set[int] = set()
         
         self.send_dummy_messages: bool = True
     
@@ -306,10 +315,8 @@ class SecureChatProtocol:
             return False
     
     def _generate_dummy_message(self) -> bytes:
-        """Generate a dummy message with random data between 24-1536 bytes."""
-        # Generate random data between 24 and 1536 bytes
-        data_size = random.randint(24, 1536)
-        dummy_data = os.urandom(data_size)
+        """Generate a dummy message with random data."""
+        dummy_data = os.urandom(256)
         
         # Create a JSON message with DUMMY_MESSAGE type
         dummy_message = {
@@ -357,13 +364,9 @@ class SecureChatProtocol:
                         if isinstance(item, (bytes, bytearray)):
                             to_send = bytes(item)
                         # Plaintext string -> encrypt
-                        elif isinstance(item, str):
+                        elif isinstance(item, (str, dict)):
                             if self.shared_key and self.send_chain_key:
                                 to_send = self.encrypt_message(item)
-                        # JSON object -> encrypt
-                        elif isinstance(item, dict):
-                            if self.shared_key and self.send_chain_key:
-                                to_send = self.encrypt_message(json.dumps(item))
                         # Instruction tuple
                         elif isinstance(item, tuple) and item:
                             kind = item[0]
@@ -491,10 +494,11 @@ class SecureChatProtocol:
             wordlist_path = os.path.join(os.path.dirname(__file__), 'eff_large_wordlist.txt')
             with open(wordlist_path, 'r', encoding='utf-8') as f:
                 return [line.strip() for line in f if line.strip()]
-        except FileNotFoundError:
+        except FileNotFoundError as exc:
             # Fallback if wordlist file is not found
             raise FileNotFoundError(
-                "eff_large_wordlist.txt not found. Please ensure the wordlist file is in the same directory as shared.py")
+                "eff_large_wordlist.txt not found. Please ensure the wordlist file is in the same directory as "
+                "shared.py") from exc
     
     @staticmethod
     def _hash_to_words(hash_bytes: bytes, wordlist: list, num_words: int = 20) -> list:
@@ -571,7 +575,7 @@ class SecureChatProtocol:
                 "peer_fingerprint": message.get("own_key_fingerprint", "")
             }
         except Exception as e:
-            raise ValueError(f"Key verification message processing failed: {e}")
+            raise ValueError(f"Key verification message processing failed: {e}") from e
     
     def should_allow_communication(self) -> tuple[bool, str]:
         """Check if communication should be allowed based on verification status."""
@@ -638,7 +642,7 @@ class SecureChatProtocol:
             
             return shared_secret, ciphertext, version_warning
         except Exception as e:
-            raise ValueError(f"Key exchange init failed: {e}")
+            raise ValueError(f"Key exchange init failed: {e}") from e
     
     def process_key_exchange_response(self, data: bytes, private_key: bytes) -> tuple[bytes, str | None]:
         """Process key exchange response and derive shared key.
@@ -671,7 +675,7 @@ class SecureChatProtocol:
             
             return shared_secret, version_warning
         except Exception as e:
-            raise ValueError(f"Key exchange response failed: {e}")
+            raise ValueError(f"Key exchange response failed: {e}") from e
     
     
     def encrypt_message(self, plaintext: str) -> bytes:
@@ -787,10 +791,8 @@ class SecureChatProtocol:
             
             return decrypted_data.decode('utf-8')
         
-        except ValueError as e:
-            raise e
         except Exception as e:
-            raise ValueError(f"Decryption failed: {e}")
+            raise ValueError(f"Decryption failed: {e}") from e
     
     # High-level wrapper methods for GUI client compatibility
     def initiate_key_exchange(self) -> bytes:
@@ -858,7 +860,7 @@ class SecureChatProtocol:
                     "type":  "verification_request",
                     "words": message["words"]
                 }
-            elif verification_type == "verification_response":
+            if verification_type == "verification_response":
                 # Process peer's verification response
                 peer_verified = message["verified"]
                 return {
@@ -997,31 +999,15 @@ class SecureChatProtocol:
         plaintext = header_len + header_json + chunk_data
         ciphertext = aesgcm.encrypt(nonce, plaintext, aad)
         
-        # Securely delete the message key
+        # Delete the message key
+        # This isn't 100% secure in Python, but I'm not particularly concerned about memory scraping attacks
         message_key = b'\x00' * len(message_key)
         del message_key
         
         # Pack counter (4 bytes) + nonce (12 bytes) + ciphertext
         counter_bytes = struct.pack('!I', self.message_counter)
         return counter_bytes + nonce + ciphertext
-    
-    def create_file_complete_message(self, transfer_id: str) -> bytes:
-        """Create a file transfer completion message."""
-        message = {
-            "version":     PROTOCOL_VERSION,
-            "type":        MessageType.FILE_COMPLETE,
-            "transfer_id": transfer_id
-        }
-        return self.encrypt_message(json.dumps(message))
-    
-    def create_delivery_confirmation_message(self, confirmed_message_counter: int) -> bytes:
-        """Create a delivery confirmation message for a received text message."""
-        message = {
-            "version":           PROTOCOL_VERSION,
-            "type":              MessageType.DELIVERY_CONFIRMATION,
-            "confirmed_counter": confirmed_message_counter
-        }
-        return self.encrypt_message(json.dumps(message))
+
     
     def chunk_file(self, file_path: str, compress: bool = True) -> Generator[bytes, None, None]:
         """Generate file chunks for transmission one at a time.
@@ -1076,19 +1062,17 @@ class SecureChatProtocol:
                 raise e
         else:
             # Send uncompressed chunks directly
-            try:
-                with open(file_path, 'rb') as original_file:
-                    while True:
-                        # Read a chunk from the original file
-                        file_chunk = original_file.read(SEND_CHUNK_SIZE)
-                        
-                        if not file_chunk:
-                            break
-                        
-                        yield file_chunk
+            with open(file_path, 'rb') as original_file:
+                while True:
+                    # Read a chunk from the original file
+                    file_chunk = original_file.read(SEND_CHUNK_SIZE)
+                    
+                    if not file_chunk:
+                        break
+                    
+                    yield file_chunk
             
-            except Exception as e:
-                raise e
+
     
     def process_file_metadata(self, decrypted_data: str) -> dict:
         """Process a file metadata message."""
@@ -1320,7 +1304,7 @@ class SecureChatProtocol:
                     shutil.copy2(final_file_path, output_path)
                     os.remove(final_file_path)
                 except Exception as copy_error:
-                    raise ValueError(f"Failed to move file: {e}, copy error: {copy_error}")
+                    raise ValueError(f"Failed to move file: {e}, copy error: {copy_error}") from e
             
             # Clean up the temporary received file (if different from final file)
             if compressed and os.path.exists(temp_received_path):
@@ -1332,7 +1316,7 @@ class SecureChatProtocol:
                 os.remove(temp_received_path)
             if compressed and final_file_path != temp_received_path and os.path.exists(final_file_path):
                 os.remove(final_file_path)
-            raise ValueError(f"File processing failed: {e}")
+            raise ValueError(f"File processing failed: {e}") from e
         
         # Clean up tracking data
         del self.received_chunks[transfer_id]
@@ -1361,10 +1345,13 @@ def create_reset_message() -> bytes:
     return json.dumps(message).encode('utf-8')
 
 
-def send_message(sock, data: bytes):
+def send_message(sock: socket.socket, data: bytes):
     """Send a length-prefixed message over a socket."""
     length = struct.pack('!I', len(data))
-    sock.send(length + data)
+    sent = sock.send(length + data)
+    if sent != len(length + data):
+        # attempt to send the rest of the data
+        sock.send((length + data)[sent:])
 
 
 def receive_message(sock) -> bytes:

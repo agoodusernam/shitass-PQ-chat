@@ -38,9 +38,9 @@ class SecureChatClient:
             pending_file_transfers (dict): Tracks outgoing file transfers by transfer ID.
             active_file_metadata (dict): Tracks incoming file metadata by transfer ID.
         """
-        self.host = host
-        self.port = port
-        self.socket = None
+        self.host: str = host
+        self.port: int = port
+        self.socket: socket.socket | None = None
         self.protocol = SecureChatProtocol()
         self.connected = False
         self.key_exchange_complete = False
@@ -223,7 +223,7 @@ class SecureChatClient:
             message (str): The decrypted delivery confirmation message.
         """
         try:
-            confirmation = json.loads(decrypted_text).get("confirmed_counter")
+            confirmed_counter = json.loads(decrypted_text).get("confirmed_counter")
             print(f"\n✓ Message {confirmed_counter} delivered")
             
         except Exception as e:
@@ -524,7 +524,7 @@ class SecureChatClient:
             
         try:
             # Queue plaintext; sender loop will handle encryption
-            self.protocol.queue_message(text)
+            self.protocol.queue_message(("encrypt_text", text))
             return True
             
         except Exception as e:
@@ -594,7 +594,6 @@ class SecureChatClient:
                     if response in ['yes', 'y']:
                         # Send acceptance via queue (loop will encrypt)
                         self.protocol.queue_message(("encrypt_json", {
-                            "version": PROTOCOL_VERSION,
                             "type": MessageType.FILE_ACCEPT,
                             "transfer_id": transfer_id,
                         }))
@@ -603,7 +602,6 @@ class SecureChatClient:
                     elif response in ['no', 'n']:
                         # Send rejection via queue (loop will encrypt)
                         self.protocol.queue_message(("encrypt_json", {
-                            "version": PROTOCOL_VERSION,
                             "type": MessageType.FILE_REJECT,
                             "transfer_id": transfer_id,
                             "reason": "User declined",
@@ -615,7 +613,6 @@ class SecureChatClient:
                 except (EOFError, KeyboardInterrupt):
                     # Send rejection on interrupt via queue
                     self.protocol.queue_message(("encrypt_json", {
-                        "version": PROTOCOL_VERSION,
                         "type": MessageType.FILE_REJECT,
                         "transfer_id": transfer_id,
                         "reason": "User canceled",
@@ -736,7 +733,6 @@ class SecureChatClient:
                 
                 # Send the completion message via queue (loop will encrypt)
                 self.protocol.queue_message(("encrypt_json", {
-                    "version": PROTOCOL_VERSION,
                     "type": MessageType.FILE_COMPLETE,
                     "transfer_id": transfer_id,
                 }))

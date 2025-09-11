@@ -20,7 +20,6 @@ class DebugFileTransferWindow(FileTransferWindow):
     """Debug version of FileTransferWindow - extends base with debug features."""
     pass
 
-#TODO: Update to be compatible with new ChatGUI structure
 
 # noinspection DuplicatedCode,PyAttributeOutsideInit
 class DebugChatGUI(ChatGUI):

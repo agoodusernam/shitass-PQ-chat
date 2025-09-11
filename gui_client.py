@@ -146,7 +146,7 @@ class FileTransferWindow:
             theme_colors = theme_colours
         self.parent_root = parent_root
         self.window = None
-        self.transfers = {}  # transfer_id -> transfer_info
+        self.transfers = {}
         self.speed_label = None
         self.transfer_list = None
         
@@ -2033,9 +2033,12 @@ class GUISecureChatClient(SecureChatClient):
                     # Display image if it's an image file
                     self._display_received_image(output_path)
                     
-                    # Send completion message via queue (already encrypted bytes)
-                    complete_msg = self.protocol.create_file_complete_message(transfer_id)
-                    self.protocol.queue_message(("encrypted", complete_msg))
+                    # Send completion message via queue
+                    complete_msg = {
+                        "type":        MessageType.FILE_COMPLETE,
+                        "transfer_id": transfer_id
+                    }
+                    self.protocol.queue_message(("encrypt_json", complete_msg))
                 
                 except Exception as e:
                     if self.gui:
