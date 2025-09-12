@@ -379,6 +379,7 @@ class SecureChatClient:
             print("Type your messages and press Enter to send.")
             print("Type '/quit' to exit.")
             print("Type '/verify' to re-verify keys at any time.\n")
+            print("Type '/rekey' to initiate a rekey for fresh session keys.\n")
             
         except Exception as e:
             print(f"Error confirming verification: {e}")
@@ -398,10 +399,12 @@ class SecureChatClient:
             print(f"Error handling verification message: {e}")
     
     
-    def display_regular_message(self, message: str, error=False) -> None:
+    def display_regular_message(self, message: str, error=False, prefix: str = "") -> None:
         """Display a regular chat message."""
         if error:
             print(f"\nError: {message}")
+        elif prefix != "":
+            print(f"\n{prefix}: {message}")
         else:
             print(f"\nOther user: {message}")
     
@@ -436,6 +439,41 @@ class SecureChatClient:
                             self.handle_delivery_confirmation(decrypted_text)
                     case MessageType.EPHEMERAL_MODE_CHANGE:
                         self.handle_ephemeral_mode_change(decrypted_text)
+                    case MessageType.REKEY:
+                        # Handle rekey control messages inside the encrypted channel
+                        try:
+                            inner = json.loads(decrypted_text)
+                            action = inner.get("action")
+                            if action == "init":
+                                self.display_regular_message("Rekey initiated by peer.", prefix="[SYSTEM]")
+                                response = self.protocol.process_rekey_init(inner)
+                                # Send response under old key
+                                self.protocol.queue_message(("encrypt_json", response))
+                            elif action == "response":
+                                commit = self.protocol.process_rekey_response(inner)
+                                # Send commit under old key; do not switch yet (wait for ack)
+                                self.protocol.queue_message(("encrypt_json", commit))
+                            elif action == "commit":
+                                print("Processing rekey commit...")
+                                ack = self.protocol.process_rekey_commit(inner)
+                                # Send ack under old key, then switch to new keys
+                                self.protocol.queue_message(("encrypt_json_then_switch", ack))
+                                self.display_regular_message("Rekey completed successfully.", prefix="[SYSTEM]")
+                                self.display_regular_message("You are now using fresh encryption keys.",
+                                                             prefix="[SYSTEM]")
+                            elif action == "commit_ack":
+                                # Initiator: switch to new keys upon receiving ack
+                                try:
+                                    self.protocol.activate_pending_keys()
+                                    self.display_regular_message("Rekey completed successfully.", prefix="[SYSTEM]")
+                                    self.display_regular_message("You are now using fresh encryption keys.",
+                                                                 prefix="[SYSTEM]")
+                                except Exception as _:
+                                    pass
+                            else:
+                                self.display_regular_message("Received unknown rekey action", error=True)
+                        except Exception as rekey_err:
+                            print(f"\nError handling rekey message: {rekey_err}")
                     case _:
                         # It's a regular chat message if it's not a file-related type
                         self.display_regular_message(decrypted_text)
@@ -511,6 +549,19 @@ class SecureChatClient:
             
         except Exception as e:
             print(f"Error handling emergency close: {e}")
+    
+    def initiate_rekey(self) -> None:
+        """Initiate a rekey to establish fresh session keys using the existing secure channel."""
+        if not self.key_exchange_complete:
+            self.display_regular_message("Cannot rekey - key exchange not complete", error=True)
+            return
+        try:
+            payload = self.protocol.create_rekey_init()
+            # Send REKEY init under old key
+            self.protocol.queue_message(("encrypt_json", payload))
+            self.display_regular_message("Rekey initiated.", prefix="[SYSTEM]")
+        except Exception as e:
+            self.display_regular_message(f"Failed to initiate rekey: {e}", error=True)
     
     def send_message(self, text: str) -> bool | None:
         """Encrypt and queue a chat message for sending."""
@@ -851,11 +902,14 @@ class SecureChatClient:
                         break
                     if message.lower() == '/verify':
                         self.start_key_verification()
+                    elif message.lower() == '/rekey':
+                        self.initiate_rekey()
                     elif message.lower() == '/help':
                         print("Commands:")
                         print("  /quit - Exit the chat")
                         print("  /verify - Start key verification")
                         print("  /file <path> - Send a file")
+                        print("  /rekey - Initiate a rekey for fresh session keys")
                         print("  /help - Show this help message")
                     elif message.lower().startswith('/file '):
                         file_path = message[6:].strip()

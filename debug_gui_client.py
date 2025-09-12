@@ -831,11 +831,11 @@ class DebugChatGUI(ChatGUI):
         
         try:
             # Reset all keys
-            self.client.protocol.shared_key = None
-            self.client.protocol.encryption_key = None
-            self.client.protocol.mac_key = None
-            self.client.protocol.send_chain_key = None
-            self.client.protocol.receive_chain_key = None
+            self.client.protocol.shared_key = bytes()
+            self.client.protocol.encryption_key = bytes()
+            self.client.protocol.mac_key = bytes()
+            self.client.protocol.send_chain_key = bytes()
+            self.client.protocol.receive_chain_key = bytes()
             self.client.protocol.message_counter = 0
             self.client.protocol.peer_counter = 0
             self.client.key_exchange_complete = False

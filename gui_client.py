@@ -632,7 +632,7 @@ class ChatGUI:
         """Setup output redirection to capture print statements."""
         self.output_buffer = io.StringIO()
     
-    def append_to_chat(self, text, is_message=False):
+    def append_to_chat(self, text, is_message=False, show_time=True):
         """Append text to the chat display."""
         text = str(text)
         self.chat_display.config(state=tk.NORMAL)  # type: ignore
@@ -647,11 +647,17 @@ class ChatGUI:
             # Add invisible marker for tracking using tags
             # The tag is applied to the entire line including the newline character
             start_index = self.chat_display.index("end-1c")
-            self.chat_display.insert(tk.END, f"[{formatted_time}] {text}\n")
+            if show_time:
+                self.chat_display.insert(tk.END, f"[{formatted_time}] {text}\n")
+            else:
+                self.chat_display.insert(tk.END, f"{text}\n")
             end_index = self.chat_display.index("end-1c")
             self.chat_display.tag_add(message_id, start_index, end_index)
         else:
-            self.chat_display.insert(tk.END, f"[{formatted_time}] {text}\n")
+            if show_time:
+                self.chat_display.insert(tk.END, f"[{formatted_time}] {text}\n")
+            else:
+                self.chat_display.insert(tk.END, f"{text}\n")
         
         # Play notification sound and show Windows notification if this is a message from another user
         if is_message and text.startswith("Other user:"):
@@ -943,6 +949,26 @@ class ChatGUI:
             return "break"
         if message.lower() == '/verify':
             self.show_verification_dialog()
+            self.message_entry.delete("1.0", tk.END)
+            return "break"
+        
+        if message.lower() == '/rekey':
+            if self.client.verification_complete:
+                self.append_to_chat("Generating fresh keys")
+                self.client.initiate_rekey()
+            else:
+                self.append_to_chat("Cannot rekey - verification not complete")
+            self.message_entry.delete("1.0", tk.END)
+            return "break"
+        
+        if message.lower() == '/help':
+            self.append_to_chat("Available commands:")
+            self.append_to_chat("/help - Show this help message")
+            self.append_to_chat("/verify - Show the key verification instructions")
+            self.append_to_chat("/y or /yes - Confirm key verification or accept file transfer")
+            self.append_to_chat("/n or /no - Deny key verification or reject file transfer")
+            self.append_to_chat("/rekey - Generate a new key pair and restart key exchange (requires prior verification)")
+            self.append_to_chat("/quit - Disconnect and exit the application")
             self.message_entry.delete("1.0", tk.END)
             return "break"
         
@@ -1331,7 +1357,7 @@ class ChatGUI:
                     
                     start_pos = f"{pos}+1c"
         
-        except Exception as e:
+        except:
             # Silently ignore spellcheck errors to avoid disrupting user experience
             pass
     
@@ -1614,11 +1640,14 @@ class GUISecureChatClient(SecureChatClient):
             if self.gui:
                 self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Error displaying received image: {e}"))
     
-    def display_regular_message(self, message: str, error=False) -> None:
+    def display_regular_message(self, message: str, error=False, prefix: str = "") -> None:
         """Display a regular chat message."""
         if self.gui:
             if error:
                 self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Error: {message}"))
+            elif prefix != "":
+                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"{prefix}: {message}",
+                                                                       is_message=True, show_time=False))
             else:
                 self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Other user: {message}",
                                                                        is_message=True))

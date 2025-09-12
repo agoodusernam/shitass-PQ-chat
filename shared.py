@@ -14,7 +14,7 @@ import threading
 import time
 from collections import deque
 from enum import IntEnum
-from typing import Final
+from typing import Final, Any
 from collections.abc import Generator
 
 try:
@@ -52,6 +52,7 @@ class MessageType(IntEnum):
     SERVER_VERSION_INFO = 19
     DUMMY_MESSAGE = 20
     EPHEMERAL_MODE_CHANGE = 21
+    REKEY = 22
 
 
 # File transfer constants
@@ -157,18 +158,19 @@ class SecureChatProtocol:
             ack_counters (set): Set of message counters to be acknowledged when the next message is sent.
             send_dummy_messages (bool): Whether to send dummy messages when idle.
         """
-        self.mac_key: bytes
-        self.encryption_key: bytes
-        self.shared_key: bytes | None = None
+        self.own_private_key: bytes = bytes()
+        self.mac_key: bytes = bytes()
+        self.encryption_key: bytes = bytes()
+        self.shared_key: bytes = bytes()
         self.message_counter: int = 0
         self.peer_counter: int = 0
-        self.peer_public_key: bytes | None = None
-        self.peer_key_verified = False
-        self.own_public_key: bytes | None = None
-        self.private_key: bytes | None = None
+        self.peer_public_key: bytes = bytes()
+        self.peer_key_verified: bool = False
+        self.own_public_key: bytes = bytes()
+        self.private_key: bytes = bytes()
         # Perfect Forward Secrecy - Key Ratcheting
-        self.send_chain_key: bytes | None = None
-        self.receive_chain_key: bytes | None = None
+        self.send_chain_key: bytes = bytes()
+        self.receive_chain_key: bytes = bytes()
         self.seen_counters: set[int] = set()
         
         # File transfer state
@@ -187,6 +189,17 @@ class SecureChatProtocol:
         # self.ack_counters: set[int] = set()
         
         self.send_dummy_messages: bool = True
+        
+        # Rekey state
+        self.rekey_in_progress: bool = False
+        self.pending_shared_key: bytes | None = None
+        self.pending_encryption_key: bytes | None = None
+        self.pending_mac_key: bytes | None = None
+        self.pending_send_chain_key: bytes | None = None
+        self.pending_receive_chain_key: bytes | None = None
+        self.pending_message_counter: int = 0
+        self.pending_peer_counter: int = 0
+        self.rekey_private_key: bytes | None = None
     
     def reset_key_exchange(self) -> None:
         """Reset all cryptographic state to initial values for key exchange restart."""
@@ -251,12 +264,12 @@ class SecureChatProtocol:
         
         return False
     
-    def start_sender_thread(self, socket) -> None:
+    def start_sender_thread(self, sock) -> None:
         """Start the background sender thread for message queuing."""
         if self.sender_thread is not None and self.sender_thread.is_alive():
             return  # Thread already running
         
-        self.socket = socket
+        self.socket = sock
         self.sender_running = True
         self.sender_thread = threading.Thread(target=self._sender_loop, daemon=True)
         self.sender_thread.start()
@@ -279,6 +292,7 @@ class SecureChatProtocol:
         - tuple: instruction for the sender loop, supported forms:
             ("encrypt_text", str)
             ("encrypt_json", dict)
+            ("encrypt_json_then_switch", dict)  # send encrypted under current keys, then activate pending keys
             ("file_chunk", transfer_id: str, chunk_index: int, chunk_data: bytes)
             ("plaintext", bytes)  # send as-is (control)
             ("encrypted", bytes)  # send as-is (already encrypted)
@@ -358,6 +372,7 @@ class SecureChatProtocol:
                 
                 # Resolve the queue item into bytes to send
                 to_send: bytes | None = None
+                post_action: str | None = None
                 if item is not None:
                     try:
                         # Already bytes -> send as-is
@@ -380,6 +395,11 @@ class SecureChatProtocol:
                                 obj = item[1]
                                 if isinstance(obj, dict) and self.shared_key and self.send_chain_key:
                                     to_send = self.encrypt_message(json.dumps(obj))
+                            elif kind == "encrypt_json_then_switch" and len(item) >= 2:
+                                obj = item[1]
+                                if isinstance(obj, dict) and self.shared_key and self.send_chain_key:
+                                    to_send = self.encrypt_message(json.dumps(obj))
+                                    post_action = "switch_keys"
                             elif kind == "file_chunk" and len(item) >= 4:
                                 transfer_id, chunk_index, chunk_data = item[1], item[2], item[3]
                                 if isinstance(transfer_id, str) and isinstance(chunk_index, int) and isinstance(chunk_data, (bytes, bytearray)):
@@ -397,6 +417,12 @@ class SecureChatProtocol:
                 if to_send is not None and self.socket is not None:
                     try:
                         send_message(self.socket, to_send)
+                        # Perform any post-send action (e.g., switching to pending keys after rekey commit)
+                        if post_action == "switch_keys":
+                            try:
+                                self.activate_pending_keys()
+                            except Exception as _:
+                                pass
                     except Exception:
                         # If sending fails, the connection is likely broken
                         # The main thread will handle reconnection
@@ -470,6 +496,30 @@ class SecureChatProtocol:
                 info=f"chain_key_{counter}".encode()
         )
         return hkdf.derive(chain_key)
+    
+    @staticmethod
+    def _derive_keys_and_chain(shared_secret: bytes) -> tuple[bytes, bytes, bytes]:
+        """Derive encryption key, MAC key, and root chain key from a shared secret without mutating state."""
+        # Derive encryption and MAC keys
+        hkdf_keys = HKDF(
+            algorithm=hashes.SHA3_512(),
+            length=64,
+            salt=b"ReallyCoolAndSecureSalt",
+            info=b"key_derivation"
+        )
+        derived = hkdf_keys.derive(shared_secret)
+        enc_key = derived[:32]
+        mac_key = derived[32:]
+        
+        # Derive root chain key
+        hkdf_chain = HKDF(
+            algorithm=hashes.SHA3_512(),
+            length=64,
+            salt=b"ReallyCoolAndSecureSalt",
+            info=b"chain_key_root"
+        )
+        root_chain_key = hkdf_chain.derive(shared_secret)
+        return enc_key, mac_key, root_chain_key
     
     def generate_key_fingerprint(self, public_key: bytes) -> str:
         """Generate a human-readable word-based fingerprint for a public key."""
@@ -847,7 +897,8 @@ class SecureChatProtocol:
         }
         return json.dumps(verification_request).encode('utf-8')
     
-    def handle_key_verification_message(self, message_data: bytes) -> dict:
+    @staticmethod
+    def handle_key_verification_message(message_data: bytes) -> dict[str, Any]:
         """Handle key verification message and return verification info."""
         try:
             message = json.loads(message_data.decode('utf-8'))
@@ -890,6 +941,115 @@ class SecureChatProtocol:
         }
         return json.dumps(verification_response).encode('utf-8')
     
+    # Rekey methods
+    def activate_pending_keys(self) -> None:
+        """Atomically switch active session to the pending keys (if available)."""
+        if not self.rekey_in_progress:
+            return
+        if not (self.pending_shared_key and self.pending_encryption_key and self.pending_mac_key and
+                self.pending_send_chain_key and self.pending_receive_chain_key):
+            # Incomplete pending state, do not switch
+            return
+        # Activate
+        self.shared_key = self.pending_shared_key
+        self.encryption_key = self.pending_encryption_key
+        self.mac_key = self.pending_mac_key
+        self.send_chain_key = self.pending_send_chain_key
+        self.receive_chain_key = self.pending_receive_chain_key
+        self.message_counter = 0
+        self.peer_counter = 0
+        self.seen_counters = set()
+        # Clear pending state
+        self.pending_shared_key = None
+        self.pending_encryption_key = None
+        self.pending_mac_key = None
+        self.pending_send_chain_key = None
+        self.pending_receive_chain_key = None
+        self.pending_message_counter = 0
+        self.pending_peer_counter = 0
+        self.rekey_private_key = None
+        self.rekey_in_progress = False
+    
+    def create_rekey_init(self) -> dict:
+        """Create a REKEY init payload to be sent inside an encrypted message using the old key."""
+        # Generate ephemeral KEM keypair for this rekey only
+        public_key, private_key = ML_KEM_1024.keygen()
+        self.rekey_private_key = private_key
+        self.rekey_in_progress = True
+        return {
+            "type": MessageType.REKEY,
+            "action": "init",
+            "public_key": base64.b64encode(public_key).decode('utf-8'),
+        }
+    
+    def process_rekey_init(self, message: dict) -> dict:
+        """Process a REKEY init payload; derive pending keys and return REKEY response payload.
+        This must be called on the responder, and the response must be sent under the old key.
+        """
+        if message.get("type") != MessageType.REKEY or message.get("action") != "init":
+            raise ValueError("Invalid REKEY init message")
+        peer_ephemeral_pub = base64.b64decode(message.get("public_key", ""))
+        if not peer_ephemeral_pub:
+            raise ValueError("Missing public key in REKEY init")
+        # Produce new shared secret and ciphertext for the initiator
+        shared_secret, ciphertext = ML_KEM_1024.encaps(peer_ephemeral_pub)
+        # Store pending derived keys without touching active ones
+        enc_key, mac_key, root_chain = self._derive_keys_and_chain(shared_secret)
+        self.pending_shared_key = shared_secret
+        self.pending_encryption_key = enc_key
+        self.pending_mac_key = mac_key
+        self.pending_send_chain_key = root_chain
+        self.pending_receive_chain_key = root_chain
+        self.pending_message_counter = 0
+        self.pending_peer_counter = 0
+        self.rekey_in_progress = True
+        return {
+            "type": MessageType.REKEY,
+            "action": "response",
+            "ciphertext": base64.b64encode(ciphertext).decode('utf-8'),
+        }
+    
+    def process_rekey_response(self, message: dict) -> dict:
+        """Process a REKEY response payload on the initiator; set pending keys and return commit payload."""
+        if message.get("type") != MessageType.REKEY or message.get("action") != "response":
+            raise ValueError("Invalid REKEY response message")
+        if self.rekey_private_key is None:
+            raise ValueError("No ephemeral private key for REKEY response")
+        ciphertext = base64.b64decode(message.get("ciphertext", ""))
+        if not ciphertext:
+            raise ValueError("Missing ciphertext in REKEY response")
+        shared_secret = ML_KEM_1024.decaps(self.rekey_private_key, ciphertext)
+        enc_key, mac_key, root_chain = self._derive_keys_and_chain(shared_secret)
+        self.pending_shared_key = shared_secret
+        self.pending_encryption_key = enc_key
+        self.pending_mac_key = mac_key
+        self.pending_send_chain_key = root_chain
+        self.pending_receive_chain_key = root_chain
+        self.pending_message_counter = 0
+        self.pending_peer_counter = 0
+        self.rekey_in_progress = True
+        return {
+            "type": MessageType.REKEY,
+            "action": "commit",
+        }
+    
+    def process_rekey_commit(self, message: dict) -> dict:
+        """Process a REKEY commit on the responder; return a commit_ack to be sent under old key.
+        Switching to the new keys should happen immediately after sending the ack.
+        """
+        if message.get("type") != MessageType.REKEY or message.get("action") != "commit":
+            raise ValueError("Invalid REKEY commit message")
+        if not self.rekey_in_progress:
+            # Nothing pending; ignore gracefully
+            return {
+                "type": MessageType.REKEY,
+                "action": "commit_ack",
+            }
+        return {
+            "type": MessageType.REKEY,
+            "action": "commit_ack",
+        }
+    
     # File transfer methods
     def create_file_metadata_message(self, file_path: str,
                                      compress: bool = True) -> tuple[bytes, dict[str, str | int | bool]]:
@@ -927,7 +1087,6 @@ class SecureChatProtocol:
         transfer_id = hashlib.sha3_512(f"{file_name}{file_size}{file_hash.hexdigest()}".encode()).hexdigest()[:16]
         
         metadata = {
-            "version":        PROTOCOL_VERSION,
             "type":           MessageType.FILE_METADATA,
             "transfer_id":    transfer_id,
             "filename":       file_name,
@@ -946,7 +1105,6 @@ class SecureChatProtocol:
     def create_file_accept_message(self, transfer_id: str) -> bytes:
         """Create a file acceptance message."""
         message = {
-            "version":     PROTOCOL_VERSION,
             "type":        MessageType.FILE_ACCEPT,
             "transfer_id": transfer_id
         }
@@ -955,7 +1113,6 @@ class SecureChatProtocol:
     def create_file_reject_message(self, transfer_id: str, reason: str = "User declined") -> bytes:
         """Create a file rejection message."""
         message = {
-            "version":     PROTOCOL_VERSION,
             "type":        MessageType.FILE_REJECT,
             "transfer_id": transfer_id,
             "reason":      reason
@@ -977,7 +1134,6 @@ class SecureChatProtocol:
         
         # Create compact header (no JSON, no base64 for chunk data)
         header = {
-            "version":     PROTOCOL_VERSION,
             "type":        MessageType.FILE_CHUNK,
             "transfer_id": transfer_id,
             "chunk_index": chunk_index
@@ -1010,8 +1166,8 @@ class SecureChatProtocol:
         counter_bytes = struct.pack('!I', self.message_counter)
         return counter_bytes + nonce + ciphertext
 
-    
-    def chunk_file(self, file_path: str, compress: bool = True) -> Generator[bytes, None, None]:
+    @staticmethod
+    def chunk_file(file_path: str, compress: bool = True) -> Generator[bytes, None, None]:
         """Generate file chunks for transmission one at a time.
 
         This is a streaming generator function that optionally compresses and yields chunks
@@ -1073,10 +1229,9 @@ class SecureChatProtocol:
                         break
                     
                     yield file_chunk
-            
-
     
-    def process_file_metadata(self, decrypted_data: str) -> dict:
+    @staticmethod
+    def process_file_metadata(decrypted_data: str) -> dict:
         """Process a file metadata message."""
         try:
             message = json.loads(decrypted_data)
@@ -1330,7 +1485,6 @@ class SecureChatProtocol:
 def create_error_message(error_text: str) -> bytes:
     """Create an error message"""
     message = {
-        "version": PROTOCOL_VERSION,
         "type":    MessageType.ERROR,
         "error":   error_text
     }
@@ -1340,7 +1494,6 @@ def create_error_message(error_text: str) -> bytes:
 def create_reset_message() -> bytes:
     """Create a key exchange reset message."""
     message = {
-        "version": PROTOCOL_VERSION,
         "type":    MessageType.KEY_EXCHANGE_RESET,
         "message": "Key exchange reset - other client disconnected"
     }
