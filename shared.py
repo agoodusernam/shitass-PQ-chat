@@ -26,7 +26,7 @@ except ImportError as exc:
     print("Required cryptographic libraries not found.")
     raise ImportError("Please install the required libraries with pip install -r requirements.txt") from exc
 # Protocol constants
-PROTOCOL_VERSION: Final[float] = 2.1
+PROTOCOL_VERSION: Final[float] = 2.2
 
 
 class MessageType(IntEnum):
@@ -64,6 +64,7 @@ PROTOCOL_COMPATIBILITY: Final[dict[float, list[float]]] = {
     1: [1],
     2: [2, 2.1],
     2.1: [2, 2.1],
+    2.2: [2, 2.1, 2.2],
 }
 
 
