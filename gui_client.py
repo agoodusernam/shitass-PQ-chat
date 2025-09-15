@@ -12,6 +12,8 @@ import tkinter as tk
 import uuid
 from tkinter import scrolledtext, messagebox, filedialog
 
+import tkinterdnd2
+
 try:
     import winsound
     WINSOUND_AVAILABLE = True
@@ -239,7 +241,7 @@ class FileTransferWindow:
         if self.window:
             self.window.withdraw()
     
-    def add_transfer_message(self, message):
+    def add_transfer_message(self, message: str):
         """Add a message to the transfer window."""
         self.create_window()
         
@@ -375,10 +377,10 @@ class ChatGUI:
     def setup_focus_tracking(self):
         """Setup window focus tracking for notification sounds."""
         
-        def on_focus_in(event):
+        def on_focus_in(_):
             self.window_focused = True
         
-        def on_focus_out(event):
+        def on_focus_out(_):
             self.window_focused = False
         
         # Bind focus events to the root window
@@ -386,7 +388,7 @@ class ChatGUI:
         self.root.bind("<FocusOut>", on_focus_out)
         
         # Bind Control+Q for emergency close at window level
-        self.root.bind("<Control-q>", lambda event: self.emergency_close())
+        self.root.bind("<Control-q>", self.emergency_close)
     
     def play_notification_sound(self):
         """Play a notification sound if the window is not focused."""
@@ -397,7 +399,8 @@ class ChatGUI:
             # Play a system notification sound (non-blocking)
             if os.path.exists("notification_sound.wav"):
                 threading.Thread(
-                        target=lambda: winsound.PlaySound("notification_sound.wav", winsound.SND_FILENAME),
+                        target=winsound.PlaySound,
+                        args = ("notification_sound.wav", winsound.SND_FILENAME),
                         daemon=True
                 ).start()
         except Exception:
@@ -819,11 +822,11 @@ class ChatGUI:
                         self.root.after(0, self.on_connected)
                         self.start_chat_monitoring()
                     else:
-                        self.root.after(0, lambda: self.append_to_chat("Failed to connect to server"))
-                        self.root.after(0, lambda: self.update_status("Not Connected"))
+                        self.root.after(0, self.append_to_chat, "Failed to connect to server")
+                        self.root.after(0, self.update_status, "Not Connected")
                 except Exception as er:
-                    self.root.after(0, lambda error=er: self.append_to_chat(f"Connection error: {error}"))
-                    self.root.after(0, lambda: self.update_status("Not Connected"))
+                    self.root.after(0, self.append_to_chat(f"Connection error: {er}"))
+                    self.root.after(0, self.update_status, "Not Connected")
             
             threading.Thread(target=connect_thread, daemon=True).start()
         
@@ -889,7 +892,7 @@ class ChatGUI:
                     time.sleep(0.1)
             
             except Exception as e:
-                self.root.after(0, lambda: self.append_to_chat(f"Monitor error: {e}"))
+                self.root.after(0, self.append_to_chat, f"Monitor error: {e}")
         
         threading.Thread(target=monitor_thread, daemon=True).start()
     
@@ -1479,7 +1482,7 @@ class ChatGUI:
                         
                         # Remove expired messages
                         if expired_message_ids:
-                            self.root.after(0, lambda: self.remove_ephemeral_messages(expired_message_ids))
+                            self.root.after(0, self.remove_ephemeral_messages, expired_message_ids)
                     
                     time.sleep(1.0)  # Check every second
                 except Exception:
@@ -1498,7 +1501,7 @@ class ChatGUI:
         if self.ephemeral_mode == "GLOBAL" and self.ephemeral_global_owner_id and self.ephemeral_global_owner_id != self.local_client_id:
             if selected != "GLOBAL":
                 # Revert selection and inform user
-                self.root.after(0, lambda: self.ephemeral_mode_var.set("GLOBAL"))
+                self.root.after(0, self.ephemeral_mode_var.set, "GLOBAL")
                 self.append_to_chat("Global ephemeral mode was enabled by the other user. Only they can disable it.")
                 return
         # Apply selection
@@ -1517,7 +1520,7 @@ class ChatGUI:
             # Require secure session to announce globally
             if not (self.connected and self.client and self.client.key_exchange_complete):
                 self.append_to_chat("Cannot enable global ephemeral before secure session is established.")
-                self.root.after(0, lambda: self.ephemeral_mode_var.set(self.ephemeral_mode))
+                self.root.after(0, self.ephemeral_mode_var.set, self.ephemeral_mode)
                 return
             self.ephemeral_mode = "GLOBAL"
             self.ephemeral_global_owner_id = self.local_client_id
@@ -1530,7 +1533,7 @@ class ChatGUI:
             if self.ephemeral_mode == "GLOBAL" and self.ephemeral_global_owner_id and self.ephemeral_global_owner_id != self.local_client_id:
                 # Not allowed to turn off
                 self.append_to_chat("Only the user who enabled global ephemeral mode can disable it.")
-                self.root.after(0, lambda: self.ephemeral_mode_var.set("GLOBAL"))
+                self.root.after(0, self.ephemeral_mode_var.set, "GLOBAL")
                 return
             # Turn off locally and broadcast OFF if we are the owner
             was_global_owner = (self.ephemeral_mode == "GLOBAL" and self.ephemeral_global_owner_id == self.local_client_id)
@@ -1623,7 +1626,8 @@ class GUISecureChatClient(SecureChatClient):
         # Initialize file transfer state
         self.pending_file_requests = {}
     
-    def _is_image_file(self, file_path: str) -> bool:
+    @staticmethod
+    def _is_image_file(file_path: str) -> bool:
         """Check if a file is an image based on its extension."""
         image_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.tif', '.webp', '.ico'}
         _, ext = os.path.splitext(file_path.lower())
@@ -1635,10 +1639,10 @@ class GUISecureChatClient(SecureChatClient):
             if self.gui and self._is_image_file(file_path):
                 # Load and display the image
                 image = Image.open(file_path)
-                self.gui.root.after(0, lambda: display_image(image, self.gui.root))
+                self.gui.root.after(0, display_image, image, self.gui.root)
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Error displaying received image: {e}"))
+                self.gui.root.after(0, self.gui.append_to_chat, f"Error displaying received image: {e}")
     
     def display_regular_message(self, message: str, error=False, prefix: str = "") -> None:
         """Display a regular chat message."""
@@ -1665,7 +1669,7 @@ class GUISecureChatClient(SecureChatClient):
             self.protocol.queue_message(("encrypt_json", message))
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error sending delivery confirmation: {e}"))
+                self.gui.root.after(0, self.gui.append_to_chat, f"Error sending delivery confirmation: {e}")
             else:
                 print(f"\nError sending delivery confirmation: {e}")
     
@@ -1675,15 +1679,14 @@ class GUISecureChatClient(SecureChatClient):
             confirmed_counter = json.loads(message_data).get("confirmed_counter")
             # Update the GUI to show the message was delivered
             if self.gui and confirmed_counter:
-                self.gui.root.after(0, lambda: self.gui.update_message_delivery_status(confirmed_counter))
+                self.gui.root.after(0, self.gui.update_message_delivery_status, confirmed_counter)
             else:
                 # Fallback to console output if no GUI
                 print(f"\n✓ Message {confirmed_counter} delivered")
         
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0,
-                                    lambda e=e: self.gui.append_to_chat(f"Error handling delivery confirmation: {e}"))
+                self.gui.root.after(0, self.gui.append_to_chat, f"Error handling delivery confirmation: {e}")
             else:
                 print(f"\nError handling delivery confirmation: {e}")
     
@@ -1703,22 +1706,17 @@ class GUISecureChatClient(SecureChatClient):
             def set_global():
                 self.gui.ephemeral_mode = "GLOBAL"
                 self.gui.ephemeral_global_owner_id = owner_id
-                try:
-                    self.gui.ephemeral_mode_var.set("GLOBAL")
-                except Exception:
-                    pass
-                self.gui.append_to_chat("Peer enabled GLOBAL ephemeral mode. Only the enabler can disable it.")
+                self.gui.ephemeral_mode_var.set("GLOBAL")
+                self.gui.root.after(0, self.gui.append_to_chat, "Peer enabled GLOBAL ephemeral mode. Only the "
+                                         "enabler can disable it.")
                 self.gui.update_ephemeral_ui()
 
             def set_off_from_owner():
                 # Switch OFF only when performed by the recorded owner
                 self.gui.ephemeral_mode = "OFF"
                 self.gui.ephemeral_global_owner_id = None
-                try:
-                    self.gui.ephemeral_mode_var.set("OFF")
-                except Exception:
-                    pass
-                self.gui.append_to_chat("Peer disabled GLOBAL ephemeral mode.")
+                self.gui.ephemeral_mode_var.set("OFF")
+                self.gui.root.after(0, self.gui.append_to_chat, "Peer disabled GLOBAL ephemeral mode.")
                 # Remove existing ephemeral messages locally
                 ids = list(self.gui.ephemeral_messages.keys())
                 if ids:
@@ -1732,30 +1730,27 @@ class GUISecureChatClient(SecureChatClient):
                 if self.gui.ephemeral_mode == "GLOBAL" and self.gui.ephemeral_global_owner_id == owner_id:
                     self.gui.root.after(0, set_off_from_owner)
                 else:
-                    self.gui.root.after(0, lambda: self.gui.append_to_chat(
-                        "Peer attempted to disable GLOBAL ephemeral mode but is not the owner; ignoring."))
-            elif mode == "LOCAL":
-                # Local preference is informational only
-                self.gui.root.after(0, lambda: self.gui.append_to_chat(
-                    "Peer changed local ephemeral preference (no enforcement)."))
+                    self.gui.root.after(0, self.gui.append_to_chat,
+                        "Peer attempted to disable GLOBAL ephemeral mode but is not the owner; ignoring.")
+
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error handling ephemeral mode change: {e}"))
+                self.gui.root.after(0, self.gui.append_to_chat, f"Error handling ephemeral mode change: {e}")
 
     def handle_emergency_close(self) -> None:
         """Handle emergency close message from the other client - override to display in GUI."""
         try:
             if self.gui:
                 # Display emergency close message in GUI
-                self.gui.root.after(0, lambda: self.gui.append_to_chat("🚨 EMERGENCY CLOSE RECEIVED"))
-                self.gui.root.after(0, lambda: self.gui.append_to_chat("The other client has activated emergency close."))
-                self.gui.root.after(0, lambda: self.gui.append_to_chat("Connection will be terminated immediately."))
+                self.gui.root.after(0, self.gui.append_to_chat, "🚨 EMERGENCY CLOSE RECEIVED")
+                self.gui.root.after(0, self.gui.append_to_chat, "The other client has activated emergency close.")
+                self.gui.root.after(0, self.gui.append_to_chat, "Connection will be terminated immediately.")
                 
                 # Show popup notification
-                self.gui.root.after(0, lambda: messagebox.showwarning(
+                self.gui.root.after(0, messagebox.showwarning,
                     "Emergency Close Activated",
                     "The other client has activated emergency close.\nThe connection will be terminated immediately."
-                ))
+                )
                 
                 # Use the GUI's emergency close function to properly close everything
                 self.gui.emergency_close()
@@ -1772,12 +1767,12 @@ class GUISecureChatClient(SecureChatClient):
         
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error handling emergency close: {e}"))
+                self.gui.root.after(0, self.gui.append_to_chat, f"Error handling emergency close: {e}")
                 # Still try to show a popup even if there was an error
-                self.gui.root.after(0, lambda: messagebox.showerror(
+                self.gui.root.after(0, messagebox.showerror,
                     "Emergency Close Error",
                     f"Error handling emergency close: {e}\nThe connection will be terminated."
-                ))
+                )
                 # Force disconnect
                 self.gui.emergency_close()
             else:
@@ -1791,7 +1786,7 @@ class GUISecureChatClient(SecureChatClient):
             
             # Display version warning in GUI if present
             if version_warning and self.gui:
-                self.gui.root.after(0, lambda warning=version_warning: self.gui.append_to_chat(f"⚠️ {warning}"))
+                self.gui.root.after(0, self.gui.append_to_chat, f"⚠️ {version_warning}")
             elif version_warning:
                 print(f"\n{version_warning}")
             
@@ -1802,7 +1797,7 @@ class GUISecureChatClient(SecureChatClient):
         
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Key exchange init error: {e}"))
+                self.gui.root.after(0, self.gui.append_to_chat, f"Key exchange init error: {e}")
             else:
                 print(f"Key exchange init error: {e}")
     
@@ -1811,7 +1806,7 @@ class GUISecureChatClient(SecureChatClient):
         try:
             if self.private_key is not None:
                 if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.update_status("Processing key exchange"))
+                    self.gui.root.after(0, self.gui.update_status, "Processing key exchange")
                 else:
                     print("Key exchange completed successfully.")
                 
@@ -1819,22 +1814,22 @@ class GUISecureChatClient(SecureChatClient):
                 
                 # Display version warning in GUI if present
                 if version_warning and self.gui:
-                    self.gui.root.after(0, lambda warning=version_warning: self.gui.append_to_chat(f"⚠️ {warning}"))
+                    self.gui.root.after(0, self.gui.append_to_chat, f"⚠️ {version_warning}")
                 elif version_warning:
                     print(f"\n{version_warning}")
                 
                 if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.update_status("Key exchange completed"))
+                    self.gui.root.after(0, self.gui.update_status, "Key exchange completed")
             else:
                 if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.append_to_chat(
-                        "Received key exchange response but no private key found"))
+                    self.gui.root.after(0, self.gui.append_to_chat,
+                        "Received key exchange response but no private key found")
                 else:
                     print("Received key exchange response but no private key found")
         
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Key exchange response error: {e}"))
+                self.gui.root.after(0, self.gui.append_to_chat, f"Key exchange response error: {e}")
             else:
                 print(f"Key exchange response error: {e}")
     
@@ -1847,7 +1842,7 @@ class GUISecureChatClient(SecureChatClient):
     def initiate_key_exchange(self):
         """Initiate key exchange as the first client - override to add GUI status update."""
         if self.gui:
-            self.gui.root.after(0, lambda: self.gui.update_status("Processing key exchange"))
+            self.gui.root.after(0, self.gui.update_status, "Processing key exchange")
         super().initiate_key_exchange()
         
     
@@ -1872,19 +1867,19 @@ class GUISecureChatClient(SecureChatClient):
             
             # Update GUI
             if self.gui:
-                self.gui.root.after(0, lambda: self.gui.update_status("Key exchange reset - waiting for new client"))
-                self.gui.root.after(0, lambda: self.gui.append_to_chat("⚠️ KEY EXCHANGE RESET"))
-                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Reason: {reset_message}"))
-                self.gui.root.after(0, lambda: self.gui.append_to_chat("The secure session has been terminated."))
-                self.gui.root.after(0, lambda: self.gui.append_to_chat("Waiting for a new client to connect..."))
-                self.gui.root.after(0, lambda: self.gui.append_to_chat("A new key exchange will start automatically."))
+                self.gui.root.after(0, self.gui.update_status, "Key exchange reset - waiting for new client")
+                self.gui.root.after(0, self.gui.append_to_chat, "⚠️ KEY EXCHANGE RESET")
+                self.gui.root.after(0, self.gui.append_to_chat, f"Reason: {reset_message}")
+                self.gui.root.after(0, self.gui.append_to_chat, "The secure session has been terminated.")
+                self.gui.root.after(0, self.gui.append_to_chat, "Waiting for a new client to connect...")
+                self.gui.root.after(0, self.gui.append_to_chat, "A new key exchange will start automatically.")
             else:
                 # Fallback to console behavior
                 super().handle_key_exchange_reset(message_data)
         
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error handling key exchange reset: {e}"))
+                self.gui.root.after(0, self.gui.append_to_chat, f"Error handling key exchange reset: {e}")
             else:
                 print(f"Error handling key exchange reset: {e}")
     
@@ -1925,7 +1920,7 @@ class GUISecureChatClient(SecureChatClient):
         
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error handling file metadata: {e}"))
+                self.gui.root.after(0, self.gui.append_to_chat, f"Error handling file metadata: {e}")
             else:
                 print(f"Error handling file metadata: {e}")
     
@@ -1937,16 +1932,16 @@ class GUISecureChatClient(SecureChatClient):
             
             if transfer_id not in self.pending_file_transfers:
                 if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
-                        "Received acceptance for unknown file transfer"))
+                    self.gui.root.after(0, self.gui.file_transfer_window.add_transfer_message,
+                        "Received acceptance for unknown file transfer")
                 return
             
             transfer_info = self.pending_file_transfers[transfer_id]
             filename = transfer_info["metadata"]["filename"]
             
             if self.gui:
-                self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
-                    f"File transfer accepted. Sending {filename}..."))
+                self.gui.root.after(0, self.gui.file_transfer_window.add_transfer_message,
+                    f"File transfer accepted. Sending {filename}...")
             
             # Start sending file chunks in a separate thread to avoid blocking message processing
             chunk_thread = threading.Thread(
@@ -1958,7 +1953,7 @@ class GUISecureChatClient(SecureChatClient):
         
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.append_to_chat(f"Error handling file acceptance: {e}"))
+                self.gui.root.after(0, self.gui.append_to_chat, f"Error handling file acceptance: {e}")
             else:
                 print(f"Error handling file acceptance: {e}")
     
@@ -1972,13 +1967,13 @@ class GUISecureChatClient(SecureChatClient):
             if transfer_id in self.pending_file_transfers:
                 filename = self.pending_file_transfers[transfer_id]["metadata"]["filename"]
                 if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
-                        f"File transfer rejected: {filename} - {reason}"))
+                    self.gui.root.after(0, self.gui.file_transfer_window.add_transfer_message,
+                        f"File transfer rejected: {filename} - {reason}")
                 del self.pending_file_transfers[transfer_id]
         
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda err=e: self.gui.append_to_chat(f"Error handling file rejection: {err}"))
+                self.gui.root.after(0, self.gui.append_to_chat, f"Error handling file rejection: {e}")
             else:
                 print(f"Error handling file rejection: {e}")
     
@@ -1990,8 +1985,8 @@ class GUISecureChatClient(SecureChatClient):
             
             if transfer_id not in self.active_file_metadata:
                 if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
-                        "Received chunk for unknown file transfer"))
+                    self.gui.root.after(0,  self.gui.file_transfer_window.add_transfer_message,
+                        "Received chunk for unknown file transfer")
                 return
             
             metadata = self.active_file_metadata[transfer_id]
@@ -2019,20 +2014,20 @@ class GUISecureChatClient(SecureChatClient):
                 
                 # Update GUI with transfer progress every 10 chunks or for small transfers
                 if received_chunks % 10 == 0 or received_chunks == 1 or metadata["total_chunks"] <= 10:
-                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.update_transfer_progress(
+                    self.gui.root.after(0, self.gui.file_transfer_window.update_transfer_progress,
                             transfer_id, metadata['filename'], received_chunks, metadata['total_chunks'],
                             bytes_transferred
-                    ))
+                    )
             
             if is_complete:
                 # Final progress update to ensure 100% is shown
                 if self.gui:
                     # Use processed_size for final progress to match the transfer type
                     final_bytes_transferred = metadata.get("processed_size", metadata["file_size"])
-                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.update_transfer_progress(
+                    self.gui.root.after(0, self.gui.file_transfer_window.update_transfer_progress,
                         transfer_id, metadata['filename'], metadata['total_chunks'], metadata['total_chunks'],
                         final_bytes_transferred
-                    ))
+                    )
                 
                 # Reassemble file
                 # Use user-selected save path if provided; otherwise default to CWD with conflict handling
@@ -2054,8 +2049,8 @@ class GUISecureChatClient(SecureChatClient):
                     
                     if self.gui:
                         compression_text = "compressed" if compressed else "uncompressed"
-                        self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
-                            f"File received successfully ({compression_text}): {output_path}"))
+                        self.gui.root.after(0, self.gui.file_transfer_window.add_transfer_message,
+                            f"File received successfully ({compression_text}): {output_path}")
                         # Clear speed when transfer completes
                         self.gui.file_transfer_window.clear_speed()
                     
@@ -2071,16 +2066,16 @@ class GUISecureChatClient(SecureChatClient):
                 
                 except Exception as e:
                     if self.gui:
-                        self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
-                            f"File reassembly failed: {e}"))
+                        self.gui.root.after(0, self.gui.file_transfer_window.add_transfer_message,
+                            f"File reassembly failed: {e}")
                 
                 # Clean up
                 del self.active_file_metadata[transfer_id]
         
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.file_transfer_window.add_transfer_message(
-                    f"Error handling binary file chunk: {e}"))
+                self.gui.root.after(0, self.gui.file_transfer_window.add_transfer_message,
+                    f"Error handling binary file chunk: {e}")
             else:
                 print(f"Error handling binary file chunk: {e}")
     
@@ -2093,16 +2088,16 @@ class GUISecureChatClient(SecureChatClient):
             if transfer_id in self.pending_file_transfers:
                 filename = self.pending_file_transfers[transfer_id]["metadata"]["filename"]
                 if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.file_transfer_window.add_transfer_message(
-                        f"File transfer completed: {filename}"))
+                    self.gui.root.after(0, self.gui.file_transfer_window.add_transfer_message,
+                        f"File transfer completed: {filename}")
                     # Clear speed when transfer completes
                     self.gui.file_transfer_window.clear_speed()
                 del self.pending_file_transfers[transfer_id]
         
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.file_transfer_window.add_transfer_message(
-                    f"Error handling file completion: {e}"))
+                self.gui.root.after(0, self.gui.file_transfer_window.add_transfer_message,
+                    f"Error handling file completion: {e}")
             else:
                 print(f"Error handling file completion: {e}")
     
@@ -2132,43 +2127,39 @@ class GUISecureChatClient(SecureChatClient):
                         filename = os.path.basename(file_path)
                         current_chunk = i + 1
                         compression_text = "compressed" if compress else "uncompressed"
-                        self.gui.root.after(0, lambda curr=current_chunk, total=total_chunks, bytes_sent=bytes_transferred,
-                                                      fname=filename, comp_text=compression_text:
-                        self.gui.file_transfer_window.update_transfer_progress(transfer_id, fname, curr, total,
-                                                                               bytes_sent, comp_text)
-                                            )
+                        self.gui.root.after(0, self.gui.file_transfer_window.update_transfer_progress, transfer_id,
+                                            filename, current_chunk, total_chunks, bytes_transferred, compression_text)
             
             # Final update to ensure 100% progress is shown
             if self.gui:
                 filename = os.path.basename(file_path)
                 compression_text = "compressed" if compress else "uncompressed"
-                self.gui.root.after(0, lambda curr=total_chunks, total=total_chunks, bytes_sent=bytes_transferred,
-                                              fname=filename, comp_text=compression_text:
-                self.gui.file_transfer_window.update_transfer_progress(transfer_id, fname, curr, total, bytes_sent, comp_text)
-                                    )
-                self.gui.root.after(0, lambda comp_text=compression_text: self.gui.file_transfer_window.add_transfer_message(
-                    f"File chunks sent successfully ({comp_text})."))
+                self.gui.root.after(0,
+                self.gui.file_transfer_window.update_transfer_progress, transfer_id, filename, total_chunks,
+                                    total_chunks, bytes_transferred, compression_text)
+                self.gui.root.after(0, self.gui.file_transfer_window.add_transfer_message,
+                    f"File chunks sent successfully ({compression_text}).")
                 # Clear speed when transfer completes
                 self.gui.file_transfer_window.clear_speed()
         
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda e=e: self.gui.file_transfer_window.add_transfer_message(
-                    f"Error sending file chunks: {e}"))
+                self.gui.root.after(0, self.gui.file_transfer_window.add_transfer_message,
+                    f"Error sending file chunks: {e}")
             else:
                 print(f"Error sending file chunks: {e}")
     
     def handle_server_full(self) -> None:
         """Handle server full notification - override to display in GUI."""
         if self.gui:
-            self.gui.root.after(0, lambda: self.gui.append_to_chat("Server is full. Please try again later."))
+            self.gui.root.after(0, self.gui.append_to_chat, "Server is full. Please try again later.")
         else:
             print("Server is full. Please try again later.")
         
         self.disconnect()
 
 
-def load_theme_colors():
+def load_theme_colors() -> dict[str, str]:
     """
     Load theme colors from theme.json file.
     If the file doesn't exist, ask the user if they want to create it with default colors.
@@ -2260,17 +2251,17 @@ def load_theme_colors():
 def main():
     """Main function to run the GUI chat client."""
     if TKINTERDND2_AVAILABLE:
-        root = TkinterDnD.Tk()
+        root: tk.Tk | tkinterdnd2.Tk = TkinterDnD.Tk()
         root.title("Secure Chat Client")
     else:
         root = tk.Tk()
         root.title("Secure Chat Client, no DnD support")
     
     # Load theme colors
-    theme_colors = load_theme_colors()
+    theme_colors: dict[str, str] = load_theme_colors()
     
     # Create GUI
-    gui = ChatGUI(root, theme_colors)
+    gui: ChatGUI = ChatGUI(root, theme_colors)
     
     # Override the client creation to use our GUI-aware version
     def gui_connect():
@@ -2289,11 +2280,11 @@ def main():
                     if gui.client.connect():
                         gui.connected = True
                         gui.root.after(0, gui.on_connected)
-                        gui.start_chat_monitoring()
+                        gui.root.after(0, gui.start_chat_monitoring)
                     else:
-                        gui.root.after(0, lambda: gui.append_to_chat("Failed to connect to server"))
-                except Exception as er:
-                    gui.root.after(0, lambda error=er: gui.append_to_chat(f"Connection error: {error}"))
+                        gui.root.after(0, gui.append_to_chat, "Failed to connect to server")
+                except Exception as err:
+                    gui.root.after(0, gui.append_to_chat, f"Connection error: {err}")
             
             threading.Thread(target=connect_thread, daemon=True).start()
         
