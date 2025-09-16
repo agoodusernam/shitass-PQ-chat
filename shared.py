@@ -207,14 +207,14 @@ class SecureChatProtocol:
         # Stop sender thread if running
         self.stop_sender_thread()
         
-        self.shared_key = None
+        self.shared_key = bytes()
         self.message_counter = 0
         self.peer_counter = 0
-        self.peer_public_key = None
+        self.peer_public_key = bytes()
         self.peer_key_verified = False
-        self.own_public_key = None
-        self.send_chain_key = None
-        self.receive_chain_key = None
+        self.own_public_key = bytes()
+        self.send_chain_key = bytes()
+        self.receive_chain_key = bytes()
         self.seen_counters = set()
         # Clear file transfer state as well
         self.file_transfers = {}

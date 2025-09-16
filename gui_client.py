@@ -1,6 +1,5 @@
 # pylint: disable=trailing-whitespace
 # pylint: disable=line-too-long
-import io
 import json
 import os
 import re
@@ -11,6 +10,7 @@ import time
 import tkinter as tk
 import uuid
 from tkinter import scrolledtext, messagebox, filedialog
+from typing import Callable, Any
 
 import tkinterdnd2
 
@@ -365,14 +365,15 @@ class ChatGUI:
         # Create GUI elements
         self.create_widgets()
         
-        # Redirect stdout to capture print statements
-        self.setup_output_redirection()
-        
         # Setup window focus tracking
         self.setup_focus_tracking()
         
         # Handle window closing
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+    
+    def on_tkinter_thread(self, func: Callable[..., Any], *args, **kwargs) -> None:
+        """Run a function on the Tkinter main thread."""
+        self.root.after(0, lambda: func(*args, **kwargs))
     
     def setup_focus_tracking(self):
         """Setup window focus tracking for notification sounds."""
@@ -631,11 +632,11 @@ class ChatGUI:
         except Exception as e:
             self.append_to_chat(f"File send error: {e}")
     
-    def setup_output_redirection(self):
-        """Setup output redirection to capture print statements."""
-        self.output_buffer = io.StringIO()
-    
     def append_to_chat(self, text, is_message=False, show_time=True):
+        """Append text to the chat display."""
+        self.on_tkinter_thread(self._append_to_chat, text, is_message, show_time)
+    
+    def _append_to_chat(self, text, is_message=False, show_time=True):
         """Append text to the chat display."""
         text = str(text)
         self.chat_display.config(state=tk.NORMAL)  # type: ignore
@@ -747,6 +748,9 @@ class ChatGUI:
             self.chat_display.config(state=tk.DISABLED)  # type: ignore
     
     def update_status(self, status_text, color=None):
+        self.on_tkinter_thread(self._update_status, status_text, color)
+    
+    def _update_status(self, status_text, color=None):
         """Update the status indicator with new text and color.
         
         If color is provided, it will be used directly.
@@ -819,14 +823,13 @@ class ChatGUI:
                 try:
                     if self.client.connect():
                         self.connected = True
-                        self.root.after(0, self.on_connected)
-                        self.start_chat_monitoring()
+                        self.on_tkinter_thread(self.on_connected)
                     else:
-                        self.root.after(0, self.append_to_chat, "Failed to connect to server")
-                        self.root.after(0, self.update_status, "Not Connected")
+                        self.append_to_chat("Failed to connect to server")
+                        self.update_status("Not Connected")
                 except Exception as er:
-                    self.root.after(0, self.append_to_chat(f"Connection error: {er}"))
-                    self.root.after(0, self.update_status, "Not Connected")
+                    self.append_to_chat(f"Connection error: {er}")
+                    self.update_status("Not Connected")
             
             threading.Thread(target=connect_thread, daemon=True).start()
         
@@ -853,6 +856,7 @@ class ChatGUI:
         self.file_transfer_btn.config(state=tk.NORMAL)  # type: ignore
         self.message_entry.focus()
         self.update_status("Connected, waiting for other client")
+        self.start_chat_monitoring()
     
     def disconnect_from_server(self):
         """Disconnect from the server."""
@@ -887,17 +891,20 @@ class ChatGUI:
                         self.client.verification_started = True
                         
                         # Show verification dialogue
-                        self.root.after(0, self.show_verification_dialog)
+                        self.on_tkinter_thread(self.show_verification_dialog)
                     
                     time.sleep(0.1)
             
             except Exception as e:
-                self.root.after(0, self.append_to_chat, f"Monitor error: {e}")
+                self.append_to_chat(f"Monitor error: {e}")
         
         threading.Thread(target=monitor_thread, daemon=True).start()
     
     def show_verification_dialog(self):
-        """Show the key verification dialogue using non-intrusive notification."""
+        """
+        Show the key verification dialogue using non-intrusive notification.
+        Must be run from the main Tkinter thread.
+        """
         if not self.client:
             return
         
@@ -927,10 +934,13 @@ class ChatGUI:
             self.client.verification_pending = True
         
         except Exception as e:
-            self.append_to_chat(f"Verification error: {e}")
+            self._append_to_chat(f"Verification error: {e}")
     
     def send_message(self, event=None):
-        """Send a message."""
+        """
+        Send a message.
+        Must be run from the main Tkinter thread.
+        """
         # Prevent the default newline insertion on Return key press
         if event and event.keysym == "Return":
             # Allow Shift+Return to insert a newline for multi-line messages in the future
@@ -1251,11 +1261,14 @@ class ChatGUI:
             return None  # Allow default paste behavior
         
         except Exception as e:
-            self.append_to_chat(f"Error handling paste: {e}")
+            self._append_to_chat(f"Error handling paste: {e}")
             return "break"  # Prevent default paste behavior on error
     
     def handle_clipboard_image(self, image):
-        """Handle pasted clipboard image by saving to temp file and sending."""
+        """
+        Handle pasted clipboard image by saving to temp file and sending.
+        Must be run from the main Tkinter thread.
+        """
         try:
             
             # Create a temporary file with a unique name
@@ -1276,7 +1289,7 @@ class ChatGUI:
             )
             
             if result:
-                self.append_to_chat(f"Sending clipboard image: {temp_filename}")
+                self._append_to_chat(f"Sending clipboard image: {temp_filename}")
                 self.client.send_file(temp_path)
                 
                 # Schedule cleanup of temp file after a delay (to allow file transfer to complete)
@@ -1298,7 +1311,7 @@ class ChatGUI:
                     pass  # Ignore cleanup errors
         
         except Exception as e:
-            self.append_to_chat(f"Error handling clipboard image: {e}")
+            self._append_to_chat(f"Error handling clipboard image: {e}")
     
     def on_text_change(self, event=None):
         """Handle text changes in message entry for spellcheck."""
@@ -1442,7 +1455,7 @@ class ChatGUI:
         except Exception:
             pass
     
-    def emergency_close(self):
+    def emergency_close(self, *args):
         """Handle emergency close (Control+Q) - send emergency message and close immediately."""
         try:
             if self.connected and self.client:
@@ -1455,6 +1468,7 @@ class ChatGUI:
             # Close the application immediately
             self.root.quit()
             self.root.destroy()
+            sys.exit(1)
         except Exception as e:
             # Even if there's an error, still close the application
             print(f"Error during emergency close: {e}")
@@ -1482,7 +1496,7 @@ class ChatGUI:
                         
                         # Remove expired messages
                         if expired_message_ids:
-                            self.root.after(0, self.remove_ephemeral_messages, expired_message_ids)
+                            self.on_tkinter_thread(self.remove_ephemeral_messages, expired_message_ids)
                     
                     time.sleep(1.0)  # Check every second
                 except Exception:
@@ -1642,19 +1656,17 @@ class GUISecureChatClient(SecureChatClient):
                 self.gui.root.after(0, display_image, image, self.gui.root)
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, self.gui.append_to_chat, f"Error displaying received image: {e}")
+                self.gui.append_to_chat(f"Error displaying received image: {e}")
     
     def display_regular_message(self, message: str, error=False, prefix: str = "") -> None:
         """Display a regular chat message."""
         if self.gui:
             if error:
-                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Error: {message}"))
+                self.gui.append_to_chat(f"Error: {message}")
             elif prefix != "":
-                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"{prefix}: {message}",
-                                                                       is_message=True, show_time=False))
+                self.gui.append_to_chat(f"{prefix}: {message}", is_message=True, show_time=False)
             else:
-                self.gui.root.after(0, lambda: self.gui.append_to_chat(f"Other user: {message}",
-                                                                       is_message=True))
+                self.gui.append_to_chat(f"Other user: {message}", is_message=True)
         else:
             super().display_regular_message(message, error)
     
@@ -1669,7 +1681,7 @@ class GUISecureChatClient(SecureChatClient):
             self.protocol.queue_message(("encrypt_json", message))
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, self.gui.append_to_chat, f"Error sending delivery confirmation: {e}")
+                self.gui.append_to_chat(f"Error sending delivery confirmation: {e}")
             else:
                 print(f"\nError sending delivery confirmation: {e}")
     
@@ -1686,7 +1698,7 @@ class GUISecureChatClient(SecureChatClient):
         
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, self.gui.append_to_chat, f"Error handling delivery confirmation: {e}")
+                self.gui.append_to_chat(f"Error handling delivery confirmation: {e}")
             else:
                 print(f"\nError handling delivery confirmation: {e}")
     
@@ -1707,8 +1719,7 @@ class GUISecureChatClient(SecureChatClient):
                 self.gui.ephemeral_mode = "GLOBAL"
                 self.gui.ephemeral_global_owner_id = owner_id
                 self.gui.ephemeral_mode_var.set("GLOBAL")
-                self.gui.root.after(0, self.gui.append_to_chat, "Peer enabled GLOBAL ephemeral mode. Only the "
-                                         "enabler can disable it.")
+                self.gui.append_to_chat("Peer enabled GLOBAL ephemeral mode. Only the enabler can disable it.")
                 self.gui.update_ephemeral_ui()
 
             def set_off_from_owner():
@@ -1716,7 +1727,7 @@ class GUISecureChatClient(SecureChatClient):
                 self.gui.ephemeral_mode = "OFF"
                 self.gui.ephemeral_global_owner_id = None
                 self.gui.ephemeral_mode_var.set("OFF")
-                self.gui.root.after(0, self.gui.append_to_chat, "Peer disabled GLOBAL ephemeral mode.")
+                self.gui.append_to_chat("Peer disabled GLOBAL ephemeral mode.")
                 # Remove existing ephemeral messages locally
                 ids = list(self.gui.ephemeral_messages.keys())
                 if ids:
@@ -1730,21 +1741,20 @@ class GUISecureChatClient(SecureChatClient):
                 if self.gui.ephemeral_mode == "GLOBAL" and self.gui.ephemeral_global_owner_id == owner_id:
                     self.gui.root.after(0, set_off_from_owner)
                 else:
-                    self.gui.root.after(0, self.gui.append_to_chat,
-                        "Peer attempted to disable GLOBAL ephemeral mode but is not the owner; ignoring.")
+                    self.gui.append_to_chat("Peer attempted to disable GLOBAL ephemeral mode but is not the owner; ignoring.")
 
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, self.gui.append_to_chat, f"Error handling ephemeral mode change: {e}")
+                self.gui.append_to_chat(f"Error handling ephemeral mode change: {e}")
 
     def handle_emergency_close(self) -> None:
         """Handle emergency close message from the other client - override to display in GUI."""
         try:
             if self.gui:
                 # Display emergency close message in GUI
-                self.gui.root.after(0, self.gui.append_to_chat, "🚨 EMERGENCY CLOSE RECEIVED")
-                self.gui.root.after(0, self.gui.append_to_chat, "The other client has activated emergency close.")
-                self.gui.root.after(0, self.gui.append_to_chat, "Connection will be terminated immediately.")
+                self.gui.append_to_chat("🚨 EMERGENCY CLOSE RECEIVED")
+                self.gui.append_to_chat("The other client has activated emergency close.")
+                self.gui.append_to_chat("Connection will be terminated immediately.")
                 
                 # Show popup notification
                 self.gui.root.after(0, messagebox.showwarning,
@@ -1767,7 +1777,7 @@ class GUISecureChatClient(SecureChatClient):
         
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, self.gui.append_to_chat, f"Error handling emergency close: {e}")
+                self.gui.append_to_chat(f"Error handling emergency close: {e}")
                 # Still try to show a popup even if there was an error
                 self.gui.root.after(0, messagebox.showerror,
                     "Emergency Close Error",
@@ -1786,7 +1796,7 @@ class GUISecureChatClient(SecureChatClient):
             
             # Display version warning in GUI if present
             if version_warning and self.gui:
-                self.gui.root.after(0, self.gui.append_to_chat, f"⚠️ {version_warning}")
+                self.gui.append_to_chat(f"⚠️ {version_warning}")
             elif version_warning:
                 print(f"\n{version_warning}")
             
@@ -1797,7 +1807,7 @@ class GUISecureChatClient(SecureChatClient):
         
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, self.gui.append_to_chat, f"Key exchange init error: {e}")
+                self.gui.append_to_chat(f"Key exchange init error: {e}")
             else:
                 print(f"Key exchange init error: {e}")
     
@@ -1806,7 +1816,7 @@ class GUISecureChatClient(SecureChatClient):
         try:
             if self.private_key is not None:
                 if self.gui:
-                    self.gui.root.after(0, self.gui.update_status, "Processing key exchange")
+                    self.gui.update_status("Processing key exchange")
                 else:
                     print("Key exchange completed successfully.")
                 
@@ -1814,22 +1824,21 @@ class GUISecureChatClient(SecureChatClient):
                 
                 # Display version warning in GUI if present
                 if version_warning and self.gui:
-                    self.gui.root.after(0, self.gui.append_to_chat, f"⚠️ {version_warning}")
+                    self.gui.append_to_chat(f"⚠️ {version_warning}")
                 elif version_warning:
                     print(f"\n{version_warning}")
                 
                 if self.gui:
-                    self.gui.root.after(0, self.gui.update_status, "Key exchange completed")
+                    self.gui.update_status("Key exchange completed")
             else:
                 if self.gui:
-                    self.gui.root.after(0, self.gui.append_to_chat,
-                        "Received key exchange response but no private key found")
+                    self.gui.append_to_chat("Received key exchange response but no private key found")
                 else:
                     print("Received key exchange response but no private key found")
         
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, self.gui.append_to_chat, f"Key exchange response error: {e}")
+                self.gui.append_to_chat(f"Key exchange response error: {e}")
             else:
                 print(f"Key exchange response error: {e}")
     
@@ -1842,7 +1851,7 @@ class GUISecureChatClient(SecureChatClient):
     def initiate_key_exchange(self):
         """Initiate key exchange as the first client - override to add GUI status update."""
         if self.gui:
-            self.gui.root.after(0, self.gui.update_status, "Processing key exchange")
+            self.gui.update_status("Processing key exchange")
         super().initiate_key_exchange()
         
     
@@ -1867,19 +1876,19 @@ class GUISecureChatClient(SecureChatClient):
             
             # Update GUI
             if self.gui:
-                self.gui.root.after(0, self.gui.update_status, "Key exchange reset - waiting for new client")
-                self.gui.root.after(0, self.gui.append_to_chat, "⚠️ KEY EXCHANGE RESET")
-                self.gui.root.after(0, self.gui.append_to_chat, f"Reason: {reset_message}")
-                self.gui.root.after(0, self.gui.append_to_chat, "The secure session has been terminated.")
-                self.gui.root.after(0, self.gui.append_to_chat, "Waiting for a new client to connect...")
-                self.gui.root.after(0, self.gui.append_to_chat, "A new key exchange will start automatically.")
+                self.gui.update_status("Key exchange reset - waiting for new client")
+                self.gui.append_to_chat("⚠️ KEY EXCHANGE RESET")
+                self.gui.append_to_chat(f"Reason: {reset_message}")
+                self.gui.append_to_chat("The secure session has been terminated.")
+                self.gui.append_to_chat("Waiting for a new client to connect...")
+                self.gui.append_to_chat("A new key exchange will start automatically.")
             else:
                 # Fallback to console behavior
                 super().handle_key_exchange_reset(message_data)
         
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, self.gui.append_to_chat, f"Error handling key exchange reset: {e}")
+                self.gui.append_to_chat(f"Error handling key exchange reset: {e}")
             else:
                 print(f"Error handling key exchange reset: {e}")
     
@@ -1920,7 +1929,7 @@ class GUISecureChatClient(SecureChatClient):
         
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, self.gui.append_to_chat, f"Error handling file metadata: {e}")
+                self.gui.append_to_chat(f"Error handling file metadata: {e}")
             else:
                 print(f"Error handling file metadata: {e}")
     
@@ -1953,7 +1962,7 @@ class GUISecureChatClient(SecureChatClient):
         
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, self.gui.append_to_chat, f"Error handling file acceptance: {e}")
+                self.gui.append_to_chat(f"Error handling file acceptance: {e}")
             else:
                 print(f"Error handling file acceptance: {e}")
     
@@ -1973,7 +1982,7 @@ class GUISecureChatClient(SecureChatClient):
         
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, self.gui.append_to_chat, f"Error handling file rejection: {e}")
+                self.gui.append_to_chat(f"Error handling file rejection: {e}")
             else:
                 print(f"Error handling file rejection: {e}")
     
@@ -2152,7 +2161,7 @@ class GUISecureChatClient(SecureChatClient):
     def handle_server_full(self) -> None:
         """Handle server full notification - override to display in GUI."""
         if self.gui:
-            self.gui.root.after(0, self.gui.append_to_chat, "Server is full. Please try again later.")
+            self.gui.append_to_chat("Server is full. Please try again later.")
         else:
             print("Server is full. Please try again later.")
         
@@ -2279,12 +2288,11 @@ def main():
                 try:
                     if gui.client.connect():
                         gui.connected = True
-                        gui.root.after(0, gui.on_connected)
-                        gui.root.after(0, gui.start_chat_monitoring)
+                        gui.on_tkinter_thread(gui.on_connected)
                     else:
-                        gui.root.after(0, gui.append_to_chat, "Failed to connect to server")
+                        gui.append_to_chat("Failed to connect to server")
                 except Exception as err:
-                    gui.root.after(0, gui.append_to_chat, f"Connection error: {err}")
+                    gui.append_to_chat(f"Connection error: {err}")
             
             threading.Thread(target=connect_thread, daemon=True).start()
         
@@ -2292,6 +2300,7 @@ def main():
             messagebox.showerror("Error", "Invalid port number")
         except Exception as e:
             gui.append_to_chat(f"Connection error: {e}")
+
     
     gui.connect_to_server = gui_connect
     

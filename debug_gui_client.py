@@ -1,15 +1,15 @@
 """
 Debug GUI Client - Extends the base GUI client with debugging functionality.
 """
+import hashlib
 import json
 import random
+import threading
+import time
 import tkinter as tk
 from tkinter import scrolledtext, messagebox, filedialog
 
 from tkinterdnd2 import TkinterDnD, DND_FILES
-import time
-import threading
-import hashlib
 
 # Import base classes
 from gui_client import ChatGUI, GUISecureChatClient, FileTransferWindow
@@ -33,6 +33,7 @@ class DebugChatGUI(ChatGUI):
         
         # Call parent constructor
         super().__init__(root)
+        self.client: DebugGUISecureChatClient | None = None
         self.root.geometry("1400x700")
         
         # Add debug-specific UI elements
@@ -188,14 +189,16 @@ class DebugChatGUI(ChatGUI):
         self.message_entry.bind("<KeyPress>", self.on_key_press)
         self.message_entry.bind("<Control-v>", self.on_paste)
         
-        # Ephemeral mode button
-        self.ephemeral_btn = tk.Button(
-                self.input_frame, text="Ephemeral", command=self.toggle_ephemeral_mode,
-                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT, # type: ignore
-                activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
-                font=("Consolas", 9)
+        # Ephemeral mode dropdown (OFF, LOCAL, GLOBAL)
+        self.ephemeral_mode_var = tk.StringVar(value="OFF")
+        self.ephemeral_menu = tk.OptionMenu(
+                self.input_frame,
+                self.ephemeral_mode_var,
+                "OFF", "LOCAL", "GLOBAL",
+                command=self.on_ephemeral_change
         )
-        self.ephemeral_btn.pack(side=tk.RIGHT, padx=(0, 5)) # type: ignore
+        self.ephemeral_menu.config(bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR, relief=tk.FLAT)  # type: ignore
+        self.ephemeral_menu.pack(side=tk.RIGHT, padx=(0, 5))  # type: ignore
         
         # File Transfer window button
         self.file_transfer_btn = tk.Button(
@@ -224,6 +227,13 @@ class DebugChatGUI(ChatGUI):
         )
         self.send_btn.pack(side=tk.RIGHT) # type: ignore
         
+        # Initially disable input until connected
+        self.message_entry.config(state=tk.DISABLED)  # type: ignore
+        self.send_btn.config(state=tk.DISABLED)  # type: ignore
+        self.send_file_btn.config(state=tk.DISABLED)  # type: ignore
+        self.ephemeral_menu.config(state=tk.DISABLED)  # type: ignore
+        self.file_transfer_btn.config(state=tk.DISABLED)  # type: ignore
+        
         # Debug frame (middle, initially visible)
         self.debug_frame = tk.Frame(content_frame, bg=self.BG_COLOR, width=300)
         self.debug_frame.pack_propagate(False)
@@ -240,6 +250,9 @@ class DebugChatGUI(ChatGUI):
         # Create debug UI elements
         self._create_debug_display()
         self._create_debug_action_buttons()
+        
+        # Start ephemeral message cleanup thread
+        self.start_ephemeral_cleanup()
     
     def _create_debug_display(self) -> None:
         """Create the debug information display area."""
@@ -468,6 +481,19 @@ class DebugChatGUI(ChatGUI):
                 font=("Consolas", 9)
         )
         self.test_protocol_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
+        
+        self.dummy_message_toggle_btn = tk.Button(
+                self.debug_actions_frame,
+                text="Start Dummy Messages",
+                command=self.toggle_dummy_messages,
+                bg=self.BUTTON_BG_COLOR,
+                fg=self.FG_COLOR,
+                relief=tk.FLAT, # type: ignore
+                activebackground=self.BUTTON_ACTIVE_BG,
+                activeforeground=self.FG_COLOR,
+                font=("Consolas", 9)
+        )
+        self.dummy_message_toggle_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
     
     # Debug-specific methods
     def toggle_debug_box(self):
@@ -492,7 +518,7 @@ class DebugChatGUI(ChatGUI):
     
     def update_debug_info(self):
         """Update the debug information display with current cryptographic state."""
-        if not self.debug_visible or not self.client:
+        if not self.debug_visible or self.client is None:
             return
         
         current_time = time.time()
@@ -514,24 +540,7 @@ class DebugChatGUI(ChatGUI):
                 debug_text += f"  Server Protocol Version: {self.client.server_protocol_version}\n"
             else:
                 debug_text += "  Server Protocol Version: Unknown\n"
-            
-            # Peer version (if known)
-            if self.client.peer_version is not None:
-                debug_text += f"  Peer Version: {self.client.peer_version}\n"
-            else:
-                debug_text += "  Peer Version: Unknown\n"
-            
-            # Version compatibility check
-            if (self.client.peer_version is not None and
-                    self.client.server_protocol_version is not None):
-                if (self.client.peer_version == PROTOCOL_VERSION and
-                        self.client.server_protocol_version == PROTOCOL_VERSION):
-                    debug_text += "  ✅ All versions compatible\n"
-                else:
-                    debug_text += "  ⚠️ Version mismatch detected\n"
-            else:
-                debug_text += "  ❓ Version compatibility unknown\n"
-            
+                
             debug_text += "\n"
             
             # Key Exchange Status
@@ -637,7 +646,11 @@ class DebugChatGUI(ChatGUI):
             else:
                 debug_text += "  Keepalive Responses: Unknown\n"
             
-            debug_text += "\n" + "=" * 45 + "\n"
+            dummy_messages_enabled = self.client.protocol.send_dummy_messages
+            status = "Enabled" if dummy_messages_enabled else "Disabled"
+            debug_text += f"  Dummy Messages: {status}\n"
+            
+            debug_text += "\n" + "=" * 44 + "\n"
             
             # Update the debug display
             self.debug_display.config(state=tk.NORMAL) # type: ignore # type: ignore
@@ -721,8 +734,7 @@ class DebugChatGUI(ChatGUI):
             malformed_message = b'{"type": 3, "counter": 999, "nonce": "invalid", "ciphertext": "invalid"'
             
             # Send directly to socket, bypassing normal message handling
-            self.client.socket.sendall(len(malformed_message).to_bytes(4, byteorder='big'))
-            self.client.socket.sendall(malformed_message)
+            self.client.protocol.queue_message(("encrypted", malformed_message))
             
             self.append_to_chat("Sent malformed message to server")
         except Exception as e:
@@ -922,7 +934,7 @@ class DebugChatGUI(ChatGUI):
             def apply_latency():
                 try:
                     latency_ms = int(latency_entry.get())
-                    self.client.network_latency = latency_ms / 1000.0  # Convert to seconds
+                    self.client.simulated_latency = latency_ms / 1000.0  # Convert to seconds
                     self.append_to_chat(f"Network latency set to {latency_ms}ms")
                     dialog.destroy()
                 except ValueError:
@@ -1557,6 +1569,16 @@ class DebugChatGUI(ChatGUI):
         except Exception as err:
             self.append_to_chat(f"Error creating protocol version test dialog: {err}")
     
+    def toggle_dummy_messages(self):
+        """Toggle sending of dummy messages for testing."""
+        if not self.client:
+            return
+        
+        self.client.protocol.send_dummy_messages = not self.client.protocol.send_dummy_messages
+        status = "enabled" if self.client.protocol.send_dummy_messages else "disabled"
+        self.append_to_chat(f"Dummy messages {status}")
+
+    
     def on_closing(self):
         """Handle window closing - override to clean up debug timer."""
         # Stop the debug timer before closing
@@ -1598,8 +1620,7 @@ class DebugGUISecureChatClient(GUISecureChatClient):
         if self.packet_loss_percentage > 0:
             if random.randint(1, 100) <= self.packet_loss_percentage:
                 if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.append_to_chat(
-                            f"DEBUG: Packet loss simulated ({self.packet_loss_percentage}%)", is_message=False))
+                    self.gui.append_to_chat(f"DEBUG: Packet loss simulated ({self.packet_loss_percentage}%)", is_message=False)
                 return
         
         super().handle_message(message_data)
@@ -1613,19 +1634,18 @@ class DebugGUISecureChatClient(GUISecureChatClient):
             
             # Debug logging
             if self.gui:
-                self.gui.root.after(0, lambda: self.gui.append_to_chat(
-                        f"DEBUG: Key exchange init from peer (version {self.peer_version})", is_message=False))
+                self.gui.append_to_chat(f"DEBUG: Key exchange init from peer (version {self.peer_version})", is_message=False)
             
             # Call parent method to handle the key exchange
             super().handle_key_exchange_init(message_data)
             
             # Update debug info after key exchange init
             if self.gui:
-                self.gui.root.after(0, lambda: self.gui.update_debug_info())
+                self.gui.on_tkinter_thread(self.gui.update_debug_info)
         
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda er=e: self.gui.append_to_chat(f"Key exchange init error: {er}"))
+                self.gui.append_to_chat(f"Key exchange init error: {e}")
             else:
                 print(f"Key exchange init error: {e}")
     
@@ -1638,19 +1658,18 @@ class DebugGUISecureChatClient(GUISecureChatClient):
             
             # Debug logging
             if self.gui:
-                self.gui.root.after(0, lambda: self.gui.append_to_chat(
-                        f"DEBUG: Key exchange response from peer (version {self.peer_version})", is_message=False))
+                self.gui.append_to_chat(f"DEBUG: Key exchange response from peer (version {self.peer_version})", is_message=False)
             
             # Call parent method to handle the key exchange
             super().handle_key_exchange_response(message_data)
             
             # Update debug info after key exchange response
             if self.gui:
-                self.gui.root.after(0, lambda: self.gui.update_debug_info())
+                self.gui.on_tkinter_thread(self.gui.update_debug_info)
         
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda er=e: self.gui.append_to_chat(f"Key exchange response error: {er}"))
+                self.gui.append_to_chat(f"Key exchange response error: {e}")
             else:
                 print(f"Key exchange response error: {e}")
     
@@ -1668,12 +1687,11 @@ class DebugGUISecureChatClient(GUISecureChatClient):
             
             # Debug logging
             if self.gui:
-                self.gui.root.after(0, lambda: self.gui.append_to_chat(
-                        "DEBUG: Keepalive received from server", is_message=False))
+                self.gui.append_to_chat("DEBUG: Keepalive received from server", is_message=False)
         
         except Exception as err:
             if self.gui:
-                self.gui.root.after(0, lambda er=err: self.gui.append_to_chat(f"Keepalive error: {er}"))
+                self.gui.append_to_chat(f"Keepalive error: {err}")
             else:
                 print(f"Keepalive error: {err}")
     
@@ -1682,8 +1700,8 @@ class DebugGUISecureChatClient(GUISecureChatClient):
         if self.packet_loss_percentage > 0:
             if random.randint(1, 100) <= self.packet_loss_percentage:
                 if self.gui:
-                    self.gui.root.after(0, lambda: self.gui.append_to_chat(
-                            f"DEBUG: Packet loss simulated ({self.packet_loss_percentage}%) for delivery confirmation", is_message=False))
+                    self.gui.append_to_chat(f"DEBUG: Packet loss simulated ({self.packet_loss_percentage}%) " +
+                                            "for delivery confirmation", is_message=False)
                 return
             
         if self.send_delivery_confirmations:
@@ -1691,8 +1709,7 @@ class DebugGUISecureChatClient(GUISecureChatClient):
         else:
             # Debug flag is False, skip sending confirmation for debugging
             if self.gui:
-                self.gui.root.after(0, lambda: self.gui.append_to_chat(
-                        f"Delivery confirmation suppressed", is_message=False))
+                self.gui.append_to_chat(f"Delivery confirmation suppressed", is_message=False)
     
     def send_message(self, text: str) -> bool | None:
         """Encrypt and send a chat message with optional simulated latency and packet loss."""
@@ -1704,8 +1721,8 @@ class DebugGUISecureChatClient(GUISecureChatClient):
             if self.packet_loss_percentage > 0:
                 if random.randint(1, 100) <= self.packet_loss_percentage:
                     if self.gui:
-                        self.gui.root.after(0, lambda: self.gui.append_to_chat(
-                                f"DEBUG: Packet loss simulated ({self.packet_loss_percentage}%)", is_message=False))
+                        self.gui.append_to_chat("DEBUG: Packet loss simulated " +
+                                                f"({self.packet_loss_percentage}%)", is_message=False)
                     return None
                 
             # Simulate network latency if configured
@@ -1718,7 +1735,7 @@ class DebugGUISecureChatClient(GUISecureChatClient):
         
         except Exception as e:
             if self.gui:
-                self.gui.root.after(0, lambda er=e: self.gui.append_to_chat(f"Error sending message: {er}"))
+                self.gui.append_to_chat(f"Error sending message: {e}")
             else:
                 print(f"Error sending message: {e}")
             return None
@@ -1740,7 +1757,7 @@ def main():
             
             gui.append_to_chat(f"Connecting to {host}:{port}...")
             
-            # Create Debug GUI-aware client instance
+            # Create GUI-aware client instance
             gui.client = DebugGUISecureChatClient(host, port, gui)
             
             # Start connection in a separate thread
@@ -1748,19 +1765,18 @@ def main():
                 try:
                     if gui.client.connect():
                         gui.connected = True
-                        gui.root.after(0, gui.on_connected)
-                        gui.start_chat_monitoring()
+                        gui.on_tkinter_thread(gui.on_connected)
                     else:
-                        gui.root.after(0, lambda: gui.append_to_chat("Failed to connect to server"))
-                except Exception as er:
-                    gui.root.after(0, lambda error=er: gui.append_to_chat(f"Connection error: {error}"))
+                        gui.append_to_chat("Failed to connect to server")
+                except Exception as err:
+                    gui.append_to_chat(f"Connection error: {err}")
             
             threading.Thread(target=connect_thread, daemon=True).start()
         
         except ValueError:
             messagebox.showerror("Error", "Invalid port number")
-        except Exception as err:
-            gui.append_to_chat(f"Connection error: {err}")
+        except Exception as e:
+            gui.append_to_chat(f"Connection error: {e}")
     
     gui.connect_to_server = gui_connect
     
