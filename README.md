@@ -1,11 +1,20 @@
 # Post-Quantum E2E Encrypted Chat
 
-A cryptographically secure, end-to-end encrypted chat application using post-quantum cryptography (ML-KEM) for key exchange and AES-GCM for symmetric encryption. It is designed to be secure against both classical and quantum adversaries.
+> [!CAUTION]
+> **This should NOT be used for anything important.**
+>
+> This is an educational project and has not been designed to be secure
+> against any form of attack. The intended use of this project
+> is for learning and experimenting with PQC and end-to-end encryption concepts.
+
+An end-to-end encrypted chat application using post-quantum cryptography (ML-KEM) for key exchange and AES-GCM for symmetric encryption.
 
 ## ✨ Features
 
--   **Quantum-Resistant Key Exchange**: Utilizes ML-KEM-1024 (a NIST PQC standard) to protect against future quantum computer attacks.
--   **End-to-End Encryption**: Messages are encrypted on the client-side using AES-256-GCM. The server only routes encrypted data and cannot read message contents.
+-   **Quantum-Resistant Key Exchange**: Utilizes ML-KEM-1024 (a NIST PQC standard) to protect 
+against future quantum computer attacks.
+-   **End-to-End Encryption**: Messages are encrypted on the client-side using AES-256-GCM. 
+The server only routes encrypted data and cannot read message contents.
 -   **Forward Secrecy**: Keys are ephemeral, with a new shared secret generated for each session.
 -   **Message Integrity & Authentication**: HMAC-SHA256 ensures that messages cannot be tampered with in transit.
 -   **Replay Attack Prevention**: A monotonic message counter prevents attackers from replaying old messages.
@@ -84,10 +93,14 @@ The tests cover key exchange, encryption/decryption, message authentication, and
 
 The application consists of four main components:
 
--   `server.py`: The central server that listens for client connections and relays encrypted messages between them. It has no knowledge of the encryption keys.
--   `gui_client.py`: A user-friendly GUI client built with tkinter (no additional dependencies). Features a chat interface with input box at the bottom and message display above.
--   `client.py`: A command-line client application for terminal-based interaction. Handles the same cryptographic operations as the GUI client.
--   `shared.py`: A core module containing the cryptographic protocol logic used by both clients and server for message handling and key exchange.
+-   `server.py`: The central server that listens for client connections and relays 
+encrypted messages between them. It has no knowledge of the encryption keys.
+-   `gui_client.py`: A user-friendly GUI client built with tkinter (no additional dependencies). 
+Features a chat interface with input box at the bottom and message display above.
+-   `client.py`: A command-line client application for terminal-based interaction. 
+Handles the same cryptographic operations as the GUI client.
+-   `shared.py`: A core module containing the cryptographic protocol logic used 
+by both clients and server for message handling and key exchange.
 
 ### Protocol Flow
 
@@ -102,17 +115,11 @@ The application consists of four main components:
     -   Both clients use HKDF to derive encryption and MAC keys from the shared secret.
     -   All subsequent messages are encrypted with AES-GCM and authenticated with HMAC-SHA256 before being sent.
 
-## 🔒 Security Overview
+## Security Overview
 
-This project is designed to be secure against a range of threats.
+This project is NOT intended for production use. It is an educational implementation to 
+demonstrate concepts in post-quantum cryptography and end-to-end encryption and PQC.
 
-| Threat Model                 | Mitigation                                                              |
-| ---------------------------- | ----------------------------------------------------------------------- |
-| **Eavesdropping**            | AES-256-GCM end-to-end encryption.                                      |
-| **Quantum Attack**           | ML-KEM-1024 for key exchange is resistant to quantum algorithms.        |
-| **Packet Tampering**         | HMAC-SHA256 detects any modification to messages in transit.            |
-| **Replay Attacks**           | A message counter in the authenticated data prevents message replay.    |
-| **Man-in-the-Middle (MITM)** | ML-KEM provides forward secrecy. *Note: Assumes an out-of-band method to verify public keys if identity verification is needed.* |
 
 ### Cryptographic Details
 
@@ -120,5 +127,3 @@ This project is designed to be secure against a range of threats.
 -   **Symmetric Cipher**: AES-256-GCM
 -   **Key Derivation**: HKDF with SHA-256
 -   **Message Authentication**: HMAC with SHA-256
-
-NOTE: Probably don't use this in production without a thorough security review and testing. This is a simplified example for educational purposes and may not cover all edge cases or security considerations.
