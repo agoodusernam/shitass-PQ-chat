@@ -13,7 +13,7 @@ from typing import Final, Self
 from shared import SecureChatProtocol, send_message, receive_message, create_error_message, \
     create_reset_message, MessageType, PROTOCOL_VERSION
 
-SERVER_VERSION: Final[int] = 5
+SERVER_VERSION: Final[int] = 6
 MAX_UNEXPECTED_MSGS: Final[int] = 10
 
 
@@ -208,35 +208,42 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             return
         
         try:
-            # Start keepalive thread after key exchange is complete
             self.start_keepalive()
             
             while self.connected:
                 try:
-                    # Receive message from client
                     message_data = receive_message(self.request)
                     
-                    if not self.key_exchange_complete:
-                        # Handle key exchange messages
-                        self.handle_key_exchange(message_data)
-                        continue
-                    # Check if this is a verification message or keepalive response
+                    parsed = False
                     try:
                         message = json.loads(message_data.decode('utf-8'))
                         message_type = message.get("type")
-                        
-                        if message_type == MessageType.KEY_VERIFICATION:
-                            # Route verification messages
-                            self.route_verification_message(message_data)
-                        elif message_type == MessageType.KEEP_ALIVE_RESPONSE:
-                            # Handle keepalive response
-                            self.handle_keepalive_response()
-                        else:
-                            # Route encrypted messages to other client
-                            self.server.route_message(self.client_id, message_data)
+                        parsed = True
                     except (json.JSONDecodeError, UnicodeDecodeError):
-                        # This is likely an encrypted message (binary data)
-                        self.server.route_message(self.client_id, message_data)
+                        message_type = None
+                    
+                    if message_type == MessageType.KEEP_ALIVE_RESPONSE:
+                        self.handle_keepalive_response()
+                        continue
+                    
+                    if message_type == MessageType.KEY_VERIFICATION:
+                        self.route_verification_message(message_data)
+                        continue
+                    
+                    if not self.key_exchange_complete:
+                        if (not parsed) or (message_type in (MessageType.KEY_EXCHANGE_INIT,
+                                                             MessageType.KEY_EXCHANGE_RESPONSE,
+                                                             MessageType.KEY_EXCHANGE_RESET,
+                                                             MessageType.INITIATE_KEY_EXCHANGE)):
+                            self.handle_key_exchange(message_data)
+                            continue
+                        
+                        # If we get here, it's an unexpected message during key exchange
+                        print(f"Unexpected message from {self.client_id} during key exchange: {message_type}")
+                        self.handle_unexpected_message("unexpected message during key exchange")
+                        continue
+                    
+                    self.server.route_message(self.client_id, message_data)
                         
                 except ConnectionError:
                     break
@@ -288,10 +295,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         try:
             if self.key_exchange_complete:
                 print(f"Received unexpected verification message from {self.client_id} after key exchange")
-                self.unexpected_message_count += 1
-                if self.unexpected_message_count >= MAX_UNEXPECTED_MSGS:
-                    print(f"Client {self.client_id} sent too many unexpected verification messages. Disconnecting.")
-                    self.disconnect("Too many unexpected messages, verification after key exchange")
+                self.handle_unexpected_message("verification after key exchange")
                 return
             # Route the verification message to the other client
             other_client = self.get_other_client()
@@ -398,10 +402,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             return
         
         print(f"Unexpected keepalive response from {self.client_id}")
-        self.unexpected_message_count += 1
-        if self.unexpected_message_count >= MAX_UNEXPECTED_MSGS:
-            print(f"Client {self.client_id} sent too many unexpected keepalive responses. Disconnecting.")
-            self.disconnect("Too many unexpected responses, keepalive response without request")
+        self.handle_unexpected_message("keepalive response without request")
     
     def send_server_version_info(self) -> None:
         """Send protocol version information to the client."""
@@ -451,6 +452,13 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             
             if self.client_id:
                 print(f"Client {self.client_id} disconnected")
+    
+    def handle_unexpected_message(self, extra_info: str = "") -> None:
+        """Handle unexpected messages from the client."""
+        self.unexpected_message_count += 1
+        if self.unexpected_message_count >= MAX_UNEXPECTED_MSGS:
+            print(f"Client {self.client_id} sent too many unexpected messages. Disconnecting.")
+            self.disconnect("Too many unexpected messages" + extra_info)
 
 
 def main() -> None:
