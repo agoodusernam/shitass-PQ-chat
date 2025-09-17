@@ -178,6 +178,9 @@ class SecureChatClient:
                         self.handle_server_full()
                     case MessageType.SERVER_VERSION_INFO:
                         self.handle_server_version_info(message_data)
+                    case MessageType.SERVER_DISCONNECT:
+                        reason = message.get('reason', 'Server initiated disconnect')
+                        self.on_server_disconnect(reason)
                     case _:
                         print(f"\nUnknown message type: {message_type}")
                 return  # Successfully processed as JSON message
@@ -205,12 +208,10 @@ class SecureChatClient:
             print(f"\nError handling message: {e}")
             
     def handle_keepalive(self) -> None:
-        """Handle keepalive messages from the server.
-        """
+        """Handle keepalive messages from the server."""
         try:
             # Create keepalive response message
             response_message = {
-                "version": PROTOCOL_VERSION,
                 "type": MessageType.KEEP_ALIVE_RESPONSE
             }
             response_data = json.dumps(response_message).encode('utf-8')
@@ -847,6 +848,13 @@ class SecureChatClient:
                 
         except Exception as e:
             print(f"Error handling server version info: {e}")
+    
+    def on_server_disconnect(self, reason: str) -> None:
+        """Hook: called when server notifies of server-initiated disconnect."""
+        try:
+            print(f"\nServer disconnected: {reason}")
+        finally:
+            self.disconnect()
     
     def _send_file_chunks(self, transfer_id: str, file_path: str) -> None:
         """Send file chunks to peer."""

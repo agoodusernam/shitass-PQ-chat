@@ -2,6 +2,7 @@
 Debug GUI Client - Extends the base GUI client with debugging functionality.
 """
 import hashlib
+import base64
 import json
 import random
 import threading
@@ -13,10 +14,17 @@ from tkinterdnd2 import TkinterDnD, DND_FILES
 
 # Import base classes
 from gui_client import ChatGUI, GUISecureChatClient, FileTransferWindow
-from shared import PROTOCOL_VERSION, send_message, SecureChatProtocol
+from shared import PROTOCOL_VERSION, send_message, SecureChatProtocol, MessageType
 
 
 class DebugProtocol(SecureChatProtocol):
+    def __init__(self) -> None:
+        super().__init__()
+        # Hold last encryption/decryption debug info
+        self.last_encrypt_info: dict | None = None
+        self.last_decrypt_info: dict | None = None
+        self._debug_event_id: int = 0
+    
     def ratchet_send_key_forward(self, amount: int = 1) -> bool:
         """
         Ratchet the keys forward by one step.
@@ -28,7 +36,7 @@ class DebugProtocol(SecureChatProtocol):
         
         try:
             for _ in range(amount):
-                # Perform the standard ratchet step
+                # Perform the standard ratchet step (encrypt empty string)
                 self.encrypt_message("")
         
             return True
@@ -50,16 +58,219 @@ class DebugProtocol(SecureChatProtocol):
                 temp_chain_key = self.receive_chain_key
                 for i in range(self.peer_counter + 1, counter):
                     temp_chain_key = self._ratchet_chain_key(temp_chain_key, i)
-            
-                
                 new_chain_key = self._ratchet_chain_key(temp_chain_key, counter)
-                
                 self.receive_chain_key = new_chain_key
                 self.peer_counter = counter
             
             return True
         except ValueError:
             return False
+    
+    # --- Overrides to capture debug info ---
+    def encrypt_message(self, plaintext: str) -> bytes:
+        # Snapshot state before encrypt
+        prev_ck = self.send_chain_key
+        prev_counter = self.message_counter
+        try:
+            # Call base implementation
+            result = super().encrypt_message(plaintext)
+        except Exception as e:
+            # Still record failure event
+            self._debug_event_id += 1
+            event_id = self._debug_event_id
+            self.last_encrypt_info = {
+                "event_id": event_id,
+                "ok": False,
+                "error": str(e),
+                "time": time.time(),
+            }
+            raise
+        
+        # After encrypt, gather info
+        used_counter = self.message_counter
+        try:
+            msg = json.loads(result.decode("utf-8"))
+            nonce_b64 = msg.get("nonce", "")
+            ciphertext_b64 = msg.get("ciphertext", "")
+        except Exception:
+            nonce_b64 = ""
+            ciphertext_b64 = ""
+        
+        # Determine if plaintext looked like control/dummy
+        is_control = False
+        try:
+            obj = json.loads(plaintext)
+            t = obj.get("type")
+            is_control = t is not None
+        except Exception:
+            is_control = False
+        
+        # Derive the message key from prev_ck and used counter (matches base logic)
+        try:
+            mk = self._derive_message_key(prev_ck, used_counter)
+            mk_hex = str(base64.b64encode(mk))
+        except Exception:
+            mk_hex = ""
+        
+        self._debug_event_id += 1
+        event_id = self._debug_event_id
+        # Determine plaintext type and sizes
+        plaintext_len = None
+        plaintext_type = None
+        plaintext_type_name = None
+        try:
+            plaintext_len = len(plaintext.encode("utf-8"))
+            obj = json.loads(plaintext)
+            t = obj.get("type")
+            plaintext_type = t
+            try:
+                plaintext_type_name = MessageType(t).name if isinstance(t, int) else str(t)
+            except Exception:
+                plaintext_type_name = str(t)
+        except Exception:
+            plaintext_type_name = "TEXT"
+        # Determine encrypted envelope details
+        encrypted_type = None
+        encrypted_type_name = None
+        ciphertext_len_b64 = None
+        ciphertext_len_bytes = None
+        version_in_envelope = None
+        try:
+            if isinstance(ciphertext_b64, str):
+                ciphertext_len_b64 = len(ciphertext_b64)
+                try:
+                    ciphertext_len_bytes = len(base64.b64decode(ciphertext_b64))
+                except Exception:
+                    ciphertext_len_bytes = None
+            enc_type = msg.get("type")
+            version_in_envelope = msg.get("version")
+            encrypted_type = enc_type
+            try:
+                encrypted_type_name = MessageType(enc_type).name if isinstance(enc_type, int) else str(enc_type)
+            except Exception:
+                encrypted_type_name = str(enc_type)
+        except Exception:
+            pass
+        self.last_encrypt_info = {
+            "event_id": event_id,
+            "ok": True,
+            "time": time.time(),
+            "direction": "send",
+            "counter": used_counter,
+            "nonce_b64": nonce_b64,
+            "send_ck_before": str(base64.b64encode(prev_ck)),
+            "send_ck_after": str(base64.b64encode(self.send_chain_key)),
+            "msg_key": mk_hex,
+            "is_control": is_control,
+            # New fields
+            "plaintext_type": plaintext_type,
+            "plaintext_type_name": plaintext_type_name,
+            "plaintext_len": plaintext_len,
+            "encrypted_type": encrypted_type,
+            "encrypted_type_name": encrypted_type_name,
+            "ciphertext_len_b64": ciphertext_len_b64,
+            "ciphertext_len_bytes": ciphertext_len_bytes,
+            "version": version_in_envelope,
+        }
+        return result
+    
+    def decrypt_message(self, data: bytes) -> str:  # type: ignore[override]
+        # Snapshot state before decrypt
+        prev_rck = self.receive_chain_key
+        prev_peer_ctr = self.peer_counter
+        # Parse header for counter/nonce and envelope details
+        counter = None
+        nonce_b64 = ""
+        encrypted_type = None
+        encrypted_type_name = None
+        ciphertext_len_b64 = None
+        ciphertext_len_bytes = None
+        version_in_envelope = None
+        try:
+            msg = json.loads(data.decode("utf-8"))
+            counter = msg.get("counter")
+            nonce_b64 = msg.get("nonce", "")
+            enc_type = msg.get("type")
+            version_in_envelope = msg.get("version")
+            try:
+                encrypted_type_name = MessageType(enc_type).name if isinstance(enc_type, int) else str(enc_type)
+            except Exception:
+                encrypted_type_name = str(enc_type)
+            encrypted_type = enc_type
+            ct_b64 = msg.get("ciphertext", "")
+            if isinstance(ct_b64, str):
+                ciphertext_len_b64 = len(ct_b64)
+                try:
+                    ciphertext_len_bytes = len(base64.b64decode(ct_b64))
+                except Exception:
+                    ciphertext_len_bytes = None
+        except Exception:
+            pass
+        
+        # Try to compute the would-be message key (same as base)
+        msg_key_hex = ""
+        try:
+            if counter is not None:
+                temp_ck = prev_rck
+                for i in range(prev_peer_ctr + 1, counter):
+                    temp_ck = self._ratchet_chain_key(temp_ck, i)
+                mk = self._derive_message_key(temp_ck, int(counter))
+                msg_key_hex = str(base64.b64encode(mk))
+        except Exception:
+            pass
+        
+        try:
+            plaintext = super().decrypt_message(data)
+            ok = True
+            err = None
+        except Exception as e:
+            plaintext = ""
+            ok = False
+            err = str(e)
+        
+        # After decrypt, gather info
+        self._debug_event_id += 1
+        event_id = self._debug_event_id
+        # Determine plaintext type and sizes after decryption
+        plaintext_len = None
+        plaintext_type = None
+        plaintext_type_name = None
+        if ok:
+            try:
+                plaintext_len = len(plaintext.encode("utf-8"))
+                obj = json.loads(plaintext)
+                t = obj.get("type")
+                plaintext_type = t
+                try:
+                    plaintext_type_name = MessageType(t).name if isinstance(t, int) else str(t)
+                except Exception:
+                    plaintext_type_name = str(t)
+            except Exception:
+                plaintext_type_name = "TEXT"
+        self.last_decrypt_info = {
+            "event_id": event_id,
+            "ok": ok,
+            "error": err,
+            "time": time.time(),
+            "direction": "recv",
+            "counter": self.peer_counter if ok else counter,
+            "nonce_b64": nonce_b64,
+            "recv_ck_before": str(base64.b64encode(prev_rck)),
+            "recv_ck_after": str(base64.b64encode(self.receive_chain_key)),
+            "msg_key": msg_key_hex,
+            # New fields
+            "encrypted_type": encrypted_type,
+            "encrypted_type_name": encrypted_type_name,
+            "ciphertext_len_b64": ciphertext_len_b64,
+            "ciphertext_len_bytes": ciphertext_len_bytes,
+            "version": version_in_envelope,
+            "plaintext_type": plaintext_type,
+            "plaintext_type_name": plaintext_type_name,
+            "plaintext_len": plaintext_len,
+        }
+        if ok:
+            return plaintext
+        raise ValueError(err or "Decryption failed")
 
 class DebugFileTransferWindow(FileTransferWindow):
     """Debug version of FileTransferWindow - extends base with debug features."""
@@ -75,6 +286,8 @@ class DebugChatGUI(ChatGUI):
         self.debug_visible = True  # Show debug panel by default
         self.last_debug_update = 0
         self.debug_update_interval = 1.0
+        # Toggle: attach cryptographic info to messages
+        self.attach_crypto_info_to_messages: bool = False
         
         # Call parent constructor
         super().__init__(root)
@@ -345,6 +558,19 @@ class DebugChatGUI(ChatGUI):
         )
         self.keepalive_toggle_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
         
+        self.send_keepalive_btn = tk.Button(
+                self.debug_actions_frame,
+                text="Send Keepalive",
+                command=self.force_keepalive,
+                bg=self.BUTTON_BG_COLOR,
+                fg=self.FG_COLOR,
+                relief=tk.FLAT, # type: ignore
+                activebackground=self.BUTTON_ACTIVE_BG,
+                activeforeground=self.FG_COLOR,
+                font=("Consolas", 9)
+        )
+        self.send_keepalive_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
+        
         # Delivery confirmation toggle button
         self.delivery_confirmation_toggle_btn = tk.Button(
                 self.debug_actions_frame,
@@ -529,7 +755,7 @@ class DebugChatGUI(ChatGUI):
         
         self.dummy_message_toggle_btn = tk.Button(
                 self.debug_actions_frame,
-                text="Start Dummy Messages",
+                text="Dummy messages: ON",
                 command=self.toggle_dummy_messages,
                 bg=self.BUTTON_BG_COLOR,
                 fg=self.FG_COLOR,
@@ -565,6 +791,20 @@ class DebugChatGUI(ChatGUI):
                 font=("Consolas", 9)
         )
         self.ratchet_peer_keys_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
+        
+        # Toggle: Attach crypto info to messages
+        self.crypto_info_toggle_btn = tk.Button(
+                self.debug_actions_frame,
+                text="Attach Crypto Info: OFF",
+                command=self.toggle_crypto_info_in_messages,
+                bg=self.BUTTON_BG_COLOR,
+                fg=self.FG_COLOR,
+                relief=tk.FLAT, # type: ignore
+                activebackground=self.BUTTON_ACTIVE_BG,
+                activeforeground=self.FG_COLOR,
+                font=("Consolas", 9)
+        )
+        self.crypto_info_toggle_btn.pack(fill=tk.X, padx=5, pady=6) # type: ignore
     
     # Debug-specific methods
     def toggle_debug_box(self):
@@ -768,6 +1008,23 @@ class DebugChatGUI(ChatGUI):
         # Update debug info
         self.update_debug_info()
     
+    def force_keepalive(self):
+        """Send a keepalive message immediately."""
+        if not self.client or not self.client.socket:
+            return
+        
+        try:
+            response_message = {
+                "type": MessageType.KEEP_ALIVE_RESPONSE
+            }
+            response_data = json.dumps(response_message).encode('utf-8')
+            
+            # Send response to server
+            send_message(self.client.socket, response_data)
+            self.append_to_chat("Sent keepalive message to server")
+        except Exception as e:
+            self.append_to_chat(f"Error sending keepalive: {e}")
+    
     def toggle_delivery_confirmations(self):
         """Toggle whether the client sends delivery confirmations."""
         if not self.client:
@@ -794,6 +1051,21 @@ class DebugChatGUI(ChatGUI):
         
         # Update debug info
         self.update_debug_info()
+    
+    def toggle_crypto_info_in_messages(self):
+        """Toggle attaching cryptographic info to sent/received messages."""
+        try:
+            self.attach_crypto_info_to_messages = not self.attach_crypto_info_to_messages
+            if self.attach_crypto_info_to_messages:
+                self.crypto_info_toggle_btn.config(text="Attach Crypto Info: ON")
+                self.append_to_chat("Crypto info attachment enabled")
+            else:
+                self.crypto_info_toggle_btn.config(text="Attach Crypto Info: OFF")
+                self.append_to_chat("Crypto info attachment disabled")
+            if self.client:
+                self.client.attach_crypto_info_to_messages = self.attach_crypto_info_to_messages
+        except Exception as e:
+            self.append_to_chat(f"Error toggling crypto info: {e}")
     
     def send_malformed_message(self):
         """Send a malformed message to test error handling."""
@@ -1648,6 +1920,9 @@ class DebugChatGUI(ChatGUI):
         self.client.protocol.send_dummy_messages = not self.client.protocol.send_dummy_messages
         status = "enabled" if self.client.protocol.send_dummy_messages else "disabled"
         self.append_to_chat(f"Dummy messages {status}")
+        self.dummy_message_toggle_btn.config(
+                text=f"Dummy Messages: {'ON' if self.client.protocol.send_dummy_messages else 'OFF'}"
+        )
         
     def ratchet_send_key(self):
         """Manually ratchet the sending and receiving chain keys."""
@@ -1693,6 +1968,85 @@ class DebugGUISecureChatClient(GUISecureChatClient):
         self.simulated_latency: float = 0
         self.packet_loss_percentage: int = 0
         self.protocol: DebugProtocol = DebugProtocol()
+        
+        # Attach crypto info toggle
+        self.attach_crypto_info_to_messages: bool = False
+        self._last_outgoing_appended_counter: int = 0
+        self._last_incoming_appended_counter: int = 0
+    
+    def _shorten(self, text: str | None, n: int = 16) -> str:
+        if not text:
+            return ""
+        return text[:n]
+    
+    def _format_crypto_info(self, info: dict, direction: str) -> str:
+        try:
+            ctr = info.get("counter")
+            nonce = info.get("nonce_b64", "")
+            msg_key = info.get("msg_key", "")
+            if direction == "send":
+                before = info.get("send_ck_before", "")
+                after = info.get("send_ck_after", "")
+                header = f"→ Crypto (sent)"
+                chain = f"- send_chain_key: {before} -> {after}"
+            else:
+                before = info.get("recv_ck_before", "")
+                after = info.get("recv_ck_after", "")
+                header = f"← Crypto (recv)"
+                chain = f"- recv_chain_key: {before} -> {after}"
+            # Prepare type and size lines
+            pt_name = info.get("plaintext_type_name") or "TEXT"
+            pt_val = info.get("plaintext_type")
+            enc_name = info.get("encrypted_type_name") or ""
+            enc_val = info.get("encrypted_type")
+            pt_len = info.get("plaintext_len")
+            ct_len = info.get("ciphertext_len_bytes") or info.get("ciphertext_len")
+            types_line = f"   - types: plaintext={pt_name}" + (f"({pt_val})" if pt_val is not None else "")
+            if enc_name or enc_val is not None:
+                types_line += f", encrypted={enc_name}" + (f"({enc_val})" if enc_val is not None else "")
+            sizes_line = ""
+            if pt_len is not None or ct_len is not None:
+                sizes_line = "   - sizes: "
+                if pt_len is not None:
+                    sizes_line += f"plaintext={pt_len} B"
+                if ct_len is not None:
+                    sizes_line += (", " if pt_len is not None else "") + f"ciphertext={ct_len} B"
+            parts = [
+                "--------------------------------",
+                f"   {header}",
+                f"   - counter: {ctr}",
+                f"   - nonce: {self._shorten(nonce, 24)}",
+                types_line,
+                sizes_line if sizes_line else None,
+                f"   {chain}",
+                f"   - message_key: {msg_key}",
+            ]
+            # Filter out None/empty entries to keep it clean
+            parts = [p for p in parts if p]
+            return "\n".join(parts)
+        except Exception:
+            return ""
+    
+    def _append_outgoing_crypto_info(self, expected_counter: int, retries: int = 20, delay_ms: int = 100) -> None:
+        if not self.gui or not self.attach_crypto_info_to_messages:
+            return
+        try:
+            info = getattr(self.protocol, "last_encrypt_info", None)
+            if info and info.get("counter") == expected_counter and not info.get("is_control", False):
+                if self._last_outgoing_appended_counter != expected_counter:
+                    formatted = self._format_crypto_info(info, "send")
+                    if formatted:
+                        self.gui.on_tkinter_thread(self.gui.append_to_chat, formatted, False, False)
+                        self._last_outgoing_appended_counter = expected_counter
+                return
+        except Exception:
+            pass
+        # Not yet available -> retry
+        if retries > 0:
+            try:
+                self.gui.root.after(delay_ms, self._append_outgoing_crypto_info, expected_counter, retries - 1, delay_ms)
+            except Exception:
+                pass
     
     def handle_message(self, message_data: bytes) -> None:
         """Handle incoming messages with GUI updates and debug logging."""
@@ -1706,6 +2060,27 @@ class DebugGUISecureChatClient(GUISecureChatClient):
                 return
         
         super().handle_message(message_data)
+    
+    def handle_encrypted_message(self, message_data: bytes) -> None:
+        """Override to append crypto info for received messages after displaying them."""
+        # Call the base pipeline to decrypt and display
+        super().handle_encrypted_message(message_data)
+        # Append crypto info if enabled
+        try:
+            if not self.gui or not self.attach_crypto_info_to_messages:
+                return
+            info = getattr(self.protocol, "last_decrypt_info", None)
+            if not info:
+                return
+            ctr = info.get("counter")
+            # Ensure we only append once per counter
+            if isinstance(ctr, int) and ctr and ctr != self._last_incoming_appended_counter:
+                formatted = self._format_crypto_info(info, "recv")
+                if formatted:
+                    self.gui.on_tkinter_thread(self.gui.append_to_chat, formatted, False, False)
+                    self._last_incoming_appended_counter = ctr
+        except Exception:
+            pass
     
     def handle_key_exchange_init(self, message_data: bytes):
         """Handle key exchange init - override to extract and store protocol version."""
@@ -1770,6 +2145,8 @@ class DebugGUISecureChatClient(GUISecureChatClient):
             # Debug logging
             if self.gui:
                 self.gui.append_to_chat("DEBUG: Keepalive received from server", is_message=False)
+                if not self.respond_to_keepalive:
+                    self.gui.append_to_chat("DEBUG: Keepalive response suppressed", is_message=False)
         
         except Exception as err:
             if self.gui:
@@ -1808,9 +2185,25 @@ class DebugGUISecureChatClient(GUISecureChatClient):
             if self.simulated_latency > 0:
                 time.sleep(self.simulated_latency)
             
+            # Compute expected counter for this outgoing message (before queuing)
+            expected_counter = None
+            if hasattr(self, "protocol") and self.protocol:
+                try:
+                    expected_counter = self.protocol.message_counter + 1
+                except Exception:
+                    expected_counter = None
             
             # Call the parent method to send the message
-            return super().send_message(text)
+            result = super().send_message(text)
+            
+            # Schedule appending crypto info once encryption completes
+            if result and expected_counter and self.attach_crypto_info_to_messages and self.gui:
+                try:
+                    self.gui.root.after(50, self._append_outgoing_crypto_info, expected_counter)
+                except Exception:
+                    pass
+            
+            return result
         
         except Exception as e:
             if self.gui:
@@ -1838,6 +2231,11 @@ def main():
             
             # Create GUI-aware client instance
             gui.client = DebugGUISecureChatClient(host, port, gui)
+            # Propagate current toggle to client
+            try:
+                gui.client.attach_crypto_info_to_messages = gui.attach_crypto_info_to_messages
+            except Exception:
+                pass
             
             # Start connection in a separate thread
             def connect_thread():

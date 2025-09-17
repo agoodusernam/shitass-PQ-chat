@@ -53,6 +53,7 @@ class MessageType(IntEnum):
     DUMMY_MESSAGE = 20
     EPHEMERAL_MODE_CHANGE = 21
     REKEY = 22
+    SERVER_DISCONNECT = 23
 
 
 # File transfer constants

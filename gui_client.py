@@ -1666,6 +1666,14 @@ class GUISecureChatClient(SecureChatClient):
         else:
             super().display_regular_message(message, error)
     
+    def on_server_disconnect(self, reason: str) -> None:
+        """Show server disconnect reason in the GUI as a system message and disconnect."""
+
+        # Append as system message in chat
+        self.gui.append_to_chat(f"[SYSTEM] Server disconnected: {reason}", is_message=False, show_time=False)
+        self.gui.disconnect_from_server()
+
+    
     def _send_delivery_confirmation(self, confirmed_counter: int) -> None:
         """Send a delivery confirmation for a received text message."""
         try:
