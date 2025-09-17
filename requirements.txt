@@ -1,4 +1,4 @@
-cryptography~=45.0.6
+cryptography~=46.0.1
 kyber_py~=1.0.1
 pillow~=11.3.0
 plyer~=2.1.0

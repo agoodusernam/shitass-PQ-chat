@@ -22,9 +22,9 @@ try:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     from cryptography.hazmat.primitives.kdf.hkdf import HKDF
     from cryptography.hazmat.primitives import hashes
-except ImportError as exc:
+except ImportError as exc_:
     print("Required cryptographic libraries not found.")
-    raise ImportError("Please install the required libraries with pip install -r requirements.txt") from exc
+    raise ImportError("Please install the required libraries with pip install -r requirements.txt") from exc_
 # Protocol constants
 PROTOCOL_VERSION: Final[float] = 2.2
 
@@ -172,7 +172,6 @@ class SecureChatProtocol:
         # Perfect Forward Secrecy - Key Ratcheting
         self.send_chain_key: bytes = bytes()
         self.receive_chain_key: bytes = bytes()
-        self.seen_counters: set[int] = set()
         
         # File transfer state
         self.file_transfers: dict[str, dict] = {}
@@ -193,14 +192,14 @@ class SecureChatProtocol:
         
         # Rekey state
         self.rekey_in_progress: bool = False
-        self.pending_shared_key: bytes | None = None
-        self.pending_encryption_key: bytes | None = None
-        self.pending_mac_key: bytes | None = None
-        self.pending_send_chain_key: bytes | None = None
-        self.pending_receive_chain_key: bytes | None = None
+        self.pending_shared_key: bytes = bytes()
+        self.pending_encryption_key: bytes = bytes()
+        self.pending_mac_key: bytes = bytes()
+        self.pending_send_chain_key: bytes = bytes()
+        self.pending_receive_chain_key: bytes = bytes()
         self.pending_message_counter: int = 0
         self.pending_peer_counter: int = 0
-        self.rekey_private_key: bytes | None = None
+        self.rekey_private_key: bytes = bytes()
     
     def reset_key_exchange(self) -> None:
         """Reset all cryptographic state to initial values for key exchange restart."""
@@ -215,7 +214,6 @@ class SecureChatProtocol:
         self.own_public_key = bytes()
         self.send_chain_key = bytes()
         self.receive_chain_key = bytes()
-        self.seen_counters = set()
         # Clear file transfer state as well
         self.file_transfers = {}
         self.received_chunks = {}
@@ -733,7 +731,13 @@ class SecureChatProtocol:
     
     
     def encrypt_message(self, plaintext: str) -> bytes:
-        """Encrypt a message with authentication and replay protection using perfect forward secrecy."""
+        """
+        Encrypt a message with authentication and replay protection using perfect forward secrecy.
+        :param plaintext: The plaintext message to encrypt.
+        :return: The encrypted message as bytes, ready to send.
+        :raises: ValueError: If no shared key or send chain key is established.
+        
+        """
         if not self.shared_key or not self.send_chain_key:
             raise ValueError("No shared key or send chain key established")
         
@@ -806,7 +810,8 @@ class SecureChatProtocol:
             # Check for replay attacks or very old messages
             if counter <= self.peer_counter:
                 raise ValueError(
-                        f"Replay attack or out-of-order message detected. Expected > {self.peer_counter}, got {counter}")
+                        f"Replay attack or out-of-order message detected. Expected higher than" +
+                        f" {self.peer_counter}, got {counter}")
             
             temp_chain_key = self.receive_chain_key
             for i in range(self.peer_counter + 1, counter):
@@ -959,16 +964,15 @@ class SecureChatProtocol:
         self.receive_chain_key = self.pending_receive_chain_key
         self.message_counter = 0
         self.peer_counter = 0
-        self.seen_counters = set()
         # Clear pending state
-        self.pending_shared_key = None
-        self.pending_encryption_key = None
-        self.pending_mac_key = None
-        self.pending_send_chain_key = None
-        self.pending_receive_chain_key = None
+        self.pending_shared_key = bytes()
+        self.pending_encryption_key = bytes()
+        self.pending_mac_key = bytes()
+        self.pending_send_chain_key = bytes()
+        self.pending_receive_chain_key = bytes()
         self.pending_message_counter = 0
         self.pending_peer_counter = 0
-        self.rekey_private_key = None
+        self.rekey_private_key = bytes()
         self.rekey_in_progress = False
     
     def create_rekey_init(self) -> dict:
@@ -1506,10 +1510,7 @@ def send_message(sock: socket.socket | None, data: bytes):
     if not sock:
         raise ValueError("Socket is None")
     length = struct.pack('!I', len(data))
-    sent = sock.send(length + data)
-    if sent != len(length + data):
-        # attempt to send the rest of the data
-        sock.send((length + data)[sent:])
+    sock.sendall(length + data)
 
 
 def receive_message(sock) -> bytes:

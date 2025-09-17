@@ -51,7 +51,7 @@ class SecureChatClient:
         self.connected: bool = False
         self.key_exchange_complete: bool = False
         self.verification_complete: bool = False
-        self.receive_thread = None
+        self.receive_thread: threading.Thread | None = None
         
         # File transfer state
         self.pending_file_transfers: dict = {}
@@ -59,7 +59,7 @@ class SecureChatClient:
         self._last_progress_shown = {}
         
         # Key exchange state
-        self.private_key = None
+        self.private_key: bytes = bytes()
         
         # Server version information
         self.server_version = None
@@ -297,7 +297,7 @@ class SecureChatClient:
     def handle_key_exchange_response(self, message_data: bytes) -> None:
         """Handle key exchange response from another client."""
         try:
-            if self.private_key is not None:
+            if self.private_key:
                 _, version_warning = self.protocol.process_key_exchange_response(message_data, self.private_key)
                 
                 # Display version warning if present

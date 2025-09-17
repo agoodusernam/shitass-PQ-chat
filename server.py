@@ -8,12 +8,12 @@ import socketserver
 import threading
 import json
 import time
-from typing import Optional
+from typing import Optional, Final
 
 from shared import SecureChatProtocol, send_message, receive_message, create_error_message, \
     create_reset_message, MessageType, PROTOCOL_VERSION
 
-SERVER_VERSION = 5
+SERVER_VERSION: Final[int] = 5
 
 
 # noinspection PyBroadException

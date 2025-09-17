@@ -13,8 +13,53 @@ from tkinterdnd2 import TkinterDnD, DND_FILES
 
 # Import base classes
 from gui_client import ChatGUI, GUISecureChatClient, FileTransferWindow
-from shared import PROTOCOL_VERSION, send_message
+from shared import PROTOCOL_VERSION, send_message, SecureChatProtocol
 
+
+class DebugProtocol(SecureChatProtocol):
+    def ratchet_send_key_forward(self, amount: int = 1) -> bool:
+        """
+        Ratchet the keys forward by one step.
+        :param amount: Number of ratchet steps to perform. 0 or negative values do nothing.
+        :return: If the keys were successfully ratcheted.
+        """
+        if amount <= 0:
+            return False
+        
+        try:
+            for _ in range(amount):
+                # Perform the standard ratchet step
+                self.encrypt_message("")
+        
+            return True
+        except ValueError:
+            return False
+    
+    def ratchet_peer_key_forward(self, amount: int = 1) -> bool:
+        """
+        Ratchet the peer's keys forward by one step.
+        :param amount: Number of ratchet steps to perform. 0 or negative values do nothing.
+        :return: If the peer's keys were successfully ratcheted.
+        """
+        if amount <= 0:
+            return False
+        
+        try:
+            for _ in range(amount):
+                counter = self.peer_counter + 1
+                temp_chain_key = self.receive_chain_key
+                for i in range(self.peer_counter + 1, counter):
+                    temp_chain_key = self._ratchet_chain_key(temp_chain_key, i)
+            
+                
+                new_chain_key = self._ratchet_chain_key(temp_chain_key, counter)
+                
+                self.receive_chain_key = new_chain_key
+                self.peer_counter = counter
+            
+            return True
+        except ValueError:
+            return False
 
 class DebugFileTransferWindow(FileTransferWindow):
     """Debug version of FileTransferWindow - extends base with debug features."""
@@ -494,6 +539,32 @@ class DebugChatGUI(ChatGUI):
                 font=("Consolas", 9)
         )
         self.dummy_message_toggle_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
+        
+        self.ratchet_send_keys_btn = tk.Button(
+                self.debug_actions_frame,
+                text="Ratchet Send Keys Forward",
+                command=self.ratchet_send_key,
+                bg=self.BUTTON_BG_COLOR,
+                fg=self.FG_COLOR,
+                relief=tk.FLAT, # type: ignore
+                activebackground=self.BUTTON_ACTIVE_BG,
+                activeforeground=self.FG_COLOR,
+                font=("Consolas", 9)
+        )
+        self.ratchet_send_keys_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
+        
+        self.ratchet_peer_keys_btn = tk.Button(
+                self.debug_actions_frame,
+                text="Ratchet Peer Keys Forward",
+                command=self.ratchet_peer_key,
+                bg=self.BUTTON_BG_COLOR,
+                fg=self.FG_COLOR,
+                relief=tk.FLAT, # type: ignore
+                activebackground=self.BUTTON_ACTIVE_BG,
+                activeforeground=self.FG_COLOR,
+                font=("Consolas", 9)
+        )
+        self.ratchet_peer_keys_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
     
     # Debug-specific methods
     def toggle_debug_box(self):
@@ -1577,6 +1648,20 @@ class DebugChatGUI(ChatGUI):
         self.client.protocol.send_dummy_messages = not self.client.protocol.send_dummy_messages
         status = "enabled" if self.client.protocol.send_dummy_messages else "disabled"
         self.append_to_chat(f"Dummy messages {status}")
+        
+    def ratchet_send_key(self):
+        """Manually ratchet the sending and receiving chain keys."""
+        if not self.client or not self.client.protocol:
+            return
+        
+        self.client.protocol.ratchet_send_key_forward()
+    
+    def ratchet_peer_key(self):
+        """Manually ratchet the receiving chain key."""
+        if not self.client or not self.client.protocol:
+            return
+        
+        self.client.protocol.ratchet_peer_key_forward()
 
     
     def on_closing(self):
@@ -1594,23 +1679,20 @@ class DebugGUISecureChatClient(GUISecureChatClient):
         super().__init__(host, port, gui)
         
         # Protocol version tracking
-        self.protocol_version = PROTOCOL_VERSION
-        self.peer_version = None  # Will be set during key exchange
+        self.peer_version: int = 0 # Will be set during key exchange
         
         # Keepalive tracking
-        self.last_keepalive_received = None
-        self.last_keepalive_sent = None
-        self.respond_to_keepalive = True  # Flag to control whether to respond to keepalives
+        self.last_keepalive_received: float = 0.0
+        self.last_keepalive_sent: float = 0.0
+        self.respond_to_keepalive: bool = True
         
         # Delivery confirmation tracking
-        self.send_delivery_confirmations = True  # Flag to control whether to send delivery confirmations
-        
-        # Socket lock for thread synchronization
-        self.socket_lock = threading.Lock()
+        self.send_delivery_confirmations = True
         
         # Debug features
-        self.simulated_latency = 0  # No latency by default
-        self.packet_loss_percentage = 0  # No packet loss by default
+        self.simulated_latency: float = 0
+        self.packet_loss_percentage: int = 0
+        self.protocol: DebugProtocol = DebugProtocol()
     
     def handle_message(self, message_data: bytes) -> None:
         """Handle incoming messages with GUI updates and debug logging."""
@@ -1697,6 +1779,8 @@ class DebugGUISecureChatClient(GUISecureChatClient):
     
     def _send_delivery_confirmation(self, confirmed_counter: int):
         """Send delivery confirmation - override to add debug control."""
+        if not self.send_delivery_confirmations:
+            return
         if self.packet_loss_percentage > 0:
             if random.randint(1, 100) <= self.packet_loss_percentage:
                 if self.gui:
@@ -1704,12 +1788,7 @@ class DebugGUISecureChatClient(GUISecureChatClient):
                                             "for delivery confirmation", is_message=False)
                 return
             
-        if self.send_delivery_confirmations:
-            super()._send_delivery_confirmation(confirmed_counter)
-        else:
-            # Debug flag is False, skip sending confirmation for debugging
-            if self.gui:
-                self.gui.append_to_chat(f"Delivery confirmation suppressed", is_message=False)
+        super()._send_delivery_confirmation(confirmed_counter)
     
     def send_message(self, text: str) -> bool | None:
         """Encrypt and send a chat message with optional simulated latency and packet loss."""

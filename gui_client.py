@@ -876,7 +876,6 @@ class ChatGUI:
         self.file_transfer_btn.config(state=tk.DISABLED)  # type: ignore
         self.append_to_chat("Disconnected from server.")
         self.update_status("Not Connected")
-        sys.exit(0)  # Exit the application
     
     def start_chat_monitoring(self):
         """Start monitoring the chat client for messages and status updates."""
@@ -1459,15 +1458,12 @@ class ChatGUI:
         """Handle emergency close (Control+Q) - send emergency message and close immediately."""
         try:
             if self.connected and self.client:
-                # Send emergency close message as quickly as possible
-                self.client.protocol.send_emergency_close()
                 # Force immediate disconnect without waiting
                 self.client.connected = False
                 if self.client.socket:
                     self.client.socket.close()
             # Close the application immediately
-            self.root.quit()
-            self.root.destroy()
+            self.on_tkinter_thread(self.root.quit)
             sys.exit(1)
         except Exception as e:
             # Even if there's an error, still close the application
@@ -1691,7 +1687,7 @@ class GUISecureChatClient(SecureChatClient):
             confirmed_counter = json.loads(message_data).get("confirmed_counter")
             # Update the GUI to show the message was delivered
             if self.gui and confirmed_counter:
-                self.gui.root.after(0, self.gui.update_message_delivery_status, confirmed_counter)
+                self.gui.on_tkinter_thread(self.gui.update_message_delivery_status, confirmed_counter)
             else:
                 # Fallback to console output if no GUI
                 print(f"\n✓ Message {confirmed_counter} delivered")
@@ -1765,29 +1761,16 @@ class GUISecureChatClient(SecureChatClient):
                 # Use the GUI's emergency close function to properly close everything
                 self.gui.emergency_close()
             else:
-                # Fallback to console output if no GUI
-                print(f"\n{'=' * 50}")
-                print("🚨 EMERGENCY CLOSE RECEIVED")
-                print("The other client has activated emergency close.")
-                print("Connection will be terminated immediately.")
-                print(f"{'=' * 50}")
-                
-                # Immediately disconnect
-                self.disconnect()
+                super().handle_emergency_close()
         
         except Exception as e:
             if self.gui:
                 self.gui.append_to_chat(f"Error handling emergency close: {e}")
-                # Still try to show a popup even if there was an error
-                self.gui.root.after(0, messagebox.showerror,
-                    "Emergency Close Error",
-                    f"Error handling emergency close: {e}\nThe connection will be terminated."
-                )
                 # Force disconnect
                 self.gui.emergency_close()
             else:
                 print(f"Error handling emergency close: {e}")
-                self.disconnect()
+                sys.exit(1)
     
     def handle_key_exchange_init(self, message_data: bytes):
         """Handle key exchange initiation - override to display warnings in GUI."""
