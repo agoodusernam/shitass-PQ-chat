@@ -11,7 +11,7 @@ import os
 import time
 
 from shared import (SecureChatProtocol, send_message, receive_message, MessageType,
-                    PROTOCOL_VERSION, PROTOCOL_COMPATIBILITY)
+                    PROTOCOL_VERSION)
 
 
 # noinspection PyUnresolvedReferences,PyBroadException
@@ -838,8 +838,9 @@ class SecureChatClient:
             if self.server_protocol_version != PROTOCOL_VERSION:
                 print(f"⚠️ Protocol version mismatch: Client v{PROTOCOL_VERSION}, Server v{self.server_protocol_version}")
                 # Use local compatibility matrix since server no longer sends it
-                client_compatible_versions = PROTOCOL_COMPATIBILITY.get(PROTOCOL_VERSION, [PROTOCOL_VERSION])
-                if self.server_protocol_version in client_compatible_versions:
+                major_server = self.server_protocol_version.split('.')[0]
+                major_client = PROTOCOL_VERSION.split('.')[0]
+                if major_server == major_client:
                     print("✅ Versions are compatible for communication")
                 else:
                     print("❌ Versions may not be compatible - communication issues possible")

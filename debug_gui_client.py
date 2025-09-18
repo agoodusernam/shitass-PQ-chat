@@ -24,6 +24,7 @@ class DebugProtocol(SecureChatProtocol):
         self.last_encrypt_info: dict | None = None
         self.last_decrypt_info: dict | None = None
         self._debug_event_id: int = 0
+        self.protocol_version = PROTOCOL_VERSION  # Allow spoofing version in debug
     
     def ratchet_send_key_forward(self, amount: int = 1) -> bool:
         """
@@ -738,20 +739,6 @@ class DebugChatGUI(ChatGUI):
                 font=("Consolas", 9)
         )
         self.set_counter_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
-        
-        # Test protocol version button
-        self.test_protocol_btn = tk.Button(
-                self.debug_actions_frame,
-                text="Test Protocol Version",
-                command=self.test_protocol_version,
-                bg=self.BUTTON_BG_COLOR,
-                fg=self.FG_COLOR,
-                relief=tk.FLAT, # type: ignore
-                activebackground=self.BUTTON_ACTIVE_BG,
-                activeforeground=self.FG_COLOR,
-                font=("Consolas", 9)
-        )
-        self.test_protocol_btn.pack(fill=tk.X, padx=5, pady=2) # type: ignore
         
         self.dummy_message_toggle_btn = tk.Button(
                 self.debug_actions_frame,
@@ -1768,149 +1755,6 @@ class DebugChatGUI(ChatGUI):
         
         except Exception as err:
             self.append_to_chat(f"Error setting message counters: {err}")
-    
-    def test_protocol_version(self):
-        """Test protocol version compatibility by sending messages with different versions."""
-        if not self.client or not self.client.socket:
-            return
-        
-        try:
-            # Create a dialog to get the protocol version
-            dialog = tk.Toplevel(self.root)
-            dialog.title("Test Protocol Version")
-            dialog.geometry("400x250")
-            dialog.configure(bg=self.BG_COLOR)
-            
-            # Make dialog modal
-            dialog.transient(self.root)
-            dialog.grab_set()
-            
-            # Add a label
-            tk.Label(
-                    dialog,
-                    text="Test Protocol Version",
-                    bg=self.BG_COLOR,
-                    fg=self.FG_COLOR,
-                    font=("Consolas", 12, "bold")
-            ).pack(pady=10)
-            
-            # Message input
-            tk.Label(
-                    dialog,
-                    text="Message:",
-                    bg=self.BG_COLOR,
-                    fg=self.FG_COLOR,
-                    font=("Consolas", 10),
-                    anchor="w"
-            ).pack(fill=tk.X, padx=20, pady=(10, 5)) # type: ignore
-            
-            message_entry = tk.Entry(
-                    dialog,
-                    width=40,
-                    bg=self.ENTRY_BG_COLOR,
-                    fg=self.FG_COLOR,
-                    insertbackground=self.FG_COLOR
-            )
-            message_entry.pack(fill=tk.X, padx=20, pady=(0, 10)) # type: ignore
-            message_entry.insert(0, "Testing protocol version compatibility")
-            
-            # Version input
-            tk.Label(
-                    dialog,
-                    text="Protocol Version:",
-                    bg=self.BG_COLOR,
-                    fg=self.FG_COLOR,
-                    font=("Consolas", 10),
-                    anchor="w"
-            ).pack(fill=tk.X, padx=20, pady=(10, 5)) # type: ignore
-            
-            # Get the current protocol version
-            current_version = PROTOCOL_VERSION
-            
-            version_entry = tk.Entry(
-                    dialog,
-                    width=10,
-                    bg=self.ENTRY_BG_COLOR,
-                    fg=self.FG_COLOR,
-                    insertbackground=self.FG_COLOR
-            )
-            version_entry.pack(fill=tk.X, padx=20, pady=(0, 10)) # type: ignore
-            version_entry.insert(0, str(current_version - 1))  # Default to previous version
-            
-            # Current version label
-            tk.Label(
-                    dialog,
-                    text=f"Current version: {current_version}",
-                    bg=self.BG_COLOR,
-                    fg=self.FG_COLOR,
-                    font=("Consolas", 9),
-                    anchor="w"
-            ).pack(fill=tk.X, padx=20, pady=(0, 10)) # type: ignore
-            
-            # Button frame
-            button_frame = tk.Frame(dialog, bg=self.BG_COLOR)
-            button_frame.pack(fill=tk.X, pady=10) # type: ignore
-            
-            # Send button
-            def send_with_version():
-                message_text = message_entry.get().strip()
-                try:
-                    version = int(version_entry.get().strip())
-                except ValueError:
-                    messagebox.showerror("Error", "Please enter a valid version number")
-                    return
-                
-                if not message_text:
-                    messagebox.showerror("Error", "Please enter a message")
-                    return
-                
-                # Create a message with the specified version
-                try:
-                    # Create a custom message with the specified version
-                    encrypted_data = self.client.protocol.encrypt_message(message_text)
-                    
-                    # Decode the message to modify the version
-                    message_dict = json.loads(encrypted_data.decode('utf-8'))
-                    message_dict["version"] = version
-                    
-                    # Re-encode the message
-                    modified_data = json.dumps(message_dict).encode('utf-8')
-                    
-                    # Send the modified message
-                    send_message(self.client.socket, modified_data)
-                    
-                    self.append_to_chat(f"Sent message with protocol version {version} (current: {current_version})")
-                
-                except Exception as e:
-                    self.append_to_chat(f"Error sending version test message: {e}")
-                
-                dialog.destroy()
-            
-            tk.Button(
-                    button_frame,
-                    text="Send",
-                    command=send_with_version,
-                    bg=self.BUTTON_BG_COLOR,
-                    fg=self.FG_COLOR,
-                    relief=tk.FLAT, # type: ignore # type: ignore
-                    activebackground=self.BUTTON_ACTIVE_BG,
-                    activeforeground=self.FG_COLOR
-            ).pack(side=tk.LEFT, padx=5) # type: ignore
-            
-            # Cancel button
-            tk.Button(
-                    button_frame,
-                    text="Cancel",
-                    command=dialog.destroy,
-                    bg=self.BUTTON_BG_COLOR,
-                    fg=self.FG_COLOR,
-                    relief=tk.FLAT, # type: ignore
-                    activebackground=self.BUTTON_ACTIVE_BG,
-                    activeforeground=self.FG_COLOR
-            ).pack(side=tk.RIGHT, padx=5) # type: ignore
-        
-        except Exception as err:
-            self.append_to_chat(f"Error creating protocol version test dialog: {err}")
     
     def toggle_dummy_messages(self):
         """Toggle sending of dummy messages for testing."""

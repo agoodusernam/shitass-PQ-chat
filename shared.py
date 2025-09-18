@@ -26,7 +26,11 @@ except ImportError as exc_:
     print("Required cryptographic libraries not found.")
     raise ImportError("Please install the required libraries with pip install -r requirements.txt") from exc_
 # Protocol constants
-PROTOCOL_VERSION: Final[float] = 2.2
+PROTOCOL_VERSION: Final[str] = "2.3"
+# Protocol compatibility is denoted by version number
+# Major.Minor.Patch - only Major and Minor are checked for compatibility.
+# Patch versions are for bug fixes and minor improvements that do not affect compatibility.
+# Minor version changes may add features but remain compatible with previous minor versions of the same major version.
 
 
 class MessageType(IntEnum):
@@ -58,15 +62,6 @@ class MessageType(IntEnum):
 
 # File transfer constants
 SEND_CHUNK_SIZE: Final[int] = 1024 * 1024  # 1 MiB chunks for sending
-
-# Maps protocol versions to compatible versions for key exchange and message processing
-# Some features may be limited when using older versions
-PROTOCOL_COMPATIBILITY: Final[dict[float, list[float]]] = {
-    1: [1],
-    2: [2, 2.1],
-    2.1: [2, 2.1],
-    2.2: [2, 2.1, 2.2],
-}
 
 
 def bytes_to_human_readable(size: int) -> str:
@@ -314,7 +309,6 @@ class SecureChatProtocol:
             if not self.socket:
                 return False
             emergency_message = {
-                "version": PROTOCOL_VERSION,
                 "type":    MessageType.EMERGENCY_CLOSE,
             }
             if self.shared_key and self.send_chain_key:
@@ -881,7 +875,6 @@ class SecureChatProtocol:
         
         # Create completion message
         complete_message = {
-            "version": PROTOCOL_VERSION,
             "type":    "key_exchange_complete"
         }
         return json.dumps(complete_message).encode('utf-8')

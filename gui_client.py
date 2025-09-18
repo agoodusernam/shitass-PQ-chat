@@ -56,7 +56,7 @@ except ImportError:
     TkinterDnD = None  # type: ignore
 
 from client import SecureChatClient
-from shared import bytes_to_human_readable, send_message, MessageType, PROTOCOL_VERSION
+from shared import bytes_to_human_readable, send_message, MessageType
 
 GUI_VERSION = 17
 
@@ -1014,7 +1014,6 @@ class ChatGUI:
                     if not selected_path:
                         # User canceled: send rejection and clean up
                         self.client.protocol.queue_message(("encrypt_json", {
-                            "version": PROTOCOL_VERSION,
                             "type": MessageType.FILE_REJECT,
                             "transfer_id": transfer_id,
                             "reason": "User canceled",
@@ -1033,7 +1032,6 @@ class ChatGUI:
                         metadata['save_path'] = selected_path
                     # Send acceptance
                     self.client.protocol.queue_message(("encrypt_json", {
-                        "version": PROTOCOL_VERSION,
                         "type": MessageType.FILE_ACCEPT,
                         "transfer_id": transfer_id,
                     }))
@@ -1070,7 +1068,6 @@ class ChatGUI:
                 try:
                     # Send rejection
                     self.client.protocol.queue_message(("encrypt_json", {
-                        "version": PROTOCOL_VERSION,
                         "type": MessageType.FILE_REJECT,
                         "transfer_id": transfer_id,
                         "reason": "User declined",
@@ -1109,7 +1106,6 @@ class ChatGUI:
                     if not selected_path:
                         # User canceled: send rejection and clean up
                         self.client.protocol.queue_message(("encrypt_json", {
-                            "version": PROTOCOL_VERSION,
                             "type": MessageType.FILE_REJECT,
                             "transfer_id": transfer_id,
                             "reason": "User canceled",
@@ -1128,7 +1124,6 @@ class ChatGUI:
                         metadata['save_path'] = selected_path
                     # Send acceptance
                     self.client.protocol.queue_message(("encrypt_json", {
-                        "version": PROTOCOL_VERSION,
                         "type": MessageType.FILE_ACCEPT,
                         "transfer_id": transfer_id,
                     }))
@@ -1152,7 +1147,6 @@ class ChatGUI:
                 try:
                     # Send rejection
                     self.client.protocol.queue_message(("encrypt_json", {
-                        "version": PROTOCOL_VERSION,
                         "type": MessageType.FILE_REJECT,
                         "transfer_id": transfer_id,
                         "reason": "User declined",
@@ -1566,7 +1560,6 @@ class ChatGUI:
             if not (self.client and self.client.socket and self.client.protocol):
                 return
             payload = {
-                "version": PROTOCOL_VERSION,
                 "type": MessageType.EPHEMERAL_MODE_CHANGE,
                 "mode": mode,
                 "owner_id": owner_id,
@@ -1678,7 +1671,6 @@ class GUISecureChatClient(SecureChatClient):
         """Send a delivery confirmation for a received text message."""
         try:
             message = {
-                "version": PROTOCOL_VERSION,
                 "type": MessageType.DELIVERY_CONFIRMATION,
                 "confirmed_counter": confirmed_counter,
             }
