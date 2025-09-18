@@ -371,7 +371,7 @@ class ChatGUI:
         # Handle window closing
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
     
-    def on_tkinter_thread(self, func: Callable[..., Any], *args, **kwargs) -> None:
+    def on_tkinter_thread(self, func: Callable, *args, **kwargs) -> None:
         """Run a function on the Tkinter main thread."""
         self.root.after(0, lambda: func(*args, **kwargs))
     
@@ -1977,7 +1977,7 @@ class GUISecureChatClient(SecureChatClient):
             
             if transfer_id not in self.active_file_metadata:
                 if self.gui:
-                    self.gui.root.after(0,  self.gui.file_transfer_window.add_transfer_message,
+                    self.gui.on_tkinter_thread(self.gui.file_transfer_window.add_transfer_message,
                         "Received chunk for unknown file transfer")
                 return
             

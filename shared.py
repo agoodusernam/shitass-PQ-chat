@@ -26,11 +26,12 @@ except ImportError as exc_:
     print("Required cryptographic libraries not found.")
     raise ImportError("Please install the required libraries with pip install -r requirements.txt") from exc_
 # Protocol constants
-PROTOCOL_VERSION: Final[str] = "2.3"
+PROTOCOL_VERSION: Final[str] = "2.3.1"
 # Protocol compatibility is denoted by version number
-# Major.Minor.Patch - only Major and Minor are checked for compatibility.
-# Patch versions are for bug fixes and minor improvements that do not affect compatibility.
+# Major.Minor.Patch - only Major are checked for compatibility.
+# Major version changes may introduce breaking changes and are not guaranteed to be compatible with previous major versions.
 # Minor version changes may add features but remain compatible with previous minor versions of the same major version.
+# Patch versions are for bug fixes and minor improvements that do not affect compatibility.
 
 
 class MessageType(IntEnum):
@@ -1215,6 +1216,8 @@ class SecureChatProtocol:
                 try:
                     compressor.finalize()
                 except:
+                    # We don't care if finalize fails during cleanup, we're in an error state anyway
+                    # Shouldn't hide the original exception
                     pass
                 raise e
         else:
@@ -1243,9 +1246,8 @@ class SecureChatProtocol:
                 "file_size":      message["file_size"],
                 "file_hash":      message["file_hash"],
                 "total_chunks":   message["total_chunks"],
-                "compressed":     message.get("compressed", True),  # Default to compressed for backward compatibility
+                "compressed":     message.get("compressed", True),
                 "processed_size": message.get("processed_size", message.get("compressed_size", 0))
-                # Support old field name
             }
         except Exception as e:
             raise ValueError(f"File metadata processing failed: {e}")
@@ -1386,18 +1388,11 @@ class SecureChatProtocol:
     def reassemble_file(self, transfer_id: str, output_path: str, expected_hash: str, compressed: bool = True) -> bool:
         """Finalize file transfer, optionally decompress, and verify integrity.
         
-        Since chunks are already written to a temporary file, this method:
-        1. Ensures any open file handle is closed
-        2. Optionally decompresses the temporary file (if compressed=True)
-        3. Calculates the hash of the final file
-        4. Verifies the hash against the expected hash
-        5. Moves the final file to the output path
-        
         Args:
             transfer_id: The transfer ID
             output_path: Final output path for the file
-            expected_hash: Expected SHA3-512 hash of the original file
-            compressed: Whether the received data is compressed (default: True for backward compatibility)
+            expected_hash: Expected BLAKE2b hash of the original file
+            compressed: Whether the received data is compressed (default: True)
         """
         if transfer_id not in self.received_chunks or transfer_id not in self.temp_file_paths:
             raise ValueError(f"No data found for transfer {transfer_id}")
@@ -1407,7 +1402,8 @@ class SecureChatProtocol:
             try:
                 self.open_file_handles[transfer_id].close()
             except Exception:
-                pass  # Ignore errors during cleanup
+                # Ignore errors on close, file handles will be closed on program exit anyway
+                pass
             del self.open_file_handles[transfer_id]
         
         temp_received_path = self.temp_file_paths[transfer_id]
