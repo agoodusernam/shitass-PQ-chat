@@ -449,6 +449,8 @@ class SecureChatClient:
                         self.handle_voice_call_reject()
                     case MessageType.VOICE_CALL_DATA:
                         self.handle_voice_call_data(decrypted_text)
+                    case MessageType.VOICE_CALL_END:
+                        self.handle_voice_call_end()
                     case _:
                         # It's a regular chat message if it's not a file-related type
                         self.display_regular_message(decrypted_text)
@@ -750,6 +752,9 @@ class SecureChatClient:
         """Handle incoming voice call data (console feedback)."""
         print("Voice calls not supported on the terminal client.")
     
+    def handle_voice_call_end(self) -> None:
+        """Handle incoming voice call end (console feedback)."""
+        print("Voice calls not supported on the terminal client.")
     
     def handle_file_chunk_binary(self, chunk_info: dict) -> None:
         """Handle incoming file chunk (optimized binary format)."""

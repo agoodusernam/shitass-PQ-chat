@@ -858,6 +858,14 @@ class ChatGUI:
         FORMAT = pyaudio.paInt32
         self.client.request_voice_call(rate=44100, chunk_size=CHUNK, audio_format=FORMAT)
         
+    def end_call(self):
+        """End the current voice call."""
+        try:
+            if self.client:
+                self.client.end_call()
+        except Exception as e:
+            self.append_to_chat(f"Error ending call: {e}")
+        
     
     def connect_to_server(self):
         """Connect to the chat server."""
@@ -1865,6 +1873,17 @@ class GUISecureChatClient(SecureChatClient):
             
             threading.Thread(target=self.send_voice_thread, args=(in_p, in_stream, chunk_size), daemon=True).start()
             threading.Thread(target=self.receive_voice_thread, args=(out_p, out_stream), daemon=True).start()
+
+            # Switch the GUI button to 'End Call'
+            try:
+                self.gui.on_tkinter_thread(
+                    self.gui.voice_call_btn.config,
+                    text="End Call",
+                    state=tk.NORMAL,  # type: ignore
+                    command=self.gui.end_call  # type: ignore
+                )
+            except Exception:
+                pass
         
         except Exception as e:
             self.gui.append_to_chat(f"Error handling voice call accept: {e}")
@@ -1921,7 +1940,68 @@ class GUISecureChatClient(SecureChatClient):
             self.voice_data_queue.append(base64.b64decode(json.loads(decrypted_text)["audio_data"]))
         except Exception as e:
             self.gui.append_to_chat(f"Error handling voice call data: {e}")
-            self.gui.append_to_chat(f"Data received: {decrypted_text}")
+        
+    def end_call(self):
+        """End the current voice call from this side and notify the peer."""
+        try:
+            if not self.voice_call_active:
+                return
+            # Stop local sending/receiving
+            self.voice_call_active = False
+            try:
+                self.protocol.send_dummy_messages = True
+            except Exception:
+                pass
+            # Clear any buffered audio
+            try:
+                self.voice_data_queue.clear()
+            except Exception:
+                pass
+            # Notify peer
+            try:
+                self.protocol.queue_message(("encrypt_json", {"type": MessageType.VOICE_CALL_END}))
+            except Exception as e:
+                self.gui.append_to_chat(f"Error notifying peer of call end: {e}")
+            # Reset UI button back to 'Voice Call'
+            try:
+                self.gui.on_tkinter_thread(
+                    self.gui.voice_call_btn.config,
+                    text="Voice Call",
+                    state=tk.NORMAL,  # type: ignore
+                    command=self.gui.start_call  # type: ignore
+                )
+            except Exception:
+                pass
+            self.gui.append_to_chat("Voice call ended")
+        except Exception as e:
+            self.gui.append_to_chat(f"Error ending call: {e}")
+        
+    def handle_voice_call_end(self) -> None:
+        """Handle incoming end-call message from the peer."""
+        try:
+            if self.voice_call_active:
+                self.voice_call_active = False
+            try:
+                self.protocol.send_dummy_messages = True
+            except Exception:
+                pass
+            try:
+                self.voice_data_queue.clear()
+            except Exception:
+                pass
+            # Update UI
+            try:
+                self.gui.on_tkinter_thread(
+                    self.gui.voice_call_btn.config,
+                    text="Voice Call",
+                    state=tk.NORMAL,  # type: ignore
+                    command=self.gui.start_call  # type: ignore
+                )
+            except Exception:
+                pass
+            self.gui.append_to_chat("Peer ended the voice call")
+        except Exception as e:
+            self.gui.append_to_chat(f"Error handling call end: {e}")
         
     
     def handle_delivery_confirmation(self, message_data: str) -> None:
