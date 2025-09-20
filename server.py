@@ -21,9 +21,6 @@ MAX_UNEXPECTED_MSGS: Final[int] = 10
 class SecureChatServer(socketserver.ThreadingTCPServer):
     """Secure chat server that handles two-client connections with end-to-end encryption."""
     
-    # Allow address reuse
-    allow_reuse_address = True
-    
     def __init__(self, host='0.0.0.0', port=16384):
         """Initialize the secure chat server.
         

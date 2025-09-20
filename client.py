@@ -65,7 +65,7 @@ class SecureChatClient:
         self.server_version = None
         self.server_protocol_version = None
         self.server_compatible_versions = None
-        
+    
     def connect(self) -> bool:
         """Connect to the chat server and start the message receiving thread.
         
@@ -93,7 +93,7 @@ class SecureChatClient:
             self.receive_thread.start()
             
             return True
-            
+        
         except Exception as e:
             print(f"Failed to connect to server: {e}")
             return False
@@ -115,14 +115,14 @@ class SecureChatClient:
                 try:
                     message_data = receive_message(self.socket)
                     self.handle_message(message_data)
-                    
+                
                 except ConnectionError:
                     print("\nConnection to server lost.")
                     break
                 except Exception as e:
                     print(f"\nError receiving message: {e}")
                     break
-                    
+        
         except Exception as e:
             print(f"Receive thread error: {e}")
         finally:
@@ -206,7 +206,7 @@ class SecureChatClient:
         
         except Exception as e:
             print(f"\nError handling message: {e}")
-            
+    
     def handle_keepalive(self) -> None:
         """Handle keepalive messages from the server."""
         try:
@@ -218,7 +218,7 @@ class SecureChatClient:
             
             # Send response to server
             send_message(self.socket, response_data)
-            
+        
         except Exception as e:
             print(f"\nError handling keepalive: {e}")
     
@@ -231,7 +231,7 @@ class SecureChatClient:
         try:
             confirmed_counter = json.loads(message).get("confirmed_counter")
             print(f"\n✓ Message {confirmed_counter} delivered")
-            
+        
         except Exception as e:
             print(f"\nError handling delivery confirmation: {e}")
     
@@ -259,10 +259,10 @@ class SecureChatClient:
             
             # Send to server (which will route to other client)
             send_message(self.socket, init_message)
-            
+        
         except Exception as e:
             print(f"Failed to initiate key exchange: {e}")
-
+    
     def handle_key_exchange_init(self, message_data: bytes) -> None:
         """Handle key exchange initiation from another client.
         
@@ -286,12 +286,12 @@ class SecureChatClient:
             # Display version warning if present
             if version_warning:
                 print(f"\n{version_warning}")
-                
+            
             response = self.protocol.create_key_exchange_response(ciphertext)
             
             # Send response back through server
             send_message(self.socket, response)
-            
+        
         except Exception as e:
             print(f"Key exchange init error: {e}")
     
@@ -304,11 +304,11 @@ class SecureChatClient:
                 # Display version warning if present
                 if version_warning:
                     print(f"\n{version_warning}")
-                    
+                
                 print("Key exchange completed successfully.")
             else:
                 print("Received key exchange response but no private key found")
-                
+        
         except Exception as e:
             print(f"Key exchange response error: {e}")
     
@@ -323,7 +323,7 @@ class SecureChatClient:
             
             # Display session fingerprint (same for both users)
             print("\nSession fingerprint:")
-            print("-"*40)
+            print("-" * 40)
             session_fingerprint = self.protocol.get_own_key_fingerprint()
             print(session_fingerprint)
             
@@ -343,14 +343,14 @@ class SecureChatClient:
                         break
                     if response in ['no', 'n']:
                         self.confirm_key_verification(False)
-                        
+                    
                     else:
                         print("Please enter 'yes', 'y' or 'no', 'n'")
                 except (EOFError, KeyboardInterrupt):
                     print("\nVerification cancelled. Connection will be insecure.")
                     self.confirm_key_verification(False)
                     break
-                    
+        
         except Exception as e:
             print(f"Error during key verification: {e}")
             self.confirm_key_verification(False)
@@ -381,7 +381,7 @@ class SecureChatClient:
             print("Type '/quit' to exit.")
             print("Type '/verify' to re-verify keys at any time.\n")
             print("Type '/rekey' to initiate a rekey for fresh session keys.\n")
-            
+        
         except Exception as e:
             print(f"Error confirming verification: {e}")
     
@@ -394,10 +394,9 @@ class SecureChatClient:
                 print("\n✓ Peer has verified your key successfully.")
             else:
                 print("\nPeer has NOT verified your key.")
-            
+        
         except Exception as e:
             print(f"Error handling verification message: {e}")
-    
     
     def display_regular_message(self, message: str, error=False, prefix: str = "") -> None:
         """Display a regular chat message."""
@@ -461,7 +460,7 @@ class SecureChatClient:
                 self.display_regular_message(decrypted_text)
                 # Send delivery confirmation for text messages only
                 self._send_delivery_confirmation(received_message_counter)
-            
+        
         except Exception as e:
             self.display_regular_message(str(e), error=True)
     
@@ -470,7 +469,7 @@ class SecureChatClient:
         try:
             # Queue delivery confirmation as JSON; loop will encrypt
             message = {
-                "type": MessageType.DELIVERY_CONFIRMATION,
+                "type":              MessageType.DELIVERY_CONFIRMATION,
                 "confirmed_counter": confirmed_counter,
             }
             self.protocol.queue_message(("encrypt_json", message))
@@ -493,25 +492,25 @@ class SecureChatClient:
             self.active_file_metadata.clear()
             
             # Notify user
-            print(f"\n{'='*50}")
+            print(f"\n{'=' * 50}")
             print("⚠️  KEY EXCHANGE RESET")
             print(f"Reason: {reset_message}")
             print("The secure session has been terminated.")
             print("Waiting for a new client to connect...")
             print("A new key exchange will start automatically.")
-            print(f"{'='*50}")
-            
+            print(f"{'=' * 50}")
+        
         except Exception as e:
             print(f"Error handling key exchange reset: {e}")
     
     def handle_emergency_close(self) -> None:
         """Handle emergency close message from the other client."""
         try:
-            print(f"\n{'='*50}")
+            print(f"\n{'=' * 50}")
             print("EMERGENCY CLOSE RECEIVED")
             print("The other client has activated emergency close.")
             print("Connection will be terminated immediately.")
-            print(f"{'='*50}")
+            print(f"{'=' * 50}")
             
             # Immediately disconnect
             self.disconnect()
@@ -522,7 +521,7 @@ class SecureChatClient:
             # Clear any pending file transfers
             self.pending_file_transfers.clear()
             self.active_file_metadata.clear()
-            
+        
         except Exception as e:
             print(f"Error handling emergency close: {e}")
     
@@ -553,12 +552,12 @@ class SecureChatClient:
         
         if not self.protocol.is_peer_key_verified():
             print("Sending message to unverified peer")
-            
+        
         try:
             # Queue plaintext; sender loop will handle encryption
             self.protocol.queue_message(("encrypt_text", text))
             return True
-            
+        
         except Exception as e:
             print(f"Failed to send message: {e}")
             return None
@@ -569,7 +568,7 @@ class SecureChatClient:
             if not self.verification_complete:
                 print("Cannot send file: Key verification not complete")
                 return
-
+            
             # Create file metadata message
             _, metadata = self.protocol.create_file_metadata_message(file_path, compress=compress)
             
@@ -577,15 +576,16 @@ class SecureChatClient:
             transfer_id = metadata["transfer_id"]
             self.pending_file_transfers[transfer_id] = {
                 "file_path": file_path,
-                "metadata": metadata,
-                "compress": compress
+                "metadata":  metadata,
+                "compress":  compress
             }
             
             # Send metadata to peer via queue (loop will encrypt)
             self.protocol.queue_message(("encrypt_json", metadata))
             compression_text = "compressed" if compress else "uncompressed"
-            print(f"File transfer request sent: {metadata['filename']} ({metadata['file_size']} bytes, {compression_text})")
-            
+            print(
+                f"File transfer request sent: {metadata['filename']} ({metadata['file_size']} bytes, {compression_text})")
+        
         except Exception as e:
             print(f"Failed to send file: {e}")
     
@@ -600,7 +600,7 @@ class SecureChatClient:
                 print("\nPeer enabled GLOBAL ephemeral mode. Only the enabler can disable it.")
             elif mode == "OFF":
                 print("\nPeer disabled GLOBAL ephemeral mode.")
-
+        
         except Exception as e:
             print(f"\nError handling ephemeral mode change: {e}")
     
@@ -625,17 +625,17 @@ class SecureChatClient:
                     if response in ['yes', 'y']:
                         # Send acceptance via queue (loop will encrypt)
                         self.protocol.queue_message(("encrypt_json", {
-                            "type": MessageType.FILE_ACCEPT,
+                            "type":        MessageType.FILE_ACCEPT,
                             "transfer_id": transfer_id,
                         }))
                         print("File transfer accepted. Waiting for file...")
-                        
+                    
                     elif response in ['no', 'n']:
                         # Send rejection via queue (loop will encrypt)
                         self.protocol.queue_message(("encrypt_json", {
-                            "type": MessageType.FILE_REJECT,
+                            "type":        MessageType.FILE_REJECT,
                             "transfer_id": transfer_id,
-                            "reason": "User declined",
+                            "reason":      "User declined",
                         }))
                         print("File transfer rejected.")
                         del self.active_file_metadata[transfer_id]
@@ -644,14 +644,14 @@ class SecureChatClient:
                 except (EOFError, KeyboardInterrupt):
                     # Send rejection on interrupt via queue
                     self.protocol.queue_message(("encrypt_json", {
-                        "type": MessageType.FILE_REJECT,
+                        "type":        MessageType.FILE_REJECT,
                         "transfer_id": transfer_id,
-                        "reason": "User canceled",
+                        "reason":      "User canceled",
                     }))
                     print("File transfer rejected.")
                     del self.active_file_metadata[transfer_id]
                     break
-                    
+        
         except Exception as e:
             print(f"Error handling file metadata: {e}")
     
@@ -675,12 +675,12 @@ class SecureChatClient:
             
             # Start sending file chunks in a separate thread to avoid blocking message processing
             chunk_thread = threading.Thread(
-                target=self._send_file_chunks,
-                args=(transfer_id, file_path),
-                daemon=True
+                    target=self._send_file_chunks,
+                    args=(transfer_id, file_path),
+                    daemon=True
             )
             chunk_thread.start()
-            
+        
         except Exception as e:
             print(f"Error handling file acceptance: {e}")
     
@@ -697,7 +697,7 @@ class SecureChatClient:
                 # Clean up transfer tracking
                 self.protocol.stop_sending_transfer(transfer_id)
                 del self.pending_file_transfers[transfer_id]
-            
+        
         except Exception as e:
             print(f"Error handling file rejection: {e}")
     
@@ -747,7 +747,7 @@ class SecureChatClient:
     def handle_voice_call_reject(self) -> None:
         """Handle incoming voice call rejection (console feedback)."""
         print("Voice calls not supported on the terminal client.")
-        
+    
     def handle_voice_call_data(self, decrypted_text: str) -> None:
         """Handle incoming voice call data (console feedback)."""
         print("Voice calls not supported on the terminal client.")
@@ -760,7 +760,7 @@ class SecureChatClient:
         """Handle incoming file chunk (optimized binary format)."""
         try:
             self._process_file_chunk_common(chunk_info)
-            
+        
         except Exception as e:
             print(f"Error handling binary file chunk: {e}")
     
@@ -776,10 +776,10 @@ class SecureChatClient:
         
         # Add chunk to protocol buffer
         is_complete = self.protocol.add_file_chunk(
-            transfer_id,
-            chunk_info["chunk_index"],
-            chunk_info["chunk_data"],
-            metadata["total_chunks"]
+                transfer_id,
+                chunk_info["chunk_index"],
+                chunk_info["chunk_data"],
+                metadata["total_chunks"]
         )
         
         # Show progress - but only at significant intervals to avoid console spam
@@ -791,10 +791,11 @@ class SecureChatClient:
             self._last_progress_shown[transfer_id] = -1
         
         # Only show progress every 10% or on completion to reduce console interference
-        if (progress - self._last_progress_shown[transfer_id] >= 10 or 
-            is_complete or 
-            received_chunks == 1):  # Always show first chunk
-            print(f"Receiving {metadata['filename']}: {progress:.1f}% ({received_chunks}/{metadata['total_chunks']} chunks)")
+        if (progress - self._last_progress_shown[transfer_id] >= 10 or
+                is_complete or
+                received_chunks == 1):  # Always show first chunk
+            print(
+                f"Receiving {metadata['filename']}: {progress:.1f}% ({received_chunks}/{metadata['total_chunks']} chunks)")
             self._last_progress_shown[transfer_id] = progress
         
         if is_complete:
@@ -818,10 +819,10 @@ class SecureChatClient:
                 
                 # Send the completion message via queue (loop will encrypt)
                 self.protocol.queue_message(("encrypt_json", {
-                    "type": MessageType.FILE_COMPLETE,
+                    "type":        MessageType.FILE_COMPLETE,
                     "transfer_id": transfer_id,
                 }))
-                
+            
             except Exception as e:
                 print(f"File reassembly failed: {e}")
             
@@ -842,8 +843,8 @@ class SecureChatClient:
                 filename = self.pending_file_transfers[transfer_id]["metadata"]["filename"]
                 print(f"File transfer completed: {filename}")
                 del self.pending_file_transfers[transfer_id]
-            
-            
+        
+        
         except Exception as e:
             print(f"Error handling file completion: {e}")
     
@@ -865,7 +866,8 @@ class SecureChatClient:
             
             # Check compatibility
             if self.server_protocol_version != PROTOCOL_VERSION:
-                print(f"⚠️ Protocol version mismatch: Client v{PROTOCOL_VERSION}, Server v{self.server_protocol_version}")
+                print(
+                    f"⚠️ Protocol version mismatch: Client v{PROTOCOL_VERSION}, Server v{self.server_protocol_version}")
                 # Use local compatibility matrix since server no longer sends it
                 major_server = self.server_protocol_version.split('.')[0]
                 major_client = PROTOCOL_VERSION.split('.')[0]
@@ -875,7 +877,7 @@ class SecureChatClient:
                     print("❌ Versions may not be compatible - communication issues possible")
             else:
                 print("✅ Protocol versions match")
-                
+        
         except Exception as e:
             print(f"Error handling server version info: {e}")
     
@@ -909,7 +911,7 @@ class SecureChatClient:
             
             # Stop tracking the sending transfer
             self.protocol.stop_sending_transfer(transfer_id)
-            
+        
         except Exception as e:
             print(f"Error sending file chunks: {e}")
             # Stop tracking on error as well
@@ -920,7 +922,7 @@ class SecureChatClient:
         if not self.connected:
             print("Not connected to server")
             return
-            
+        
         print("Secure Chat Client")
         print("==================")
         print("Commands:")
@@ -958,7 +960,7 @@ class SecureChatClient:
                     elif message.strip():
                         if not self.send_message(message):
                             continue
-                            
+                        
                         if self.protocol.is_peer_key_verified():
                             print(f"You: {message}")
                         else:
@@ -970,7 +972,7 @@ class SecureChatClient:
                 else:
                     # Wait for key exchange and verification to complete
                     time.sleep(0.1)
-                    
+        
         except Exception as e:
             print(f"Chat error: {e}")
         finally:
@@ -998,6 +1000,7 @@ class SecureChatClient:
                     pass
             
             print("\nDisconnected from server.")
+
 
 def main() -> None:
     """Main function to run the secure chat client."""
@@ -1042,6 +1045,7 @@ def main() -> None:
     else:
         print("Failed to connect to server")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
