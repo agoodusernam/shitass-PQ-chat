@@ -14,8 +14,10 @@ import threading
 import time
 from collections import deque
 from enum import IntEnum
-from typing import Final, Any
-from collections.abc import Generator
+from typing import Final, Any, SupportsIndex, SupportsBytes
+from collections.abc import Generator, Iterable, Buffer
+
+import pyaudio
 
 try:
     from kyber_py.ml_kem import ML_KEM_1024
@@ -26,7 +28,7 @@ except ImportError as exc_:
     print("Required cryptographic libraries not found.")
     raise ImportError("Please install the required libraries with pip install -r requirements.txt") from exc_
 # Protocol constants
-PROTOCOL_VERSION: Final[str] = "2.3.1"
+PROTOCOL_VERSION: Final[str] = "2.4.0"
 # Protocol compatibility is denoted by version number
 # Major.Minor.Patch - only Major are checked for compatibility.
 # Major version changes may introduce breaking changes and are not guaranteed to be compatible with previous major versions.
@@ -59,10 +61,25 @@ class MessageType(IntEnum):
     EPHEMERAL_MODE_CHANGE = 21
     REKEY = 22
     SERVER_DISCONNECT = 23
+    VOICE_CALL_INIT = 24
+    VOICE_CALL_ACCEPT = 25
+    VOICE_CALL_REJECT = 26
+    VOICE_CALL_DATA = 27
+    VOICE_CALL_END = 28
 
 
 # File transfer constants
 SEND_CHUNK_SIZE: Final[int] = 1024 * 1024  # 1 MiB chunks for sending
+
+VOICE_FORMAT: Final[int] = pyaudio.paInt32
+AUDIO_FORMAT: Final[int] = VOICE_FORMAT
+VOICE_CHANNELS: Final[int] = 1
+VOICE_RATE: Final[int] = 44100
+VOICE_SAMPLERATE: Final[int] = VOICE_RATE
+VOICE_CHUNK: Final[int] = int(VOICE_RATE * 0.01) # 10ms chunks
+VOICE_CHUNK_SIZE = VOICE_CHUNK
+RINGTONE_FILE: Final[str] = "ringtone.wav"
+VOICE_RINGING_FILE: Final[str] = RINGTONE_FILE
 
 
 def bytes_to_human_readable(size: int) -> str:
@@ -156,6 +173,7 @@ class SecureChatProtocol:
             ack_counters (set): Set of message counters to be acknowledged when the next message is sent.
             send_dummy_messages (bool): Whether to send dummy messages when idle.
         """
+        self.peer_version: str = ""
         self.own_private_key: bytes = bytes()
         self.mac_key: bytes = bytes()
         self.encryption_key: bytes = bytes()
@@ -401,7 +419,7 @@ class SecureChatProtocol:
                                     to_send = self.create_file_chunk_message(transfer_id, chunk_index, bytes(chunk_data))
                             elif kind in ("plaintext", "encrypted") and len(item) >= 2:
                                 data = item[1]
-                                if isinstance(data, (bytes, bytearray)):
+                                if isinstance(data, (Iterable[SupportsIndex], SupportsIndex, SupportsBytes, Buffer)):
                                     to_send = bytes(data)
                     except Exception as e:
                         # If preparing this item fails, drop it and continue
@@ -567,12 +585,6 @@ class SecureChatProtocol:
             raise ValueError("Both public keys must be available for fingerprint generation")
         return self.generate_session_fingerprint()
     
-    def get_peer_key_fingerprint(self) -> str:
-        """Get the consistent session fingerprint (same for both users)."""
-        if not self.own_public_key or not self.peer_public_key:
-            raise ValueError("Both public keys must be available for fingerprint generation")
-        return self.generate_session_fingerprint()
-    
     def generate_session_fingerprint(self) -> str:
         """Generate a consistent fingerprint for the session that both users will see."""
         if not self.own_public_key or not self.peer_public_key:
@@ -600,28 +612,24 @@ class SecureChatProtocol:
         """Check if peer's key has been verified."""
         return self.peer_key_verified
     
-    def create_key_verification_message(self, verified: bool) -> bytes:
+    @staticmethod
+    def create_key_verification_message(verified: bool) -> bytes:
         """Create a key verification status message."""
         message = {
-            "version":             PROTOCOL_VERSION,
             "type":                MessageType.KEY_VERIFICATION,
             "verified":            verified,
-            "own_key_fingerprint": self.get_own_key_fingerprint() if self.own_public_key else ""
         }
         return json.dumps(message).encode('utf-8')
     
     @staticmethod
-    def process_key_verification_message(data: bytes) -> dict:
+    def process_key_verification_message(data: bytes) -> bool:
         """Process a key verification message from peer."""
         try:
             message = json.loads(data.decode('utf-8'))
             if message["type"] != MessageType.KEY_VERIFICATION:
                 raise ValueError("Invalid message type")
             
-            return {
-                "verified":         message.get("verified", False),
-                "peer_fingerprint": message.get("own_key_fingerprint", "")
-            }
+            return message.get("verified", False)
         except Exception as e:
             raise ValueError(f"Key verification message processing failed: {e}") from e
     
@@ -668,9 +676,10 @@ class SecureChatProtocol:
                 raise ValueError("Invalid message type")
             
             # Check protocol version
+            self.peer_version = str(message["version"])
             peer_version = message.get("version")
             version_warning = None
-            if peer_version is not None and peer_version != PROTOCOL_VERSION:
+            if peer_version != "" and peer_version != PROTOCOL_VERSION:
                 version_warning = f"WARNING: Protocol version mismatch. Local: {PROTOCOL_VERSION}, Peer: {peer_version}. Communication may not work properly."
             
             public_key = base64.b64decode(message["public_key"])
@@ -726,7 +735,7 @@ class SecureChatProtocol:
             raise ValueError(f"Key exchange response failed: {e}") from e
     
     
-    def encrypt_message(self, plaintext: str) -> bytes:
+    def encrypt_message(self, plaintext: str | bytes) -> bytes:
         """
         Encrypt a message with authentication and replay protection using perfect forward secrecy.
         :param plaintext: The plaintext message to encrypt.
@@ -747,6 +756,7 @@ class SecureChatProtocol:
         
         # Convert plaintext to bytes
         plaintext_bytes = plaintext.encode('utf-8')
+
         
         # Add padding to prevent message size analysis
         # Pad to next 512 Bytes

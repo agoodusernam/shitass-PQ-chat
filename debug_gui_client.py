@@ -834,10 +834,15 @@ class DebugChatGUI(ChatGUI):
             debug_text += f"  Client Version: {PROTOCOL_VERSION}\n"
             
             # Server protocol version (if known)
-            if self.client.server_version is not None:
+            if self.client.server_protocol_version is not None:
                 debug_text += f"  Server Protocol Version: {self.client.server_protocol_version}\n"
             else:
                 debug_text += "  Server Protocol Version: Unknown\n"
+            
+            if self.client.peer_version != "":
+                debug_text += f"  Peer Protocol Version: {self.client.peer_version}\n"
+            else:
+                debug_text += "  Peer Protocol Version: Unknown\n"
                 
             debug_text += "\n"
             
