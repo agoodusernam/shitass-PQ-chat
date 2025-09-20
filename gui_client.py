@@ -1866,8 +1866,7 @@ class GUISecureChatClient(SecureChatClient):
             in_p = pyaudio.PyAudio()
             in_stream = in_p.open(rate=rate, channels=1, format=audio_format, input=True)
             
-
-                    
+            
             out_p = pyaudio.PyAudio()
             out_stream = out_p.open(rate=rate, channels=1, format=audio_format, output=True)
             
@@ -1903,8 +1902,14 @@ class GUISecureChatClient(SecureChatClient):
             self.gui.append_to_chat(f"Voice send error: {e}")
         
         finally:
-            stream.close()
-            p.terminate()
+            try:
+                if not stream.is_stopped():
+                    stream.close()
+                    p.terminate()
+                    
+            except Exception:
+                # Stream already closed
+                pass
 
     
     def receive_voice_thread(self, p: pyaudio.PyAudio, stream: pyaudio.Stream):
@@ -1923,8 +1928,12 @@ class GUISecureChatClient(SecureChatClient):
             self.gui.append_to_chat(f"Voice receive error: {e}")
         
         finally:
-            stream.close()
-            p.terminate()
+            try:
+                if not stream.is_stopped():
+                    stream.close()
+                    p.terminate()
+            except Exception:
+                pass
     
     def handle_voice_call_reject(self):
         """Handle rejection of a voice call request."""
