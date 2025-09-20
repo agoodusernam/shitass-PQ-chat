@@ -1895,7 +1895,7 @@ class GUISecureChatClient(SecureChatClient):
                     chunk = self.voice_data_queue.popleft()
                     stream.write(chunk)
                 else:
-                    time.sleep(0.01)
+                    time.sleep(0.005)
             else:
                 # Clean up on exit
                 stream.close()
@@ -1911,6 +1911,16 @@ class GUISecureChatClient(SecureChatClient):
         """Handle rejection of a voice call request."""
         self.gui.append_to_chat(f"Voice call rejected")
         self.gui.voice_call_btn.config(state=tk.NORMAL) # type: ignore
+    
+    def handle_voice_call_data(self, decrypted_text: str) -> None:
+        """Handle incoming voice call data (console feedback)."""
+        try:
+            if not self.voice_call_active:
+                return
+            # Directly enqueue the raw audio data for playback
+            self.voice_data_queue.append(base64.b64decode(decrypted_text))
+        except Exception as e:
+            self.gui.append_to_chat(f"Error handling voice call data: {e}")
         
     
     def handle_delivery_confirmation(self, message_data: str) -> None:

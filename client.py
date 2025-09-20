@@ -447,6 +447,8 @@ class SecureChatClient:
                         self.handle_voice_call_accept(decrypted_text)
                     case MessageType.VOICE_CALL_REJECT:
                         self.handle_voice_call_reject()
+                    case MessageType.VOICE_CALL_DATA:
+                        self.handle_voice_call_data(decrypted_text)
                     case _:
                         # It's a regular chat message if it's not a file-related type
                         self.display_regular_message(decrypted_text)
@@ -742,6 +744,10 @@ class SecureChatClient:
     
     def handle_voice_call_reject(self) -> None:
         """Handle incoming voice call rejection (console feedback)."""
+        print("Voice calls not supported on the terminal client.")
+        
+    def handle_voice_call_data(self, decrypted_text: str) -> None:
+        """Handle incoming voice call data (console feedback)."""
         print("Voice calls not supported on the terminal client.")
     
     
