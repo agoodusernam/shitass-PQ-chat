@@ -26,7 +26,7 @@ except ImportError as exc_:
     print("Required cryptographic libraries not found.")
     raise ImportError("Please install the required libraries with pip install -r requirements.txt") from exc_
 # Protocol constants
-PROTOCOL_VERSION: Final[str] = "2.4.0"
+PROTOCOL_VERSION: Final[str] = "2.4.3"
 # Protocol compatibility is denoted by version number
 # Major.Minor.Patch - only Major are checked for compatibility.
 # Major version changes may introduce breaking changes and are not guaranteed to be compatible with previous major versions.

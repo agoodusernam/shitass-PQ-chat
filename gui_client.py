@@ -1674,14 +1674,14 @@ class ChatGUI:
         Also plays a ringing sound effect
         GUI exclusive feature
         """
-        keep_ringing = False
+        keep_ringing = True
         # Create a modal dialog to prompt the user to accept or reject
         def on_accept():
             self.client.on_user_response(True, shared.VOICE_RATE, shared.VOICE_CHUNK,
                                          shared.VOICE_FORMAT)
             prompt.destroy()
             nonlocal keep_ringing
-            keep_ringing = True
+            keep_ringing = False
             message = {
                 "rate": shared.VOICE_RATE,
                 "chunk_size": shared.VOICE_CHUNK,
@@ -1695,7 +1695,7 @@ class ChatGUI:
             prompt.destroy()
             
             nonlocal keep_ringing
-            keep_ringing = True
+            keep_ringing = False
             
         # Play a simple ringing sound in a separate thread
         def play_ringtone():
@@ -1717,8 +1717,13 @@ class ChatGUI:
                     p.terminate()
                     
             except Exception:
-                stream.close()
-                p.terminate()
+                try:
+                    if stream.is_active():
+                        stream.close()
+                        p.terminate()
+                except Exception:
+                    pass  # Stream is probably already closed
+                    
         
         threading.Thread(target=play_ringtone, daemon=True).start()
         
