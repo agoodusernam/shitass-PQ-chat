@@ -423,7 +423,6 @@ class SecureChatClient:
                     case MessageType.EMERGENCY_CLOSE:
                         self.handle_emergency_close()
                     case MessageType.DUMMY_MESSAGE:
-                        # This is a dummy message, ignore it
                         pass
                     case MessageType.FILE_METADATA:
                         self.handle_file_metadata(decrypted_text)
@@ -981,7 +980,11 @@ class SecureChatClient:
     def disconnect(self) -> None:
         """Disconnect from the server."""
         if self.connected:
+            # If the key exchange was complete there is a peer, notify them of disconnect
+            self.end_call(notify_peer=self.key_exchange_complete)
+            
             self.connected = False
+            
             
             # Stop the sender thread first
             self.protocol.stop_sender_thread()
@@ -1000,6 +1003,9 @@ class SecureChatClient:
                     pass
             
             print("\nDisconnected from server.")
+            
+    def end_call(self, notify_peer: bool = True) -> None:
+        pass
 
 
 def main() -> None:

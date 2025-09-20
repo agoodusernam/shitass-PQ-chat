@@ -395,6 +395,15 @@ class DebugChatGUI(ChatGUI):
         )
         self.windows_notif_btn.pack(side=tk.LEFT, padx=(10, 0))  # type: ignore
         
+        self.voice_call_btn = tk.Button(
+                conn_frame, text="Voice Call", command=self.start_call,
+                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,  # type: ignore
+                activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
+                font=("Consolas", 10)
+        )
+        
+        self.voice_call_btn.pack(side=tk.LEFT, padx=(10, 0))  # type: ignore
+        
         # Status indicator (top right)
         self.status_label = tk.Label(
                 conn_frame, text="Not Connected",

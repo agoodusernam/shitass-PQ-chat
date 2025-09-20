@@ -873,8 +873,8 @@ class ChatGUI:
     def end_call(self):
         """End the current voice call."""
         try:
-            if self.client:
-                self.client.end_call()
+
+            self.client.end_call()
         except Exception as e:
             self.append_to_chat(f"Error ending call: {e}")
     
@@ -931,8 +931,7 @@ class ChatGUI:
     
     def disconnect_from_server(self):
         """Disconnect from the server."""
-        if self.client:
-            self.client.disconnect()
+        self.client.disconnect()
         self.connected = False
         self.connect_btn.config(text="Connect")
         self.host_entry.config(state=tk.NORMAL)  # type: ignore
@@ -1973,25 +1972,21 @@ class GUISecureChatClient(SecureChatClient):
         except Exception as e:
             self.gui.append_to_chat(f"Error handling voice call data: {e}")
     
-    def end_call(self):
+    def end_call(self, notify_peer: bool = True) -> None:
         """End the current voice call from this side and notify the peer."""
         try:
             if not self.voice_call_active:
                 return
             # Stop local sending/receiving
             self.voice_call_active = False
-            try:
-                self.protocol.send_dummy_messages = True
-            except Exception:
-                pass
+            self.protocol.send_dummy_messages = True
             # Clear any buffered audio
-            try:
-                self.voice_data_queue.clear()
-            except Exception:
-                pass
+
+            self.voice_data_queue.clear()
             # Notify peer
             try:
-                self.protocol.queue_message(("encrypt_json", {"type": MessageType.VOICE_CALL_END}))
+                if notify_peer:
+                    self.protocol.queue_message(("encrypt_json", {"type": MessageType.VOICE_CALL_END}))
             except Exception as e:
                 self.gui.append_to_chat(f"Error notifying peer of call end: {e}")
             # Reset UI button back to 'Voice Call'
@@ -2172,6 +2167,7 @@ class GUISecureChatClient(SecureChatClient):
         try:
             message = json.loads(message_data.decode('utf-8'))
             reset_message = message.get("message", "Key exchange reset")
+            self.end_call(notify_peer=False)
             
             # Reset client state
             self.key_exchange_complete = False
