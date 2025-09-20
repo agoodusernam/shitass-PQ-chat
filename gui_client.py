@@ -507,13 +507,14 @@ class ChatGUI:
         )
         self.windows_notif_btn.pack(side=tk.LEFT, padx=(10, 0)) # type: ignore
         
-        self.voice_call_btn = tk.Button(
+        if PYAUDIO_AVAILABLE:
+            self.voice_call_btn = tk.Button(
                 conn_frame, text="Voice Call", command=self.start_call,
                 bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,  # type: ignore
                 activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
                 font=("Consolas", 10)
-        )
-        if PYAUDIO_AVAILABLE:
+            )
+        
             self.voice_call_btn.pack(side=tk.LEFT, padx=(10, 0)) # type: ignore
         
         # Status indicator (top right)
@@ -850,7 +851,7 @@ class ChatGUI:
             messagebox.showwarning("Warning", "Cannot start call - verification not complete")
             return
         
-        self.call_btn.config(state=tk.DISABLED)  # type: ignore
+        self.voice_call_btn.config(state=tk.DISABLED)  # type: ignore
         
         VOICE_SAMPLE_RATE = 44100
         CHUNK = int(VOICE_SAMPLE_RATE * 0.01)
@@ -1832,7 +1833,7 @@ class GUISecureChatClient(SecureChatClient):
                 "chunk_size":   chunk_size,
                 "audio_format": audio_format,
             }))
-            self.gui.call_btn.config(state=tk.DISABLED)  # type: ignore
+            self.gui.voice_call_btn.config(state=tk.DISABLED)  # type: ignore
         else:
             self.protocol.queue_message(("encrypt_json", {
                 "type":   MessageType.VOICE_CALL_REJECT,
@@ -1909,7 +1910,7 @@ class GUISecureChatClient(SecureChatClient):
     def handle_voice_call_reject(self):
         """Handle rejection of a voice call request."""
         self.gui.append_to_chat(f"Voice call rejected")
-        self.gui.call_btn.config(state=tk.NORMAL) # type: ignore
+        self.gui.voice_call_btn.config(state=tk.NORMAL) # type: ignore
         
     
     def handle_delivery_confirmation(self, message_data: str) -> None:
