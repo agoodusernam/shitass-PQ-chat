@@ -323,7 +323,7 @@ class ChatGUI:
     def __init__(self, root, theme_colors=None):
         self.root = root
         self.root.title("Secure Chat Client")
-        self.root.geometry("900x600")
+        self.root.geometry("950x600")
         
         # Store the theme colors dictionary
         self.theme_colors = theme_colors or {}
@@ -1918,9 +1918,10 @@ class GUISecureChatClient(SecureChatClient):
             if not self.voice_call_active:
                 return
             # Directly enqueue the raw audio data for playback
-            self.voice_data_queue.append(base64.b64decode(decrypted_text))
+            self.voice_data_queue.append(base64.b64decode(json.loads(decrypted_text)["audio_data"]))
         except Exception as e:
             self.gui.append_to_chat(f"Error handling voice call data: {e}")
+            self.gui.append_to_chat(f"Data received: {decrypted_text}")
         
     
     def handle_delivery_confirmation(self, message_data: str) -> None:
