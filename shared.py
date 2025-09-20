@@ -17,8 +17,6 @@ from enum import IntEnum
 from typing import Final, Any, SupportsIndex, SupportsBytes
 from collections.abc import Generator, Iterable, Buffer
 
-import pyaudio
-
 try:
     from kyber_py.ml_kem import ML_KEM_1024
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -71,7 +69,7 @@ class MessageType(IntEnum):
 # File transfer constants
 SEND_CHUNK_SIZE: Final[int] = 1024 * 1024  # 1 MiB chunks for sending
 
-VOICE_FORMAT: Final[int] = pyaudio.paInt32
+VOICE_FORMAT: Final[int] = 2
 AUDIO_FORMAT: Final[int] = VOICE_FORMAT
 VOICE_CHANNELS: Final[int] = 1
 VOICE_RATE: Final[int] = 44100
