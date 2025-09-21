@@ -359,7 +359,7 @@ class SecureChatClient:
         """Confirm the key verification result."""
         try:
             # Update local verification status
-            self.protocol.verify_peer_key(verified)
+            self.protocol.peer_key_verified = verified
             
             # Send verification status to peer
             verification_message = self.protocol.create_key_verification_message(verified)
@@ -549,7 +549,7 @@ class SecureChatClient:
             print(f"Cannot send message: {status_msg}")
             return False
         
-        if not self.protocol.is_peer_key_verified():
+        if not self.protocol.peer_key_verified:
             print("Sending message to unverified peer")
         
         try:
@@ -964,7 +964,7 @@ class SecureChatClient:
                         if not self.send_message(message):
                             continue
                         
-                        if self.protocol.is_peer_key_verified():
+                        if self.protocol.peer_key_verified:
                             print(f"You: {message}")
                         else:
                             print(f"You (unverified): {message}")

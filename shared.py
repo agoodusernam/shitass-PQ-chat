@@ -599,14 +599,6 @@ class SecureChatProtocol:
         # Generate fingerprint from combined keys
         return self.generate_key_fingerprint(combined_keys)
     
-    def verify_peer_key(self, user_confirmed: bool):
-        """Mark peer's key as verified or unverified based on user confirmation."""
-        self.peer_key_verified = user_confirmed
-    
-    def is_peer_key_verified(self) -> bool:
-        """Check if peer's key has been verified."""
-        return self.peer_key_verified
-    
     @staticmethod
     def create_key_verification_message(verified: bool) -> bytes:
         """Create a key verification status message."""
@@ -934,7 +926,7 @@ class SecureChatProtocol:
     def confirm_key_verification(self, verified: bool) -> bytes:
         """Confirm key verification result and return response message."""
         # Update local verification status
-        self.verify_peer_key(verified)
+        self.peer_key_verified = verified
         
         # Create verification response message
         verification_response = {

@@ -1226,7 +1226,7 @@ class ChatGUI:
             
             if self.client.send_message(message):
                 # Display the sent message with delivery tracking
-                if self.client.protocol.is_peer_key_verified():
+                if self.client.protocol.peer_key_verified:
                     display_text = f"You: {message}"
                 else:
                     display_text = f"You (unverified): {message}"
