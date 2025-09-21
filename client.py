@@ -628,6 +628,7 @@ class SecureChatClient:
                             "transfer_id": transfer_id,
                         }))
                         print("File transfer accepted. Waiting for file...")
+                        self.protocol.send_dummy_messages = False
                     
                     elif response in ['no', 'n']:
                         # Send rejection via queue (loop will encrypt)
@@ -657,6 +658,7 @@ class SecureChatClient:
     def handle_file_accept(self, decrypted_message: str) -> None:
         """Handle file acceptance from peer."""
         try:
+            self.protocol.send_dummy_messages = False
             message = json.loads(decrypted_message)
             transfer_id = message["transfer_id"]
             
@@ -842,6 +844,7 @@ class SecureChatClient:
                 filename = self.pending_file_transfers[transfer_id]["metadata"]["filename"]
                 print(f"File transfer completed: {filename}")
                 del self.pending_file_transfers[transfer_id]
+                self.protocol.send_dummy_messages = True
         
         
         except Exception as e:
@@ -899,7 +902,8 @@ class SecureChatClient:
             
             for i, chunk in enumerate(chunk_generator):
                 # Queue chunk instruction; loop will encrypt and send
-                self.protocol.queue_message(("file_chunk", transfer_id, i, chunk))
+                send_message(self.socket ,self.protocol.create_file_chunk_message(transfer_id,
+                                                                                   i, chunk))
                 
                 # Show progress
                 progress = ((i + 1) / total_chunks) * 100

@@ -69,7 +69,7 @@ class MessageType(IntEnum):
 # File transfer constants
 SEND_CHUNK_SIZE: Final[int] = 1024 * 1024  # 1 MiB chunks for sending
 
-VOICE_FORMAT: Final[int] = 2
+VOICE_FORMAT: Final[int] = 2 # 32 bit integer PCM
 AUDIO_FORMAT: Final[int] = VOICE_FORMAT
 VOICE_CHANNELS: Final[int] = 1
 VOICE_RATE: Final[int] = 44100
@@ -294,7 +294,7 @@ class SecureChatProtocol:
         self.sender_thread = None
         self.socket = None
     
-    def queue_message(self, message) -> None:
+    def queue_message(self, message: bytes | str | dict[Any, Any] | tuple[str, Any]) -> None:
         """Add a message to the send queue.
         
         The message can be one of the following:
@@ -411,10 +411,6 @@ class SecureChatProtocol:
                                 if isinstance(obj, dict) and self.shared_key and self.send_chain_key:
                                     to_send = self.encrypt_message(json.dumps(obj))
                                     post_action = "switch_keys"
-                            elif kind == "file_chunk" and len(item) >= 4:
-                                transfer_id, chunk_index, chunk_data = item[1], item[2], item[3]
-                                if isinstance(transfer_id, str) and isinstance(chunk_index, int) and isinstance(chunk_data, (bytes, bytearray)):
-                                    to_send = self.create_file_chunk_message(transfer_id, chunk_index, bytes(chunk_data))
                             elif kind in ("plaintext", "encrypted") and len(item) >= 2:
                                 data = item[1]
                                 if isinstance(data, (Iterable[SupportsIndex], SupportsIndex, SupportsBytes, Buffer)):
@@ -432,14 +428,14 @@ class SecureChatProtocol:
                         if post_action == "switch_keys":
                             try:
                                 self.activate_pending_keys()
-                            except Exception as _:
+                            except Exception:
                                 pass
                     except Exception:
                         # If sending fails, the connection is likely broken
                         # The main thread will handle reconnection
                         pass
                 
-                # Wait 500ms before next cycle
+                # Wait 250ms before next cycle
                 time.sleep(0.25)
             
             except Exception:

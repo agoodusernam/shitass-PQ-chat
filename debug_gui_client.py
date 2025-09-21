@@ -1807,8 +1807,8 @@ class DebugChatGUI(ChatGUI):
 class DebugGUISecureChatClient(GUISecureChatClient):
     """Debug version of GUISecureChatClient - extends base with debug features."""
     
-    def __init__(self, gui: DebugChatGUI, host='localhost', port=16384, ):
-        super().__init__(gui, port, host)
+    def __init__(self, gui: DebugChatGUI, host='localhost', port=16384):
+        super().__init__(gui, host, port)
         
         # Protocol version tracking
         self.peer_version: int = 0  # Will be set during key exchange
@@ -2091,7 +2091,7 @@ def main():
             gui.append_to_chat(f"Connecting to {host}:{port}...")
             
             # Create GUI-aware client instance
-            gui.client = DebugGUISecureChatClient(gui, host, port, )
+            gui.client = DebugGUISecureChatClient(gui, host, port)
             # Propagate current toggle to client
             try:
                 gui.client.attach_crypto_info_to_messages = gui.attach_crypto_info_to_messages
