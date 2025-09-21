@@ -569,7 +569,7 @@ class SecureChatClient:
                 return
             
             # Create file metadata message
-            _, metadata = self.protocol.create_file_metadata_message(file_path, compress=compress)
+            metadata = self.protocol.create_file_metadata_message(file_path, compress=compress)
             
             # Store file path for later sending
             transfer_id = metadata["transfer_id"]

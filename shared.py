@@ -15,7 +15,7 @@ import time
 from collections import deque
 from enum import IntEnum
 from typing import Final, Any, SupportsIndex, SupportsBytes
-from collections.abc import Generator, Iterable, Buffer
+from collections.abc import Generator, Buffer
 
 try:
     from kyber_py.ml_kem import ML_KEM_1024
@@ -69,12 +69,12 @@ class MessageType(IntEnum):
 # File transfer constants
 SEND_CHUNK_SIZE: Final[int] = 1024 * 1024  # 1 MiB chunks for sending
 
-VOICE_FORMAT: Final[int] = 2 # 32 bit integer PCM
+VOICE_FORMAT: Final[int] = 2  # 32 bit integer PCM
 AUDIO_FORMAT: Final[int] = VOICE_FORMAT
 VOICE_CHANNELS: Final[int] = 1
 VOICE_RATE: Final[int] = 44100
 VOICE_SAMPLERATE: Final[int] = VOICE_RATE
-VOICE_CHUNK: Final[int] = int(VOICE_RATE * 0.01) # 10ms chunks
+VOICE_CHUNK: Final[int] = int(VOICE_RATE * 0.01)  # 10ms chunks
 VOICE_CHUNK_SIZE = VOICE_CHUNK
 RINGTONE_FILE: Final[str] = "ringtone.wav"
 VOICE_RINGING_FILE: Final[str] = RINGTONE_FILE
@@ -104,8 +104,8 @@ class StreamingGzipCompressor:
     """A streaming gzip compressor that yields compressed chunks as they're ready."""
     
     def __init__(self):
-        self.buffer = io.BytesIO()
-        self.compressor = gzip.GzipFile(fileobj=self.buffer, mode='wb', compresslevel=9)
+        self.buffer: io.BytesIO = io.BytesIO()
+        self.compressor: gzip.GzipFile = gzip.GzipFile(fileobj=self.buffer, mode='wb', compresslevel=9)
     
     def compress_chunk(self, data: bytes) -> bytes:
         """Compress a chunk of data and return any available compressed output."""
@@ -326,7 +326,7 @@ class SecureChatProtocol:
             if not self.socket:
                 return False
             emergency_message = {
-                "type":    MessageType.EMERGENCY_CLOSE,
+                "type": MessageType.EMERGENCY_CLOSE,
             }
             if self.shared_key and self.send_chain_key:
                 # Encrypt immediately using normal ratcheting
@@ -413,7 +413,7 @@ class SecureChatProtocol:
                                     post_action = "switch_keys"
                             elif kind in ("plaintext", "encrypted") and len(item) >= 2:
                                 data = item[1]
-                                if isinstance(data, (Iterable[SupportsIndex], SupportsIndex, SupportsBytes, Buffer)):
+                                if isinstance(data, (SupportsIndex, SupportsBytes, Buffer)):
                                     to_send = bytes(data)
                     except Exception as e:
                         # If preparing this item fails, drop it and continue
@@ -500,7 +500,7 @@ class SecureChatProtocol:
                 algorithm=hashes.SHA3_512(),
                 length=64,
                 salt=b"ReallyCoolAndSecureSalt",
-                info=f"chain_key_{counter}".encode()
+                info=f"chain_key_{counter}".encode("utf-8")
         )
         return hkdf.derive(chain_key)
     
@@ -509,10 +509,10 @@ class SecureChatProtocol:
         """Derive encryption key, MAC key, and root chain key from a shared secret without mutating state."""
         # Derive encryption and MAC keys
         hkdf_keys = HKDF(
-            algorithm=hashes.SHA3_512(),
-            length=64,
-            salt=b"ReallyCoolAndSecureSalt",
-            info=b"key_derivation"
+                algorithm=hashes.SHA3_512(),
+                length=64,
+                salt=b"ReallyCoolAndSecureSalt",
+                info=b"key_derivation"
         )
         derived = hkdf_keys.derive(shared_secret)
         enc_key = derived[:32]
@@ -520,10 +520,10 @@ class SecureChatProtocol:
         
         # Derive root chain key
         hkdf_chain = HKDF(
-            algorithm=hashes.SHA3_512(),
-            length=64,
-            salt=b"ReallyCoolAndSecureSalt",
-            info=b"chain_key_root"
+                algorithm=hashes.SHA3_512(),
+                length=64,
+                salt=b"ReallyCoolAndSecureSalt",
+                info=b"chain_key_root"
         )
         root_chain_key = hkdf_chain.derive(shared_secret)
         return enc_key, mac_key, root_chain_key
@@ -537,7 +537,8 @@ class SecureChatProtocol:
         wordlist = self._load_wordlist()
         
         # Convert hash to word-based fingerprint
-        words = self._hash_to_words(key_hash, wordlist, num_words=20)
+        words = self._hash_to_words(key_hash, wordlist, num_words=16)
+        # 16 words should give ~256 bits of security with a wordlist of ~65k words
         
         # Format the words in a user-friendly way
         # Display 5 words per line for better readability
@@ -548,20 +549,20 @@ class SecureChatProtocol:
         return msg.strip()
     
     @staticmethod
-    def _load_wordlist() -> list:
-        """Load the EFF large wordlist."""
+    def _load_wordlist() -> list[str]:
+        """Load the wordlist."""
         try:
-            wordlist_path = os.path.join(os.path.dirname(__file__), 'eff_large_wordlist.txt')
+            wordlist_path = os.path.join(os.path.dirname(__file__), 'wordlist.txt')
             with open(wordlist_path, 'r', encoding='utf-8') as f:
                 return [line.strip() for line in f if line.strip()]
         except FileNotFoundError as exc:
             # Fallback if wordlist file is not found
             raise FileNotFoundError(
-                "eff_large_wordlist.txt not found. Please ensure the wordlist file is in the same directory as "
-                "shared.py") from exc
+                    "wordlist.txt not found. Please ensure the wordlist file is in the same directory as "
+                    "shared.py") from exc
     
     @staticmethod
-    def _hash_to_words(hash_bytes: bytes, wordlist: list, num_words: int = 20) -> list:
+    def _hash_to_words(hash_bytes: bytes, wordlist: list[str], num_words: int = 20) -> list[str]:
         """Convert hash bytes to a list of words from the wordlist."""
         # Convert hash to integer for easier manipulation
         hash_int = int.from_bytes(hash_bytes, byteorder='big')
@@ -610,8 +611,8 @@ class SecureChatProtocol:
     def create_key_verification_message(verified: bool) -> bytes:
         """Create a key verification status message."""
         message = {
-            "type":                MessageType.KEY_VERIFICATION,
-            "verified":            verified,
+            "type":     MessageType.KEY_VERIFICATION,
+            "verified": verified,
         }
         return json.dumps(message).encode('utf-8')
     
@@ -728,8 +729,7 @@ class SecureChatProtocol:
         except Exception as e:
             raise ValueError(f"Key exchange response failed: {e}") from e
     
-    
-    def encrypt_message(self, plaintext: str | bytes) -> bytes:
+    def encrypt_message(self, plaintext: str) -> bytes:
         """
         Encrypt a message with authentication and replay protection using perfect forward secrecy.
         :param plaintext: The plaintext message to encrypt.
@@ -750,7 +750,6 @@ class SecureChatProtocol:
         
         # Convert plaintext to bytes
         plaintext_bytes = plaintext.encode('utf-8')
-
         
         # Add padding to prevent message size analysis
         # Pad to next 512 Bytes
@@ -880,7 +879,7 @@ class SecureChatProtocol:
         
         # Create completion message
         complete_message = {
-            "type":    "key_exchange_complete"
+            "type": "key_exchange_complete"
         }
         return json.dumps(complete_message).encode('utf-8')
     
@@ -981,8 +980,8 @@ class SecureChatProtocol:
         self.rekey_private_key = private_key
         self.rekey_in_progress = True
         return {
-            "type": MessageType.REKEY,
-            "action": "init",
+            "type":       MessageType.REKEY,
+            "action":     "init",
             "public_key": base64.b64encode(public_key).decode('utf-8'),
         }
     
@@ -1008,8 +1007,8 @@ class SecureChatProtocol:
         self.pending_peer_counter = 0
         self.rekey_in_progress = True
         return {
-            "type": MessageType.REKEY,
-            "action": "response",
+            "type":       MessageType.REKEY,
+            "action":     "response",
             "ciphertext": base64.b64encode(ciphertext).decode('utf-8'),
         }
     
@@ -1033,7 +1032,7 @@ class SecureChatProtocol:
         self.pending_peer_counter = 0
         self.rekey_in_progress = True
         return {
-            "type": MessageType.REKEY,
+            "type":   MessageType.REKEY,
             "action": "commit",
         }
     
@@ -1046,24 +1045,24 @@ class SecureChatProtocol:
         if not self.rekey_in_progress:
             # Nothing pending; ignore gracefully
             return {
-                "type": MessageType.REKEY,
+                "type":   MessageType.REKEY,
                 "action": "commit_ack",
             }
         return {
-            "type": MessageType.REKEY,
+            "type":   MessageType.REKEY,
             "action": "commit_ack",
         }
     
     # File transfer methods
     def create_file_metadata_message(self, file_path: str,
-                                     compress: bool = True) -> tuple[bytes, dict[str, str | int | bool]]:
+                                     compress: bool = True) -> dict[str, MessageType | str | int | bool]:
         """Create a file metadata message for file transfer initiation."""
         
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
         
-        file_size = os.path.getsize(file_path)
-        file_name = os.path.basename(file_path)
+        file_size: int = os.path.getsize(file_path)
+        file_name: str = os.path.basename(file_path)
         
         # Calculate file hash for integrity verification (of original uncompressed file)
         file_hash = hashlib.blake2b(digest_size=32)
@@ -1073,8 +1072,8 @@ class SecureChatProtocol:
         
         # Calculate the actual number of chunks that will be sent
         # This is critical for large files to ensure correct progress tracking
-        total_chunks = 0
-        total_processed_size = 0
+        total_chunks: int = 0
+        total_processed_size: int = 0
         
         try:
             # Use the same chunking logic as chunk_file to get accurate count
@@ -1088,23 +1087,21 @@ class SecureChatProtocol:
             total_processed_size = file_size if not compress else int(file_size * 0.85)  # Rough estimate
         
         # Generate unique transfer ID
-        transfer_id = hashlib.sha3_512(f"{file_name}{file_size}{file_hash.hexdigest()}".encode()).hexdigest()[:16]
+        transfer_id: str = hashlib.sha3_512(f"{file_name}{file_size}{file_hash.hexdigest()}".encode()).hexdigest()[:16]
         
         metadata = {
             "type":           MessageType.FILE_METADATA,
             "transfer_id":    transfer_id,
             "filename":       file_name,
-            "file_size":      file_size,  # Original file size for integrity verification
-            "file_hash":      file_hash.hexdigest(),  # Hash of original file
-            "total_chunks":   total_chunks,  # Actual number of chunks
-            "compressed":     compress,  # Whether the transfer is compressed
-            "processed_size": total_processed_size  # Total processed size for progress tracking
+            "file_size":      file_size,
+            "file_hash":      file_hash.hexdigest(),
+            "total_chunks":   total_chunks,
+            "compressed":     compress,
+            "processed_size": total_processed_size
         }
         
-        encrypted_message = self.encrypt_message(json.dumps(metadata))
-        
-        
-        return encrypted_message, metadata
+        # mypy believes metadata to be of type 'dict[str, object]' but i have no idea why
+        return metadata
     
     def create_file_accept_message(self, transfer_id: str) -> bytes:
         """Create a file acceptance message."""
@@ -1169,7 +1166,7 @@ class SecureChatProtocol:
         # Pack counter (4 bytes) + nonce (12 bytes) + ciphertext
         counter_bytes = struct.pack('!I', self.message_counter)
         return counter_bytes + nonce + ciphertext
-
+    
     @staticmethod
     def chunk_file(file_path: str, compress: bool = True) -> Generator[bytes, None, None]:
         """Generate file chunks for transmission one at a time.
@@ -1484,8 +1481,8 @@ class SecureChatProtocol:
 def create_error_message(error_text: str) -> bytes:
     """Create an error message"""
     message = {
-        "type":    MessageType.ERROR,
-        "error":   error_text
+        "type":  MessageType.ERROR,
+        "error": error_text
     }
     return json.dumps(message).encode('utf-8')
 
