@@ -13,7 +13,7 @@ import uuid
 import wave
 from collections import deque
 from tkinter import scrolledtext, messagebox, filedialog
-from typing import Callable
+from typing import Callable, Any
 
 import tkinterdnd2
 
@@ -1751,17 +1751,17 @@ class ChatGUI:
 class GUISecureChatClient(SecureChatClient):
     """Extended SecureChatClient that works with GUI."""
     
-    def __init__(self, gui: ChatGUI, host='localhost', port=16384):
+    def __init__(self, gui: "ChatGUI", host='localhost', port=16384):
         super().__init__(host, port)
         self.voice_data_queue: deque[bytes] = deque()
         self.voice_call_active: bool = False
         self.gui: "ChatGUI" = gui
         # Initialize verification flags and state properly
-        self.verification_complete = False
-        self.verification_started = False
-        self.verification_pending = False
+        self.verification_complete: bool = False
+        self.verification_started: bool = False
+        self.verification_pending: bool = False
         # Initialize file transfer state
-        self.pending_file_requests = {}
+        self.pending_file_requests: dict[Any, Any] = {}
     
     @staticmethod
     def _is_image_file(file_path: str) -> bool:

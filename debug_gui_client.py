@@ -13,7 +13,7 @@ from tkinter import scrolledtext, messagebox, filedialog
 from tkinterdnd2 import TkinterDnD, DND_FILES
 
 # Import base classes
-from gui_client import ChatGUI, GUISecureChatClient, FileTransferWindow
+from gui_client import ChatGUI, GUISecureChatClient
 from shared import PROTOCOL_VERSION, send_message, SecureChatProtocol, MessageType
 
 
@@ -96,6 +96,7 @@ class DebugProtocol(SecureChatProtocol):
         except Exception:
             nonce_b64 = ""
             ciphertext_b64 = ""
+            msg = {}
         
         # Determine if plaintext looked like control/dummy
         is_control = False
@@ -118,7 +119,6 @@ class DebugProtocol(SecureChatProtocol):
         # Determine plaintext type and sizes
         plaintext_len = None
         plaintext_type = None
-        plaintext_type_name = None
         try:
             plaintext_len = len(plaintext.encode("utf-8"))
             obj = json.loads(plaintext)
@@ -175,7 +175,7 @@ class DebugProtocol(SecureChatProtocol):
         }
         return result
     
-    def decrypt_message(self, data: bytes) -> str:  # type: ignore[override]
+    def decrypt_message(self, data: bytes) -> str:
         # Snapshot state before decrypt
         prev_rck = self.receive_chain_key
         prev_peer_ctr = self.peer_counter
@@ -273,10 +273,6 @@ class DebugProtocol(SecureChatProtocol):
             return plaintext
         raise ValueError(err or "Decryption failed")
 
-
-class DebugFileTransferWindow(FileTransferWindow):
-    """Debug version of FileTransferWindow - extends base with debug features."""
-    pass
 
 
 # noinspection DuplicatedCode,PyAttributeOutsideInit
@@ -1809,9 +1805,10 @@ class DebugGUISecureChatClient(GUISecureChatClient):
     
     def __init__(self, gui: DebugChatGUI, host='localhost', port=16384):
         super().__init__(gui, host, port)
+        self.gui: DebugChatGUI = gui
         
         # Protocol version tracking
-        self.peer_version: int = 0  # Will be set during key exchange
+        self.peer_version: int = 0
         
         # Keepalive tracking
         self.last_keepalive_received: float = 0.0
@@ -1825,7 +1822,6 @@ class DebugGUISecureChatClient(GUISecureChatClient):
         self.simulated_latency: float = 0
         self.packet_loss_percentage: int = 0
         self.protocol: DebugProtocol = DebugProtocol()
-        self.gui: DebugChatGUI
         
         # Attach crypto info toggle
         self.attach_crypto_info_to_messages: bool = False
@@ -1846,12 +1842,12 @@ class DebugGUISecureChatClient(GUISecureChatClient):
                 before = info.get("send_ck_before", "")
                 after = info.get("send_ck_after", "")
                 header = f"→ Crypto (sent)"
-                chain = f"- send_chain_key: {before} -> {after}"
+                chain = f"- send_chain_key: {before[:16]} -> {after[:16]}"
             else:
                 before = info.get("recv_ck_before", "")
                 after = info.get("recv_ck_after", "")
                 header = f"← Crypto (recv)"
-                chain = f"- recv_chain_key: {before} -> {after}"
+                chain = f"- recv_chain_key: {before[:16]} -> {after[:16]}"
             # Prepare type and size lines
             pt_name = info.get("plaintext_type_name") or "TEXT"
             pt_val = info.get("plaintext_type")
@@ -1873,11 +1869,11 @@ class DebugGUISecureChatClient(GUISecureChatClient):
                 "--------------------------------",
                 f"   {header}",
                 f"   - counter: {ctr}",
-                f"   - nonce: {self._shorten(nonce, 24)}",
+                f"   - nonce: {nonce[:16]}..." if nonce else "",
                 types_line,
                 sizes_line if sizes_line else None,
-                f"   {chain}",
-                f"   - message_key: {msg_key}",
+                f"   {chain[:16]}..." if chain else "",
+                f"   - message_key: {msg_key[:16]}..." if msg_key else "",
             ]
             # Filter out None/empty entries to keep it clean
             parts = [p for p in parts if p]
@@ -1914,8 +1910,7 @@ class DebugGUISecureChatClient(GUISecureChatClient):
         
         if self.packet_loss_percentage > 0:
             if random.randint(1, 100) <= self.packet_loss_percentage:
-                if self.gui:
-                    self.gui.append_to_chat(f"DEBUG: Packet loss simulated ({self.packet_loss_percentage}%)",
+                self.gui.append_to_chat(f"DEBUG: Packet loss simulated ({self.packet_loss_percentage}%)",
                                             is_message=False)
                 return
         
@@ -1950,22 +1945,17 @@ class DebugGUISecureChatClient(GUISecureChatClient):
             self.peer_version = message.get("version")
             
             # Debug logging
-            if self.gui:
-                self.gui.append_to_chat(f"DEBUG: Key exchange init from peer (version {self.peer_version})",
+            self.gui.append_to_chat(f"DEBUG: Key exchange init from peer (version {self.peer_version})",
                                         is_message=False)
             
             # Call parent method to handle the key exchange
             super().handle_key_exchange_init(message_data)
             
             # Update debug info after key exchange init
-            if self.gui:
-                self.gui.on_tkinter_thread(self.gui.update_debug_info)
+            self.gui.on_tkinter_thread(self.gui.update_debug_info)
         
         except Exception as e:
-            if self.gui:
-                self.gui.append_to_chat(f"Key exchange init error: {e}")
-            else:
-                print(f"Key exchange init error: {e}")
+            self.gui.append_to_chat(f"Key exchange init error: {e}")
     
     def handle_key_exchange_response(self, message_data: bytes):
         """Handle key exchange response - override to extract and store protocol version."""
@@ -1975,22 +1965,17 @@ class DebugGUISecureChatClient(GUISecureChatClient):
             self.peer_version = message.get("version")
             
             # Debug logging
-            if self.gui:
-                self.gui.append_to_chat(f"DEBUG: Key exchange response from peer (version {self.peer_version})",
+            self.gui.append_to_chat(f"DEBUG: Key exchange response from peer (version {self.peer_version})",
                                         is_message=False)
             
             # Call parent method to handle the key exchange
             super().handle_key_exchange_response(message_data)
             
             # Update debug info after key exchange response
-            if self.gui:
-                self.gui.on_tkinter_thread(self.gui.update_debug_info)
+            self.gui.on_tkinter_thread(self.gui.update_debug_info)
         
         except Exception as e:
-            if self.gui:
-                self.gui.append_to_chat(f"Key exchange response error: {e}")
-            else:
-                print(f"Key exchange response error: {e}")
+            self.gui.append_to_chat(f"Key exchange response error: {e}")
     
     def handle_keepalive(self) -> None:
         """Handle keepalive messages from the server with GUI updates."""
@@ -2004,16 +1989,12 @@ class DebugGUISecureChatClient(GUISecureChatClient):
                 self.last_keepalive_sent = time.time()
             
             # Debug logging
-            if self.gui:
-                self.gui.append_to_chat("DEBUG: Keepalive received from server", is_message=False)
-                if not self.respond_to_keepalive:
-                    self.gui.append_to_chat("DEBUG: Keepalive response suppressed", is_message=False)
+            self.gui.append_to_chat("DEBUG: Keepalive received from server", is_message=False)
+            if not self.respond_to_keepalive:
+                self.gui.append_to_chat("DEBUG: Keepalive response suppressed", is_message=False)
         
         except Exception as err:
-            if self.gui:
-                self.gui.append_to_chat(f"Keepalive error: {err}")
-            else:
-                print(f"Keepalive error: {err}")
+            self.gui.append_to_chat(f"Keepalive error: {err}")
     
     def _send_delivery_confirmation(self, confirmed_counter: int):
         """Send delivery confirmation - override to add debug control."""
@@ -2021,8 +2002,7 @@ class DebugGUISecureChatClient(GUISecureChatClient):
             return
         if self.packet_loss_percentage > 0:
             if random.randint(1, 100) <= self.packet_loss_percentage:
-                if self.gui:
-                    self.gui.append_to_chat(f"DEBUG: Packet loss simulated ({self.packet_loss_percentage}%) " +
+                self.gui.append_to_chat(f"DEBUG: Packet loss simulated ({self.packet_loss_percentage}%) " +
                                             "for delivery confirmation", is_message=False)
                 return
         
@@ -2037,8 +2017,7 @@ class DebugGUISecureChatClient(GUISecureChatClient):
             # Simulate packet loss
             if self.packet_loss_percentage > 0:
                 if random.randint(1, 100) <= self.packet_loss_percentage:
-                    if self.gui:
-                        self.gui.append_to_chat("DEBUG: Packet loss simulated " +
+                    self.gui.append_to_chat("DEBUG: Packet loss simulated " +
                                                 f"({self.packet_loss_percentage}%)", is_message=False)
                     return None
             
@@ -2067,10 +2046,7 @@ class DebugGUISecureChatClient(GUISecureChatClient):
             return result
         
         except Exception as e:
-            if self.gui:
-                self.gui.append_to_chat(f"Error sending message: {e}")
-            else:
-                print(f"Error sending message: {e}")
+            self.gui.append_to_chat(f"Error sending message: {e}")
             return None
 
 
