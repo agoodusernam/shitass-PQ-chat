@@ -55,6 +55,8 @@ class SecureChatClient:
         self.receive_thread: threading.Thread | None = None
         self.peer_nickname: str = "Other user"
         self.nickname_change_allowed: bool = True
+        self.allow_file_transfers: bool = True
+        self.send_delivery_receipts: bool = True
         
         # File transfer state
         self.pending_file_transfers: dict = {}
@@ -469,15 +471,14 @@ class SecureChatClient:
     
     def _send_delivery_confirmation(self, confirmed_counter: int) -> None:
         """Send a delivery confirmation for a received text message."""
-        try:
-            # Queue delivery confirmation as JSON; loop will encrypt
-            message = {
-                "type":              MessageType.DELIVERY_CONFIRMATION,
-                "confirmed_counter": confirmed_counter,
-            }
-            self.protocol.queue_message(("encrypt_json", message))
-        except Exception as e:
-            print(f"\nError sending delivery confirmation: {e}")
+        if not self.send_delivery_receipts:
+            return
+        # Queue delivery confirmation as JSON; loop will encrypt
+        message = {
+            "type":              MessageType.DELIVERY_CONFIRMATION,
+            "confirmed_counter": confirmed_counter,
+        }
+        self.protocol.queue_message(("encrypt_json", message))
     
     def handle_key_exchange_reset(self, message_data: bytes) -> None:
         """Handle key exchange reset message when the other client disconnects."""
@@ -612,6 +613,14 @@ class SecureChatClient:
         try:
             metadata = self.protocol.process_file_metadata(decrypted_message)
             transfer_id = metadata["transfer_id"]
+            if not self.allow_file_transfers:
+                print("File transfers are disabled. Ignoring incoming file.")
+                self.protocol.queue_message(("encrypt_json", {
+                    "type":        MessageType.FILE_REJECT,
+                    "transfer_id": transfer_id,
+                    "reason":      "User disabled file transfers",
+                }))
+                return
             
             # Store metadata for potential acceptance
             self.active_file_metadata[transfer_id] = metadata

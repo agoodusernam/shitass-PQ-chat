@@ -1,5 +1,4 @@
-# pylint: disable=trailing-whitespace
-# pylint: disable=line-too-long
+# pylint: disable=trailing-whitespace, line-too-long
 import base64
 import json
 import os
@@ -876,18 +875,19 @@ class ChatGUI:
         container.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)  # type: ignore
         
         # Tk variables reflecting current settings
-        self.var_sound_notif = tk.BooleanVar(value=self.notification_enabled)
-        self.var_system_notif = tk.BooleanVar(value=self.windows_notifications_enabled)
-        self.var_auto_images = tk.BooleanVar(value=self.client.display_images if self.client else True)
-        self.var_allow_calls = tk.BooleanVar(value=self.allow_voice_calls)
+        self.var_sound_notif: tk.BooleanVar = tk.BooleanVar(value=self.notification_enabled)
+        self.var_system_notif: tk.BooleanVar = tk.BooleanVar(value=self.windows_notifications_enabled)
+        self.var_auto_images: tk.BooleanVar = tk.BooleanVar(value=self.client.display_images if self.client else True)
+        self.var_allow_calls: tk.BooleanVar = tk.BooleanVar(value=self.allow_voice_calls)
+        self.var_allow_file_transfers: tk.BooleanVar = tk.BooleanVar(value=self.client.allow_file_transfers if self.client else True)
+        self.var_send_delivery_receipts: tk.BooleanVar = tk.BooleanVar(value=self.client.send_delivery_receipts if self.client else True)
         self.var_nickname_change_allowed = tk.BooleanVar(value=self.client.nickname_change_allowed if self.client else False)
         # New: Peer nickname StringVar for manual setting
-        current_peer_nick = None
         try:
-            current_peer_nick = (self.client.peer_nickname if self.client else self.peer_nickname)
+            current_peer_nick: str = (self.client.peer_nickname if self.client else self.peer_nickname)
         except Exception:
-            current_peer_nick = self.peer_nickname
-        self.var_peer_nickname = tk.StringVar(value=current_peer_nick)
+            current_peer_nick: str = self.peer_nickname
+        self.var_peer_nickname: tk.StringVar = tk.StringVar(value=current_peer_nick)
         
         # Checkbuttons
         cb1 = tk.Checkbutton(
@@ -896,25 +896,43 @@ class ChatGUI:
             variable=self.var_sound_notif,
             command=lambda: setattr(self, 'notification_enabled', self.var_sound_notif.get()),
         )
+        
         cb2 = tk.Checkbutton(
             container,
             text="System notifications",
             variable=self.var_system_notif,
             command=lambda: setattr(self, 'windows_notifications_enabled', self.var_system_notif.get()),
         )
+        
         cb3 = tk.Checkbutton(
             container,
             text="Auto-display images",
             variable=self.var_auto_images,
             command=lambda: (setattr(self.client, 'display_images', self.var_auto_images.get()) if self.client else None),
         )
+        
         cb4 = tk.Checkbutton(
             container,
             text="Allow voice calls",
             variable=self.var_allow_calls,
             command=lambda: setattr(self, 'allow_voice_calls', self.var_allow_calls.get()),
         )
+        
         cb5 = tk.Checkbutton(
+            container,
+            text="Allow file transfers",
+            variable=self.var_allow_file_transfers,
+            command=lambda: (setattr(self.client, 'allow_file_transfers', self.var_allow_file_transfers.get()) if self.client else None),
+        )
+        
+        cb6 = tk.Checkbutton(
+            container,
+            text="Send delivery receipts",
+            variable=self.var_send_delivery_receipts,
+            command=lambda: (setattr(self.client, 'send_delivery_receipts', self.var_send_delivery_receipts.get()) if self.client else None),
+        )
+        
+        cb7 = tk.Checkbutton(
             container,
             text="Allow peer to change their nickname",
             variable=self.var_nickname_change_allowed,
@@ -922,7 +940,7 @@ class ChatGUI:
         )
         
         # Try to style to match theme (some platforms may ignore)
-        for cb in (cb1, cb2, cb3, cb4, cb5):
+        for cb in (cb1, cb2, cb3, cb4, cb5, cb6, cb7):
             try:
                 cb.configure(bg=self.BG_COLOR, fg=self.FG_COLOR, selectcolor=self.BUTTON_BG_COLOR,
                              activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR)
@@ -952,10 +970,8 @@ class ChatGUI:
                 self.peer_nickname = new_nick
                 if self.client:
                     self.client.peer_nickname = new_nick
-                try:
-                    self.append_to_chat(f"[SYSTEM] Peer nickname set to: {new_nick}", is_message=False, show_time=False)
-                except Exception:
-                    pass
+                    
+                self.append_to_chat(f"[SYSTEM] Peer nickname set to: {new_nick}", is_message=False, show_time=False)
             except Exception:
                 try:
                     messagebox.showerror("Error", "Failed to set peer nickname")
@@ -1931,17 +1947,7 @@ class GUISecureChatClient(SecureChatClient):
         # Append as system message in chat
         self.gui.append_to_chat(f"[SYSTEM] Server disconnected: {reason}", is_message=False, show_time=False)
         self.gui.disconnect_from_server()
-    
-    def _send_delivery_confirmation(self, confirmed_counter: int) -> None:
-        """Send a delivery confirmation for a received text message."""
-        try:
-            message = {
-                "type":              MessageType.DELIVERY_CONFIRMATION,
-                "confirmed_counter": confirmed_counter,
-            }
-            self.protocol.queue_message(("encrypt_json", message))
-        except Exception as e:
-            self.gui.append_to_chat(f"Error sending delivery confirmation: {e}")
+
     
     def request_voice_call(self, rate: int, chunk_size: int, audio_format: int):
         """
@@ -2320,6 +2326,16 @@ class GUISecureChatClient(SecureChatClient):
             metadata = self.protocol.process_file_metadata(decrypted_message)
             transfer_id = metadata["transfer_id"]
             
+            if not self.allow_file_transfers:
+                self.display_regular_message("Auto-rejected incoming file transfer (disabled in settings).",
+                                             prefix="[SYSTEM]")
+                self.protocol.queue_message(("encrypt_json", {
+                    "type":        MessageType.FILE_REJECT,
+                    "transfer_id": transfer_id,
+                    "reason":      "User disabled file transfers",
+                }))
+                return
+            
             # Store metadata for potential acceptance
             self.active_file_metadata[transfer_id] = metadata
             
@@ -2388,6 +2404,7 @@ class GUISecureChatClient(SecureChatClient):
                 filename = self.pending_file_transfers[transfer_id]["metadata"]["filename"]
                 self.gui.on_tkinter_thread(self.gui.file_transfer_window.add_transfer_message,
                                            f"File transfer rejected: {filename} - {reason}")
+                self.gui.append_to_chat(f"File transfer rejected: {filename} - {reason}")
                 del self.pending_file_transfers[transfer_id]
         
         except Exception as e:
