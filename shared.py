@@ -149,14 +149,14 @@ class SecureChatProtocol:
         file transfer functionality.
         
         Attributes:
-            shared_key (bytes | None): The derived shared secret from key exchange.
+            shared_key (bytes): The derived shared secret from key exchange.
             message_counter (int): Counter for outgoing messages (for PFS).
             peer_counter (int): Expected counter for incoming messages (for PFS).
-            peer_public_key (bytes | None): The peer's public key from key exchange.
+            peer_public_key (bytes): The peer's public key from key exchange.
             peer_key_verified (bool): Whether the peer's key has been verified.
-            own_public_key (bytes | None): This client's public key.
-            private_key (bytes | None): This client's private key for key exchange.
-            chain_key (bytes | None): Root key for perfect forward secrecy ratcheting.
+            own_public_key (bytes): This client's public key.
+            private_key (bytes): This client's private key for key exchange.
+            chain_key (bytes): Root key for perfect forward secrecy ratcheting.
             seen_counters (set): Set of seen message counters for replay protection.
             file_transfers (dict): Dictionary tracking ongoing file transfers.
             received_chunks (dict): Buffer for received file chunks during transfer.

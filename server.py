@@ -410,6 +410,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         control message with the reason before closing the connection.
         """
         if self.connected:
+            print("Disconnecting client", self.client_id, "Reason:", reason)
             self.connected = False
 
             # Attempt to notify client about server-initiated disconnect

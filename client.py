@@ -367,6 +367,7 @@ class SecureChatClient:
             
             if verified:
                 print("\n✓ Key verification successful!")
+                
             else:
                 print("\nKey verification failed or declined")
                 print("Communication will proceed but may not be secure.")

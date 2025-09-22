@@ -126,10 +126,13 @@ class DebugProtocol(SecureChatProtocol):
             plaintext_type = t
             try:
                 plaintext_type_name = MessageType(t).name if isinstance(t, int) else str(t)
+                
             except Exception:
                 plaintext_type_name = str(t)
+                
         except Exception:
             plaintext_type_name = "TEXT"
+            
         # Determine encrypted envelope details
         encrypted_type = None
         encrypted_type_name = None

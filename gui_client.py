@@ -2115,8 +2115,8 @@ class GUISecureChatClient(SecureChatClient):
                 _, version_warning = self.protocol.process_key_exchange_response(message_data, self.private_key)
                 
                 # Display version warning in GUI if present
-                if version_warning and self.gui:
-                    self.gui.append_to_chat(f"⚠️ {version_warning}")
+                if version_warning:
+                    self.gui.append_to_chat(f"{version_warning}")
                 elif version_warning:
                     print(f"\n{version_warning}")
                 
