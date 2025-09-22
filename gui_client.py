@@ -359,6 +359,7 @@ class ChatGUI:
         # Chat client instance
         self.client: GUISecureChatClient | None = None
         self.connected = False
+        self.peer_nickname = "Other user"
         
         # Ephemeral mode state
         # Modes: "OFF", "LOCAL", "GLOBAL"
@@ -378,6 +379,10 @@ class ChatGUI:
         
         # Windows system notification settings
         self.windows_notifications_enabled = True
+        
+        # Additional settings
+        self.allow_voice_calls = True
+        self.auto_display_images = True
         
         # File transfer window with theme colors
         self.file_transfer_window = FileTransferWindow(self.root, self.theme_colors)
@@ -497,23 +502,14 @@ class ChatGUI:
         )
         self.connect_btn.pack(side=tk.LEFT, padx=(10, 0))  # type: ignore
         
-        # Sound toggle button
-        self.sound_btn = tk.Button(
-                conn_frame, text="Notif sounds ON", command=self.toggle_sound_notifications,
+        # Config menu button
+        self.config_btn = tk.Button(
+                conn_frame, text="Config", command=self.open_config_dialog,
                 bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,  # type: ignore
                 activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
                 font=("Consolas", 10)
         )
-        self.sound_btn.pack(side=tk.LEFT, padx=(10, 0))  # type: ignore
-        
-        # Windows notifications toggle button
-        self.windows_notif_btn = tk.Button(
-                conn_frame, text="System notifs ON", command=self.toggle_windows_notifications,
-                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,  # type: ignore
-                activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
-                font=("Consolas", 10)
-        )
-        self.windows_notif_btn.pack(side=tk.LEFT, padx=(10, 0))  # type: ignore
+        self.config_btn.pack(side=tk.LEFT, padx=(10, 0))  # type: ignore
         
         if PYAUDIO_AVAILABLE:
             self.voice_call_btn = tk.Button(
@@ -843,10 +839,11 @@ class ChatGUI:
     def toggle_sound_notifications(self):
         """Toggle sound notifications on/off."""
         self.notification_enabled = not self.notification_enabled
-        if self.notification_enabled:
-            self.sound_btn.config(text="Notif sounds ON")
-        else:
-            self.sound_btn.config(text="Notif sounds OFF")
+        if hasattr(self, "sound_btn") and getattr(self, "sound_btn", None):
+            if self.notification_enabled:
+                self.sound_btn.config(text="Notif sounds ON")
+            else:
+                self.sound_btn.config(text="Notif sounds OFF")
     
     def toggle_windows_notifications(self):
         """Toggle Windows system notifications on/off."""
@@ -856,6 +853,134 @@ class ChatGUI:
                 self.windows_notif_btn.config(text="System notifs ON")
             else:
                 self.windows_notif_btn.config(text="System notifs OFF")
+    
+    def open_config_dialog(self):
+        """Open a small configuration window with common settings."""
+        try:
+            if hasattr(self, "config_window") and self.config_window and self.config_window.winfo_exists():
+                self.config_window.lift()
+                self.config_window.focus_set()
+                return
+        except Exception:
+            pass
+        
+        self.config_window = tk.Toplevel(self.root)
+        self.config_window.title("Configuration")
+        try:
+            self.config_window.configure(bg=self.BG_COLOR)
+        except Exception:
+            pass
+        self.config_window.resizable(False, False)
+        
+        container = tk.Frame(self.config_window, bg=self.BG_COLOR)
+        container.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)  # type: ignore
+        
+        # Tk variables reflecting current settings
+        self.var_sound_notif = tk.BooleanVar(value=self.notification_enabled)
+        self.var_system_notif = tk.BooleanVar(value=self.windows_notifications_enabled)
+        self.var_auto_images = tk.BooleanVar(value=self.client.display_images if self.client else True)
+        self.var_allow_calls = tk.BooleanVar(value=self.allow_voice_calls)
+        self.var_nickname_change_allowed = tk.BooleanVar(value=self.client.nickname_change_allowed if self.client else False)
+        # New: Peer nickname StringVar for manual setting
+        current_peer_nick = None
+        try:
+            current_peer_nick = (self.client.peer_nickname if self.client else self.peer_nickname)
+        except Exception:
+            current_peer_nick = self.peer_nickname
+        self.var_peer_nickname = tk.StringVar(value=current_peer_nick)
+        
+        # Checkbuttons
+        cb1 = tk.Checkbutton(
+            container,
+            text="Notification sounds",
+            variable=self.var_sound_notif,
+            command=lambda: setattr(self, 'notification_enabled', self.var_sound_notif.get()),
+        )
+        cb2 = tk.Checkbutton(
+            container,
+            text="System notifications",
+            variable=self.var_system_notif,
+            command=lambda: setattr(self, 'windows_notifications_enabled', self.var_system_notif.get()),
+        )
+        cb3 = tk.Checkbutton(
+            container,
+            text="Auto-display images",
+            variable=self.var_auto_images,
+            command=lambda: (setattr(self.client, 'display_images', self.var_auto_images.get()) if self.client else None),
+        )
+        cb4 = tk.Checkbutton(
+            container,
+            text="Allow voice calls",
+            variable=self.var_allow_calls,
+            command=lambda: setattr(self, 'allow_voice_calls', self.var_allow_calls.get()),
+        )
+        cb5 = tk.Checkbutton(
+            container,
+            text="Allow peer to change their nickname",
+            variable=self.var_nickname_change_allowed,
+            command=lambda: (setattr(self.client, 'nickname_change_allowed', self.var_nickname_change_allowed.get()) if self.client else None),
+        )
+        
+        # Try to style to match theme (some platforms may ignore)
+        for cb in (cb1, cb2, cb3, cb4, cb5):
+            try:
+                cb.configure(bg=self.BG_COLOR, fg=self.FG_COLOR, selectcolor=self.BUTTON_BG_COLOR,
+                             activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR)
+            except Exception:
+                pass
+            cb.pack(anchor="w", pady=2)
+        
+        # Peer nickname controls
+        nick_frame = tk.Frame(container, bg=self.BG_COLOR)
+        try:
+            tk.Label(nick_frame, text="Peer nickname:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side="left", padx=(0, 6))
+        except Exception:
+            tk.Label(nick_frame, text="Peer nickname:").pack(side="left", padx=(0, 6))
+        
+        try:
+            nick_entry = tk.Entry(nick_frame, textvariable=self.var_peer_nickname, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR, insertbackground=self.FG_COLOR)
+        except Exception:
+            nick_entry = tk.Entry(nick_frame, textvariable=self.var_peer_nickname)
+        nick_entry.pack(side="left", fill=tk.X, expand=True) # type: ignore
+        
+        def apply_peer_nickname():
+            try:
+                new_nick = (self.var_peer_nickname.get() or "").strip()
+                if not new_nick:
+                    new_nick = "Other user"
+                # Update both GUI cache and client (if available)
+                self.peer_nickname = new_nick
+                if self.client:
+                    self.client.peer_nickname = new_nick
+                try:
+                    self.append_to_chat(f"[SYSTEM] Peer nickname set to: {new_nick}", is_message=False, show_time=False)
+                except Exception:
+                    pass
+            except Exception:
+                try:
+                    messagebox.showerror("Error", "Failed to set peer nickname")
+                except Exception:
+                    pass
+        
+        try:
+            apply_btn = tk.Button(nick_frame, text="Apply", command=apply_peer_nickname, bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR)
+        except Exception:
+            apply_btn = tk.Button(nick_frame, text="Apply", command=apply_peer_nickname)
+        apply_btn.pack(side="left", padx=(6, 0))
+        nick_frame.pack(fill=tk.X, pady=(8, 4)) # type: ignore
+        
+        # Close button
+        close_btn = tk.Button(
+            container,
+            text="Close",
+            command=self.config_window.destroy,
+            bg=self.BUTTON_BG_COLOR,
+            fg=self.FG_COLOR,
+            relief=tk.FLAT,  # type: ignore
+            activebackground=self.BUTTON_ACTIVE_BG,
+            activeforeground=self.FG_COLOR,
+        )
+        close_btn.pack(pady=(8, 0), anchor="e")
     
     def start_call(self):
         if not self.connected:
@@ -927,10 +1052,7 @@ class ChatGUI:
         self.message_entry.config(state=tk.NORMAL)  # type: ignore
         self.send_btn.config(state=tk.NORMAL)  # type: ignore
         self.send_file_btn.config(state=tk.NORMAL)  # type: ignore
-        try:
-            self.ephemeral_menu.config(state=tk.NORMAL)  # type: ignore
-        except Exception:
-            pass
+        self.ephemeral_menu.config(state=tk.NORMAL)  # type: ignore
         self.file_transfer_btn.config(state=tk.NORMAL)  # type: ignore
         self.message_entry.focus()
         self.update_status("Connected, waiting for other client")
@@ -1208,6 +1330,19 @@ class ChatGUI:
             lenny = "( ͡° ͜ʖ ͡°)"
             self.client.protocol.queue_message(lenny)
             self.append_to_chat(lenny)
+            self.message_entry.delete("1.0", tk.END)
+            return "break"
+        
+        if message.lower().strip().startswith('/nick ') or message.lower().strip().startswith('/nickname '):
+            new_nick = message[6:].strip()
+            if new_nick:
+                self.client.protocol.queue_message(("encrypt_json", {
+                    "type":     MessageType.NICKNAME_CHANGE,
+                    "nickname": new_nick,
+                }))
+                self.append_to_chat(f"Nickname changed to: {new_nick}")
+            else:
+                self.append_to_chat("Usage: /nick <new_nickname>")
             self.message_entry.delete("1.0", tk.END)
             return "break"
         
@@ -1753,6 +1888,7 @@ class GUISecureChatClient(SecureChatClient):
     
     def __init__(self, gui: "ChatGUI", host='localhost', port=16384):
         super().__init__(host, port)
+        self.display_images: bool = True
         self.voice_data_queue: deque[bytes] = deque()
         self.voice_call_active: bool = False
         self.gui: "ChatGUI" = gui
@@ -1771,7 +1907,7 @@ class GUISecureChatClient(SecureChatClient):
         return ext in image_extensions
     
     def _display_received_image(self, file_path: str):
-        """Display a received image file in a separate window."""
+        """Display a received image file in a separate window, if enabled by settings."""
         try:
             if self._is_image_file(file_path):
                 # Load and display the image
@@ -1787,7 +1923,7 @@ class GUISecureChatClient(SecureChatClient):
         elif prefix != "":
             self.gui.append_to_chat(f"{prefix}: {message}", is_message=True, show_time=False)
         else:
-            self.gui.append_to_chat(f"Other user: {message}", is_message=True)
+            self.gui.append_to_chat(f"{self.peer_nickname}: {message}", is_message=True)
     
     def on_server_disconnect(self, reason: str) -> None:
         """Show server disconnect reason in the GUI as a system message and disconnect."""
@@ -1823,10 +1959,19 @@ class GUISecureChatClient(SecureChatClient):
     def handle_voice_call_init(self, message_data: str) -> None:
         """
         Handle incoming voice call request.
-        Prompt the user to accept or reject the call.
+        Prompt the user to accept or reject the call (unless disabled in settings).
         GUI exclusive feature
         """
         try:
+            # Auto-reject if voice calls are disabled in settings
+            if not self.gui.allow_voice_calls:
+                try:
+                    self.protocol.queue_message(("encrypt_json", {"type": MessageType.VOICE_CALL_REJECT}))
+                except Exception:
+                    pass
+                self.gui.append_to_chat("Auto-rejected incoming voice call (disabled in settings).")
+                return
+            
             # Prompt user in the GUI thread
             self.gui.on_tkinter_thread(self.gui.prompt_voice_call)
         
@@ -2323,7 +2468,8 @@ class GUISecureChatClient(SecureChatClient):
                     self.gui.file_transfer_window.clear_speed()
                     
                     # Display image if it's an image file
-                    self._display_received_image(output_path)
+                    if self.display_images:
+                        self._display_received_image(output_path)
                     
                     # Send completion message via queue
                     complete_msg = {

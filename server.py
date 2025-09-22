@@ -166,6 +166,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         self.client_id = None
         self.connected = True
         self.key_exchange_complete = False
+        self.announced_disconnect = False
         
         # Keepalive tracking
         self.last_keepalive_time = time.time()
@@ -226,6 +227,11 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                     if message_type == MessageType.KEY_VERIFICATION:
                         self.route_verification_message(message_data)
                         continue
+                        
+                    if message_type == MessageType.CLIENT_DISCONNECT:
+                        self.announced_disconnect = True
+                        self.disconnect("Client announced disconnect", notify=False)
+                        break
                     
                     if not self.key_exchange_complete:
                         if (not parsed) or (message_type in (MessageType.KEY_EXCHANGE_INIT,
@@ -241,14 +247,16 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                     
                     self.server.route_message(self.client_id, message_data)
                         
-                except ConnectionError:
+                except ConnectionError as e:
+                    print(f"Client {self.client_id} disconnected unexpectedly: {e}")
                     break
                 except Exception as e:
                     print(f"Error handling client {self.client_id}: {e}")
                     break
                     
         finally:
-            self.disconnect()
+            if not self.announced_disconnect:
+                self.disconnect()
     
     def handle_key_exchange(self, message_data: bytes)-> None:
         """Handle key exchange messages by routing them to the other client."""
@@ -403,22 +411,22 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         except Exception as e:
             print(f"Error sending protocol version info to {self.client_id}: {e}")
     
-    def disconnect(self, reason: str | None = None) -> None:
+    def disconnect(self, reason: str = "", notify: bool = True) -> None:
         """Disconnect the client and clean up.
         
         If a reason is provided, the server will attempt to send a SERVER_DISCONNECT
         control message with the reason before closing the connection.
         """
         if self.connected:
-            print("Disconnecting client", self.client_id, "Reason:", reason)
+            print("Disconnecting client", self.client_id, "Reason:", reason if reason else "No reason provided")
             self.connected = False
 
             # Attempt to notify client about server-initiated disconnect
-            if reason:
+            if notify:
                 try:
                     disconnect_message = {
                         "type": MessageType.SERVER_DISCONNECT,
-                        "reason": reason,
+                        "reason": reason if reason else "Server disconnect",
                     }
                     message_data = json.dumps(disconnect_message).encode('utf-8')
                     send_message(self.request, message_data)

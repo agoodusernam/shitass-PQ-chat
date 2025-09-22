@@ -10,6 +10,7 @@ import sys
 import os
 import time
 
+import shared
 from shared import (SecureChatProtocol, send_message, receive_message, MessageType,
                     PROTOCOL_VERSION)
 
@@ -52,6 +53,8 @@ class SecureChatClient:
         self.key_exchange_complete: bool = False
         self.verification_complete: bool = False
         self.receive_thread: threading.Thread | None = None
+        self.peer_nickname: str = "Other user"
+        self.nickname_change_allowed: bool = True
         
         # File transfer state
         self.pending_file_transfers: dict = {}
@@ -62,9 +65,7 @@ class SecureChatClient:
         self.private_key: bytes = bytes()
         
         # Server version information
-        self.server_version = None
         self.server_protocol_version = None
-        self.server_compatible_versions = None
     
     def connect(self) -> bool:
         """Connect to the chat server and start the message receiving thread.
@@ -406,7 +407,7 @@ class SecureChatClient:
         elif prefix != "":
             print(f"\n{prefix}: {message}")
         else:
-            print(f"\nOther user: {message}")
+            print(f"\n{self.peer_nickname}: {message}")
     
     def handle_encrypted_message(self, message_data: bytes) -> None:
         """Handle encrypted chat messages."""
@@ -450,6 +451,8 @@ class SecureChatClient:
                         self.handle_voice_call_data(decrypted_text)
                     case MessageType.VOICE_CALL_END:
                         self.handle_voice_call_end()
+                    case MessageType.NICKNAME_CHANGE:
+                        self.handle_nickname_change(decrypted_text)
                     case _:
                         # It's a regular chat message if it's not a file-related type
                         self.display_regular_message(decrypted_text)
@@ -493,7 +496,7 @@ class SecureChatClient:
             
             # Notify user
             print(f"\n{'=' * 50}")
-            print("⚠️  KEY EXCHANGE RESET")
+            print("KEY EXCHANGE RESET")
             print(f"Reason: {reset_message}")
             print("The secure session has been terminated.")
             print("Waiting for a new client to connect...")
@@ -758,6 +761,19 @@ class SecureChatClient:
         """Handle incoming voice call end (console feedback)."""
         print("Voice calls not supported on the terminal client.")
     
+    def handle_nickname_change(self, decrypted_text: str) -> None:
+        """Handle incoming nickname change from peer."""
+        try:
+            if not self.nickname_change_allowed:
+                self.display_regular_message("Peer attempted to change nickname", prefix="[SYSTEM]")
+                return
+            message = json.loads(decrypted_text)
+            self.peer_nickname = message.get("nickname", "Other User")
+            self.display_regular_message(f"Peer changed nickname to: {self.peer_nickname}", prefix="[SYSTEM]")
+        
+        except Exception as e:
+            print(f"Error handling nickname change: {e}")
+    
     def handle_file_chunk_binary(self, chunk_info: dict) -> None:
         """Handle incoming file chunk (optimized binary format)."""
         try:
@@ -853,7 +869,7 @@ class SecureChatClient:
     
     def handle_server_full(self) -> None:
         """Handle server full notification."""
-        print("\n⚠️ Server is full. Cannot connect at this time.")
+        print("\nServer is full. Cannot connect at this time.")
         print("Please try again later or contact the server administrator.")
         self.disconnect()
     
@@ -865,21 +881,21 @@ class SecureChatClient:
             # Store server protocol version information
             self.server_protocol_version = message.get("protocol_version")
             
-            print(f"\n📡 Server Protocol Version: v{self.server_protocol_version}")
+            print(f"\nServer Protocol Version: v{self.server_protocol_version}")
             
             # Check compatibility
             if self.server_protocol_version != PROTOCOL_VERSION:
                 print(
-                    f"⚠️ Protocol version mismatch: Client v{PROTOCOL_VERSION}, Server v{self.server_protocol_version}")
+                    f"Protocol version mismatch: Client v{PROTOCOL_VERSION}, Server v{self.server_protocol_version}")
                 # Use local compatibility matrix since server no longer sends it
                 major_server = self.server_protocol_version.split('.')[0]
                 major_client = PROTOCOL_VERSION.split('.')[0]
                 if major_server == major_client:
-                    print("✅ Versions are compatible for communication")
+                    print("Versions are compatible for communication")
                 else:
-                    print("❌ Versions may not be compatible - communication issues possible")
+                    print("Versions may not be compatible - communication issues possible")
             else:
-                print("✅ Protocol versions match")
+                print("Protocol versions match")
         
         except Exception as e:
             print(f"Error handling server version info: {e}")
@@ -961,6 +977,17 @@ class SecureChatClient:
                             self.send_file(file_path)
                         else:
                             print("Usage: /file <path>")
+                    elif message.lower().startswith('/nick ') or message.lower().startswith('/nickname '):
+                        new_nickname = message[6:].strip()
+                        if new_nickname:
+                            self.protocol.queue_message(("encrypt_json", {
+                                "type":     MessageType.NICKNAME_CHANGE,
+                                "nickname": new_nickname,
+                            }))
+                            print(f"Nickname changed to: {self.peer_nickname}")
+                        else:
+                            print("Usage: /nick <new_nickname>")
+                            
                     elif message.strip():
                         if not self.send_message(message):
                             continue
@@ -987,12 +1014,11 @@ class SecureChatClient:
         if self.connected:
             # If the key exchange was complete there is a peer, notify them of disconnect
             self.end_call(notify_peer=self.key_exchange_complete)
+            self.protocol.stop_sender_thread()
             
             self.connected = False
             
-            
-            # Stop the sender thread first
-            self.protocol.stop_sender_thread()
+            shared.send_message(self.socket, json.dumps({"type": MessageType.CLIENT_DISCONNECT}).encode('utf-8'))
             
             try:
                 if self.socket:
