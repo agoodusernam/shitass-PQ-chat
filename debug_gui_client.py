@@ -376,23 +376,14 @@ class DebugChatGUI(ChatGUI):
         )
         self.connect_btn.pack(side=tk.LEFT, padx=(10, 0))  # type: ignore
         
-        # Sound toggle button
-        self.sound_btn = tk.Button(
-                conn_frame, text="Notif sounds ON", command=self.toggle_sound_notifications,
+        # Config menu button
+        self.config_btn = tk.Button(
+                conn_frame, text="Config", command=self.open_config_dialog,
                 bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,  # type: ignore
                 activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
                 font=("Consolas", 10)
         )
-        self.sound_btn.pack(side=tk.LEFT, padx=(10, 0))  # type: ignore
-        
-        # Windows notifications toggle button
-        self.windows_notif_btn = tk.Button(
-                conn_frame, text="System notifs ON", command=self.toggle_windows_notifications,
-                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,  # type: ignore
-                activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
-                font=("Consolas", 10)
-        )
-        self.windows_notif_btn.pack(side=tk.LEFT, padx=(10, 0))  # type: ignore
+        self.config_btn.pack(side=tk.LEFT, padx=(10, 0))  # type: ignore
         
         self.voice_call_btn = tk.Button(
                 conn_frame, text="Voice Call", command=self.start_call,
@@ -638,19 +629,6 @@ class DebugChatGUI(ChatGUI):
         )
         self.force_disconnect_btn.pack(fill=tk.X, padx=5, pady=2)  # type: ignore
         
-        # Force key reset button
-        self.force_key_reset_btn = tk.Button(
-                self.debug_actions_frame,
-                text="Force Key Reset",
-                command=self.force_key_reset,
-                bg=self.BUTTON_BG_COLOR,
-                fg=self.FG_COLOR,
-                relief=tk.FLAT,  # type: ignore
-                activebackground=self.BUTTON_ACTIVE_BG,
-                activeforeground=self.FG_COLOR,
-                font=("Consolas", 9)
-        )
-        self.force_key_reset_btn.pack(fill=tk.X, padx=5, pady=2)  # type: ignore
         
         # View fingerprints button
         self.view_fingerprints_btn = tk.Button(
@@ -775,6 +753,8 @@ class DebugChatGUI(ChatGUI):
                 font=("Consolas", 9)
         )
         self.ratchet_send_keys_btn.pack(fill=tk.X, padx=5, pady=2)  # type: ignore
+        # Right-click binding for custom ratchet steps (send keys)
+        self.ratchet_send_keys_btn.bind("<Button-3>", self.open_send_ratchet_menu)
         
         self.ratchet_peer_keys_btn = tk.Button(
                 self.debug_actions_frame,
@@ -788,6 +768,8 @@ class DebugChatGUI(ChatGUI):
                 font=("Consolas", 9)
         )
         self.ratchet_peer_keys_btn.pack(fill=tk.X, padx=5, pady=2)  # type: ignore
+        # Right-click binding for custom ratchet steps (peer keys)
+        self.ratchet_peer_keys_btn.bind("<Button-3>", self.open_peer_ratchet_menu)
         
         # Toggle: Attach crypto info to messages
         self.crypto_info_toggle_btn = tk.Button(
@@ -880,11 +862,6 @@ class DebugChatGUI(ChatGUI):
                 debug_text += f"  ✓ Encryption Key: {self.client.protocol.encryption_key[:16].hex()}...\n"
             else:
                 debug_text += "  ✗ No Encryption Key\n"
-            
-            if self.client.protocol and self.client.protocol.mac_key:
-                debug_text += f"  ✓ MAC Key: {self.client.protocol.mac_key[:16].hex()}...\n"
-            else:
-                debug_text += "  ✗ No MAC Key\n"
             
             # Chain Keys and Counters
             debug_text += "\nCHAIN KEYS & COUNTERS:\n"
@@ -1179,27 +1156,6 @@ class DebugChatGUI(ChatGUI):
         except Exception as e:
             self.append_to_chat(f"Error during force disconnect: {e}")
     
-    def force_key_reset(self):
-        """Force reset all cryptographic keys."""
-        if not self.client or not self.client.protocol:
-            return
-        
-        try:
-            # Reset all keys
-            self.client.protocol.shared_key = bytes()
-            self.client.protocol.encryption_key = bytes()
-            self.client.protocol.mac_key = bytes()
-            self.client.protocol.send_chain_key = bytes()
-            self.client.protocol.receive_chain_key = bytes()
-            self.client.protocol.message_counter = 0
-            self.client.protocol.peer_counter = 0
-            self.client.key_exchange_complete = False
-            self.client.verification_complete = False
-            
-            self.append_to_chat("All cryptographic keys have been reset")
-            self.update_debug_info()
-        except Exception as e:
-            self.append_to_chat(f"Error resetting keys: {e}")
     
     def view_key_fingerprints(self):
         """View key fingerprints in a dialog."""
@@ -1788,12 +1744,117 @@ class DebugChatGUI(ChatGUI):
         
         self.client.protocol.ratchet_send_key_forward()
     
+    # --- New context-menu ratcheting helpers ---
+    def open_send_ratchet_menu(self, event):
+        """Right-click handler to open custom step ratchet dialog for send keys."""
+        return self._open_ratchet_dialog('send', event.x_root, event.y_root)
+    
+    def open_peer_ratchet_menu(self, event):
+        """Right-click handler to open custom step ratchet dialog for peer keys."""
+        return self._open_ratchet_dialog('peer', event.x_root, event.y_root)
+    
+    def _open_ratchet_dialog(self, ratchet_type: str, x: int, y: int):
+        """Generic small dialog for entering ratchet steps.
+        :param ratchet_type: 'send' or 'peer'
+        :param x: screen x for dialog placement
+        :param y: screen y for dialog placement
+        """
+        if not self.client or not self.client.protocol:
+            return
+        
+        dialog = tk.Toplevel(self.root)
+        dialog.transient(self.root)
+        dialog.title(f"Ratchet {'Send' if ratchet_type=='send' else 'Peer'} Keys")
+        dialog.configure(bg=self.BG_COLOR)
+        # Place near cursor
+        try:
+            dialog.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
+        
+        tk.Label(dialog, text=f"Enter number of steps to ratchet {ratchet_type} keys forward:",
+                 bg=self.BG_COLOR, fg=self.FG_COLOR, font=("Consolas", 9)).pack(padx=10, pady=(10, 5))  # type: ignore
+        entry = tk.Entry(dialog, width=10, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR,
+                         insertbackground=self.FG_COLOR, relief=tk.FLAT, justify='center')  # type: ignore
+        entry.pack(padx=10, pady=(0, 10))  # type: ignore
+        entry.insert(0, "5")
+        entry.focus_set()
+        
+        status_var = tk.StringVar(value="")
+        status_lbl = tk.Label(dialog, textvariable=status_var, bg=self.BG_COLOR, fg="#ff6b6b", font=("Consolas", 8))
+        status_lbl.pack(padx=10, pady=(0, 5))  # type: ignore
+        
+        btn_frame = tk.Frame(dialog, bg=self.BG_COLOR)
+        btn_frame.pack(fill=tk.X, padx=10, pady=(0, 10))  # type: ignore
+        
+        def apply():
+            try:
+                steps_str = entry.get().strip()
+                steps = int(steps_str)
+                if steps <= 0:
+                    raise ValueError
+                if ratchet_type == 'send':
+                    ok = self.client.protocol.ratchet_send_key_forward(steps)
+                else:
+                    ok = self.client.protocol.ratchet_peer_key_forward(steps)
+                if not ok:
+                    raise ValueError("Ratchet operation failed")
+                self.append_to_chat(f"Ratchet {ratchet_type} keys forward by {steps} steps")
+                self.update_debug_info()
+                dialog.destroy()
+            except ValueError:
+                status_var.set("Enter a positive integer")
+            except Exception as e:
+                status_var.set(str(e))
+        
+        def close():
+            dialog.destroy()
+        
+        apply_btn = tk.Button(btn_frame, text="Apply", command=apply,
+                               bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT, # type: ignore
+                               activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR)
+        apply_btn.pack(side=tk.LEFT, padx=(0, 5))  # type: ignore
+        cancel_btn = tk.Button(btn_frame, text="Cancel", command=close,
+                                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT, # type: ignore
+                                activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR)
+        cancel_btn.pack(side=tk.RIGHT)  # type: ignore
+        
+        def on_enter(_event):
+            apply()
+        entry.bind('<Return>', on_enter)
+        dialog.bind('<Escape>', lambda _e: close())
+        
+        # Prevent interaction with main window until closed (modal-ish)
+        dialog.grab_set()
+        return 'break'
+    
     def ratchet_peer_key(self):
         """Manually ratchet the receiving chain key."""
         if not self.client or not self.client.protocol:
             return
         
         self.client.protocol.ratchet_peer_key_forward()
+    
+    def connect_to_server(self):
+        if self.connected:
+            return
+        host = self.host_entry.get().strip() or "localhost"
+        try:
+            port = int(self.port_entry.get().strip() or "16384")
+        except ValueError:
+            messagebox.showerror("Error", "Invalid port")
+            return
+        
+        self.append_to_chat(f"Connecting to {host}:{port}...")
+        self.update_status("Connecting")
+        
+        def worker():
+            self.client = DebugGUISecureChatClient(self, host, port)
+            if not self.client.connect():
+                self.on_tkinter_thread(self.append_to_chat, "Connection failed.")
+                self.on_tkinter_thread(self.update_status, "Not Connected")
+        
+        threading.Thread(target=worker, daemon=True).start()
     
     def on_closing(self):
         """Handle window closing - override to clean up debug timer."""
@@ -1831,12 +1892,8 @@ class DebugGUISecureChatClient(GUISecureChatClient):
         self._last_outgoing_appended_counter: int = 0
         self._last_incoming_appended_counter: int = 0
     
-    def _shorten(self, text: str | None, n: int = 16) -> str:
-        if not text:
-            return ""
-        return text[:n]
-    
-    def _format_crypto_info(self, info: dict, direction: str) -> str:
+    @staticmethod
+    def _format_crypto_info(info: dict, direction: str) -> str:
         try:
             ctr = info.get("counter")
             nonce = info.get("nonce_b64", "")
@@ -2060,42 +2117,7 @@ def main():
     
     # Create GUI
     gui: DebugChatGUI = DebugChatGUI(root)
-    
-    # Override the client creation to use our GUI-aware version
-    def gui_connect():
-        try:
-            host = gui.host_entry.get().strip() or "localhost"
-            port = int(gui.port_entry.get().strip() or "16384")
-            
-            gui.append_to_chat(f"Connecting to {host}:{port}...")
-            
-            # Create GUI-aware client instance
-            gui.client = DebugGUISecureChatClient(gui, host, port)
-            # Propagate current toggle to client
-            try:
-                gui.client.attach_crypto_info_to_messages = gui.attach_crypto_info_to_messages
-            except Exception:
-                pass
-            
-            # Start connection in a separate thread
-            def connect_thread():
-                try:
-                    if gui.client.connect():
-                        gui.connected = True
-                        gui.on_tkinter_thread(gui.on_connected)
-                    else:
-                        gui.append_to_chat("Failed to connect to server")
-                except Exception as err:
-                    gui.append_to_chat(f"Connection error: {err}")
-            
-            threading.Thread(target=connect_thread, daemon=True).start()
-        
-        except ValueError:
-            messagebox.showerror("Error", "Invalid port number")
-        except Exception as e:
-            gui.append_to_chat(f"Connection error: {e}")
-    
-    gui.connect_to_server = gui_connect
+    assert gui
     
     # Start the GUI
     root.mainloop()

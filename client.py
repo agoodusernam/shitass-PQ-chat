@@ -1038,7 +1038,7 @@ class SecureChatClient:
             # Wait for receive thread to finish cleanly
             if self.receive_thread and self.receive_thread.is_alive():
                 try:
-                    self.receive_thread.join(timeout=2.0)  # Wait up to 2 seconds
+                    self.receive_thread.join(timeout=2.0)
                 except Exception:
                     pass
             

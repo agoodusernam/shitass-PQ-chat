@@ -9,7 +9,7 @@
 
 An end-to-end encrypted chat application using post-quantum cryptography (ML-KEM) for key exchange and AES-GCM for symmetric encryption.
 
-## ✨ Features
+## Features
 
 -   **Quantum-Resistant Key Exchange**: Utilizes ML-KEM-1024 (a NIST PQC standard) to protect 
 against future quantum computer attacks.
@@ -19,7 +19,7 @@ The server only routes encrypted data and cannot read message contents.
 -   **Message Integrity & Authentication**: HMAC-SHA256 ensures that messages cannot be tampered with in transit.
 -   **Replay Attack Prevention**: A monotonic message counter prevents attackers from replaying old messages.
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Prerequisites
 
@@ -79,7 +79,7 @@ The GUI client provides a user-friendly interface with:
 
 Once both clients are connected, the key exchange will complete automatically. You can then begin sending secure messages.
 
-## 🧪 Running Tests
+## Testing
 
 To verify the cryptographic implementation and protocol security, run the test suite:
 
@@ -89,7 +89,7 @@ python test_secure_chat.py
 
 The tests cover key exchange, encryption/decryption, message authentication, and replay protection.
 
-## 🛠️ Architecture
+## Architecture
 
 The application consists of four main components:
 

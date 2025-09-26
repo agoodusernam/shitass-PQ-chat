@@ -33,7 +33,6 @@ PROTOCOL_VERSION: Final[str] = "2.5.0"
 # Minor version changes may add features but remain compatible with previous minor versions of the same major version.
 # Patch versions are for bug fixes and minor improvements that do not affect compatibility.
 
-
 class MessageType(IntEnum):
     """Enumeration of all message types used in the secure chat protocol."""
     KEY_EXCHANGE_INIT = 1
@@ -175,7 +174,6 @@ class SecureChatProtocol:
         """
         self.peer_version: str = ""
         self.own_private_key: bytes = bytes()
-        self.mac_key: bytes = bytes()
         self.encryption_key: bytes = bytes()
         self.shared_key: bytes = bytes()
         self.message_counter: int = 0
@@ -209,7 +207,6 @@ class SecureChatProtocol:
         self.rekey_in_progress: bool = False
         self.pending_shared_key: bytes = bytes()
         self.pending_encryption_key: bytes = bytes()
-        self.pending_mac_key: bytes = bytes()
         self.pending_send_chain_key: bytes = bytes()
         self.pending_receive_chain_key: bytes = bytes()
         self.pending_message_counter: int = 0
@@ -450,7 +447,7 @@ class SecureChatProtocol:
         self.own_public_key = public_key
         return public_key, private_key
     
-    def derive_keys(self, shared_secret: bytes) -> tuple[bytes, bytes]:
+    def derive_keys(self, shared_secret: bytes) -> bytes:
         """Derive encryption and MAC keys from shared secret using HKDF."""
         # Derive 64 bytes: 32 for AES-GCM, 32 for HMAC
         hkdf = HKDF(
@@ -464,7 +461,7 @@ class SecureChatProtocol:
         # Initialize chain keys for perfect forward secrecy
         self._initialize_chain_keys(shared_secret)
         
-        return derived[:len(derived) // 2], derived[len(derived) // 2:]  # encryption_key, mac_key
+        return derived[:len(derived) // 2]  # encryption_key
     
     def _initialize_chain_keys(self, shared_secret: bytes) -> None:
         """Initialize separate chain keys for sending and receiving."""
@@ -507,7 +504,7 @@ class SecureChatProtocol:
         return hkdf.derive(chain_key)
     
     @staticmethod
-    def _derive_keys_and_chain(shared_secret: bytes) -> tuple[bytes, bytes, bytes]:
+    def _derive_keys_and_chain(shared_secret: bytes) -> tuple[bytes, bytes]:
         """Derive encryption key, MAC key, and root chain key from a shared secret without mutating state."""
         # Derive encryption and MAC keys
         hkdf_keys = HKDF(
@@ -518,7 +515,6 @@ class SecureChatProtocol:
         )
         derived = hkdf_keys.derive(shared_secret)
         enc_key = derived[:32]
-        mac_key = derived[32:]
         
         # Derive root chain key
         hkdf_chain = HKDF(
@@ -528,7 +524,7 @@ class SecureChatProtocol:
                 info=b"chain_key_root"
         )
         root_chain_key = hkdf_chain.derive(shared_secret)
-        return enc_key, mac_key, root_chain_key
+        return enc_key, root_chain_key
     
     def generate_key_fingerprint(self, public_key: bytes) -> str:
         """Generate a human-readable word-based fingerprint for a public key."""
@@ -683,7 +679,7 @@ class SecureChatProtocol:
             shared_secret, ciphertext = ML_KEM_1024.encaps(public_key)
             
             # Derive keys from shared secret
-            self.encryption_key, self.mac_key = self.derive_keys(shared_secret)
+            self.encryption_key = self.derive_keys(shared_secret)
             self.shared_key = shared_secret
             
             return shared_secret, ciphertext, version_warning
@@ -716,7 +712,7 @@ class SecureChatProtocol:
             shared_secret = ML_KEM_1024.decaps(private_key, ciphertext)
             
             # Derive keys from shared secret
-            self.encryption_key, self.mac_key = self.derive_keys(shared_secret)
+            self.encryption_key = self.derive_keys(shared_secret)
             self.shared_key = shared_secret
             
             return shared_secret, version_warning
@@ -772,7 +768,7 @@ class SecureChatProtocol:
         
         ciphertext: bytes = aesgcm.encrypt(nonce, padded_plaintext, aad)
         
-        # Securely delete the message key
+        # delete the message key
         message_key = b'\x00' * len(message_key)
         del message_key
         
@@ -800,7 +796,7 @@ class SecureChatProtocol:
             ciphertext = base64.b64decode(message["ciphertext"])
             counter = message["counter"]
             
-            # Check for replay attacks or very old messages
+            # Check for replay attacks or old messages
             if counter <= self.peer_counter:
                 raise ValueError(
                         f"Replay attack or out-of-order message detected. Expected higher than" +
@@ -837,7 +833,7 @@ class SecureChatProtocol:
             self.receive_chain_key = new_chain_key
             self.peer_counter = counter
             
-            # Securely delete the message key
+            # delete the message key
             message_key = b'\x00' * len(message_key)
             del message_key
             
@@ -851,14 +847,13 @@ class SecureChatProtocol:
         """Atomically switch active session to the pending keys (if available)."""
         if not self.rekey_in_progress:
             return
-        if not (self.pending_shared_key and self.pending_encryption_key and self.pending_mac_key and
+        if not (self.pending_shared_key and self.pending_encryption_key and
                 self.pending_send_chain_key and self.pending_receive_chain_key):
             # Incomplete pending state, do not switch
             return
         # Activate
         self.shared_key = self.pending_shared_key
         self.encryption_key = self.pending_encryption_key
-        self.mac_key = self.pending_mac_key
         self.send_chain_key = self.pending_send_chain_key
         self.receive_chain_key = self.pending_receive_chain_key
         self.message_counter = 0
@@ -866,7 +861,6 @@ class SecureChatProtocol:
         # Clear pending state
         self.pending_shared_key = bytes()
         self.pending_encryption_key = bytes()
-        self.pending_mac_key = bytes()
         self.pending_send_chain_key = bytes()
         self.pending_receive_chain_key = bytes()
         self.pending_message_counter = 0
@@ -898,10 +892,9 @@ class SecureChatProtocol:
         # Produce new shared secret and ciphertext for the initiator
         shared_secret, ciphertext = ML_KEM_1024.encaps(peer_ephemeral_pub)
         # Store pending derived keys without touching active ones
-        enc_key, mac_key, root_chain = self._derive_keys_and_chain(shared_secret)
+        enc_key, root_chain = self._derive_keys_and_chain(shared_secret)
         self.pending_shared_key = shared_secret
         self.pending_encryption_key = enc_key
-        self.pending_mac_key = mac_key
         self.pending_send_chain_key = root_chain
         self.pending_receive_chain_key = root_chain
         self.pending_message_counter = 0
@@ -923,10 +916,9 @@ class SecureChatProtocol:
         if not ciphertext:
             raise ValueError("Missing ciphertext in REKEY response")
         shared_secret = ML_KEM_1024.decaps(self.rekey_private_key, ciphertext)
-        enc_key, mac_key, root_chain = self._derive_keys_and_chain(shared_secret)
+        enc_key, root_chain = self._derive_keys_and_chain(shared_secret)
         self.pending_shared_key = shared_secret
         self.pending_encryption_key = enc_key
-        self.pending_mac_key = mac_key
         self.pending_send_chain_key = root_chain
         self.pending_receive_chain_key = root_chain
         self.pending_message_counter = 0

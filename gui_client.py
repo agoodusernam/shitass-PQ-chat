@@ -1027,37 +1027,25 @@ class ChatGUI:
             self.append_to_chat(f"Error ending call: {e}")
     
     def connect_to_server(self):
-        """Connect to the chat server."""
+        if self.connected:
+            return
+        host = self.host_entry.get().strip() or "localhost"
         try:
-            host = self.host_entry.get().strip() or "localhost"
             port = int(self.port_entry.get().strip() or "16384")
-            
-            self.update_status("Connecting...")
-            
-            # Create client instance
-            self.client = GUISecureChatClient(gui=self, host=host, port=port)
-            
-            # Start connection in a separate thread
-            def connect_thread():
-                try:
-                    if self.client.connect():
-                        self.connected = True
-                        self.on_tkinter_thread(self.on_connected)
-                    else:
-                        self.append_to_chat("Failed to connect to server")
-                        self.update_status("Not Connected")
-                except Exception as er:
-                    self.append_to_chat(f"Connection error: {er}")
-                    self.update_status("Not Connected")
-            
-            threading.Thread(target=connect_thread, daemon=True).start()
-        
         except ValueError:
-            messagebox.showerror("Error", "Invalid port number")
-            self.update_status("Not Connected")
-        except Exception as e:
-            self.append_to_chat(f"Connection error: {e}")
-            self.update_status("Not Connected")
+            messagebox.showerror("Error", "Invalid port")
+            return
+        
+        self.append_to_chat(f"Connecting to {host}:{port}...")
+        self.update_status("Connecting")
+        
+        def worker():
+            self.client = GUISecureChatClient(self, host, port)
+            if not self.client.connect():
+                self.on_tkinter_thread(self.append_to_chat, "Connection failed.")
+                self.on_tkinter_thread(self.update_status, "Not Connected")
+        
+        threading.Thread(target=worker, daemon=True).start()
     
     def on_connected(self):
         """Called when successfully connected."""
@@ -1915,6 +1903,15 @@ class GUISecureChatClient(SecureChatClient):
         # Initialize file transfer state
         self.pending_file_requests: dict[Any, Any] = {}
     
+
+    def connect(self) -> bool:
+        # Call base connect (starts receive thread)
+        ok = super().connect()
+        if ok:
+            # Inform GUI (thread-safe dispatch if needed)
+            self.gui.on_tkinter_thread(self.gui.on_connected)
+        return ok
+    
     @staticmethod
     def _is_image_file(file_path: str) -> bool:
         """Check if a file is an image based on its extension."""
@@ -2694,37 +2691,7 @@ def main():
     
     # Create GUI
     gui: ChatGUI = ChatGUI(root, theme_colors)
-    
-    # Override the client creation to use our GUI-aware version
-    def gui_connect():
-        try:
-            host = gui.host_entry.get().strip() or "localhost"
-            port = int(gui.port_entry.get().strip() or "16384")
-            
-            gui.append_to_chat(f"Connecting to {host}:{port}...")
-            
-            # Create GUI-aware client instance
-            gui.client = GUISecureChatClient(gui, host, port, )
-            
-            # Start connection in a separate thread
-            def connect_thread():
-                try:
-                    if gui.client.connect():
-                        gui.connected = True
-                        gui.on_tkinter_thread(gui.on_connected)
-                    else:
-                        gui.append_to_chat("Failed to connect to server")
-                except Exception as err:
-                    gui.append_to_chat(f"Connection error: {err}")
-            
-            threading.Thread(target=connect_thread, daemon=True).start()
-        
-        except ValueError:
-            messagebox.showerror("Error", "Invalid port number")
-        except Exception as e:
-            gui.append_to_chat(f"Connection error: {e}")
-    
-    gui.connect_to_server = gui_connect
+    assert gui # Remove the unused variable warning
     
     # Start the GUI
     root.mainloop()
