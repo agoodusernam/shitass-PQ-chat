@@ -31,10 +31,11 @@ import argparse
 import random
 import statistics
 import string
+import sys
 import time
 from dataclasses import dataclass
 from typing import Sequence, Any
-import json  # Added for JSON output
+import json
 
 from shared import SecureChatProtocol
 
@@ -359,5 +360,8 @@ def main(argv: Sequence[str]) -> int:
     if args.json_out or args.json_only:
         print(json.dumps(results, indent=2, default=str))
     return 0
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
 
 
