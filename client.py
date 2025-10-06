@@ -395,12 +395,12 @@ class SecureChatClient:
             peer_verified = self.protocol.process_key_verification_message(message_data)
             
             if peer_verified:
-                print("\n✓ Peer has verified your key successfully.")
+                display_regular_message("Peer has verified your key successfully.", prefix="[SYSTEM]")
             else:
-                print("\nPeer has NOT verified your key.")
+                display_regular_message("Peer has NOT verified your key.", prefix="[SYSTEM]")
         
         except Exception as e:
-            print(f"Error handling verification message: {e}")
+            display_regular_message(f"Error handling verification message: {e}", error=True)
     
     def display_regular_message(self, message: str, error=False, prefix: str = "") -> None:
         """Display a regular chat message."""

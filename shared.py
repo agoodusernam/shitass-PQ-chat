@@ -121,7 +121,6 @@ class StreamingGzipCompressor:
         if data:
             self.compressor.write(data)
         
-        # Get any compressed data that's ready
         self.buffer.seek(0)
         compressed_data = self.buffer.read()
         
@@ -552,13 +551,13 @@ class SecureChatProtocol:
     def _load_wordlist() -> list[str]:
         """Load the wordlist."""
         try:
-            wordlist_path = os.path.join(os.path.dirname(__file__), 'wordlist.txt')
+            wordlist_path = os.path.join(os.path.dirname(__file__), configs.WORDLIST_FILE)
             with open(wordlist_path, 'r', encoding='utf-8') as f:
                 return [line.strip() for line in f if line.strip()]
         except FileNotFoundError as exc:
             # Fallback if wordlist file is not found
             raise FileNotFoundError(
-                    "wordlist.txt not found. Please ensure the wordlist file is in the same directory as "
+                    f"{configs.WORDLIST_FILE} not found. Please ensure the wordlist file is in the same directory as "
                     "shared.py") from exc
     
     @staticmethod
@@ -613,9 +612,6 @@ class SecureChatProtocol:
         """Process a key verification message from peer."""
         try:
             message = json.loads(data.decode('utf-8'))
-            if message["type"] != MessageType.KEY_VERIFICATION:
-                raise ValueError("Invalid message type")
-            
             return message.get("verified", False)
         except Exception as e:
             raise ValueError(f"Key verification message processing failed: {e}") from e
@@ -1144,8 +1140,6 @@ class SecureChatProtocol:
         """Process a file metadata message."""
         try:
             message = json.loads(decrypted_data)
-            if message["type"] != MessageType.FILE_METADATA:
-                raise ValueError("Invalid message type")
             
             return {
                 "transfer_id":    message["transfer_id"],

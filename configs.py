@@ -9,3 +9,6 @@ RINGTONE_FILE: Final[str] = "ringtone.wav"
 
 # SECURITY SETTINGS
 SEND_DUMMY_PACKETS: Final[bool] = True
+
+# GENERAL SETTINGS
+WORDLIST_FILE: Final[str] = "wordlist.txt"

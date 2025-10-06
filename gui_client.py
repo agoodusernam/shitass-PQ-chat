@@ -325,34 +325,23 @@ class FileTransferWindow:
         self.last_update_time = time.time()
 
 
-# noinspection PyAttributeOutsideInit
-# noinspection DuplicatedCode,PyBroadException
+# noinspection PyBroadException
 class ChatGUI:
-    def __init__(self, root, theme_colors=None):
+    def __init__(self, root):
         self.root = root
         self.root.title("Secure Chat Client")
         self.root.geometry("950x600")
         
         # Store the theme colors dictionary
-        self.theme_colors = theme_colors or {}
+        self.theme_colors = load_theme_colors()
         
-        # Apply theme colors or use defaults
-        if theme_colors is None:
-            # Default dark theme colours
-            self.BG_COLOR = "#2b2b2b"
-            self.FG_COLOR = "#d4d4d4"
-            self.ENTRY_BG_COLOR = "#3c3c3c"
-            self.BUTTON_BG_COLOR = "#555555"
-            self.BUTTON_ACTIVE_BG = "#6a6a6a"
-            self.TEXT_BG_COLOR = "#1e1e1e"
-        else:
-            # Use provided theme colors
-            self.BG_COLOR = theme_colors["BG_COLOR"]
-            self.FG_COLOR = theme_colors["FG_COLOR"]
-            self.ENTRY_BG_COLOR = theme_colors["ENTRY_BG_COLOR"]
-            self.BUTTON_BG_COLOR = theme_colors["BUTTON_BG_COLOR"]
-            self.BUTTON_ACTIVE_BG = theme_colors["BUTTON_ACTIVE_BG"]
-            self.TEXT_BG_COLOR = theme_colors["TEXT_BG_COLOR"]
+
+        self.BG_COLOR = self.theme_colors["BG_COLOR"]
+        self.FG_COLOR = self.theme_colors["FG_COLOR"]
+        self.ENTRY_BG_COLOR = self.theme_colors["ENTRY_BG_COLOR"]
+        self.BUTTON_BG_COLOR = self.theme_colors["BUTTON_BG_COLOR"]
+        self.BUTTON_ACTIVE_BG = self.theme_colors["BUTTON_ACTIVE_BG"]
+        self.TEXT_BG_COLOR = self.theme_colors["TEXT_BG_COLOR"]
         
         self.root.configure(bg=self.BG_COLOR)
         
@@ -2671,12 +2660,9 @@ def main():
     else:
         root = tk.Tk()
         root.title("Secure Chat Client, no DnD support")
-    
-    # Load theme colors
-    theme_colors: dict[str, str] = load_theme_colors()
-    
+        
     # Create GUI
-    gui: ChatGUI = ChatGUI(root, theme_colors)
+    gui: ChatGUI = ChatGUI(root)
     assert gui # Remove the unused variable warning
     
     # Start the GUI
