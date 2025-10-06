@@ -17,6 +17,8 @@ from enum import IntEnum
 from typing import Final, Any, SupportsIndex, SupportsBytes
 from collections.abc import Generator, Buffer
 
+import configs
+
 try:
     from kyber_py.ml_kem import ML_KEM_1024
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -25,6 +27,7 @@ try:
 except ImportError as exc_:
     print("Required cryptographic libraries not found.")
     raise ImportError("Please install the required libraries with pip install -r requirements.txt") from exc_
+
 # Protocol constants
 PROTOCOL_VERSION: Final[str] = "2.5.0"
 # Protocol compatibility is denoted by version number
@@ -70,19 +73,10 @@ class MessageType(IntEnum):
 # File transfer constants
 SEND_CHUNK_SIZE: Final[int] = 1024 * 1024  # 1 MiB chunks for sending
 
-VOICE_FORMAT: Final[int] = 2  # 32 bit integer PCM
-AUDIO_FORMAT: Final[int] = VOICE_FORMAT
-VOICE_CHANNELS: Final[int] = 1
-VOICE_RATE: Final[int] = 44100
-VOICE_SAMPLERATE: Final[int] = VOICE_RATE
-VOICE_CHUNK: Final[int] = int(VOICE_RATE * 0.01)  # 10ms chunks
-VOICE_CHUNK_SIZE = VOICE_CHUNK
-RINGTONE_FILE: Final[str] = "ringtone.wav"
-VOICE_RINGING_FILE: Final[str] = RINGTONE_FILE
-
 
 def bytes_to_human_readable(size: int) -> str:
-    """Convert a byte count to a human-readable format with appropriate units.
+    """
+    Convert a byte count to a human-readable format with appropriate units.
     
     Args:
         size (int): The number of bytes to convert.
@@ -213,6 +207,11 @@ class SecureChatProtocol:
         self.pending_peer_counter: int = 0
         self.rekey_private_key: bytes = bytes()
     
+    @property
+    def encryption_ready(self) -> bool:
+        """Check if encryption is ready (shared key and chain keys established)."""
+        return bool(self.shared_key and self.send_chain_key and self.receive_chain_key)
+    
     def reset_key_exchange(self) -> None:
         """Reset all cryptographic state to initial values for key exchange restart."""
         # Stop sender thread if running
@@ -342,17 +341,11 @@ class SecureChatProtocol:
         """Generate a dummy message with random data."""
         dummy_data = os.urandom(256)
         
-        # Create a JSON message with DUMMY_MESSAGE type
         dummy_message = {
             "type": MessageType.DUMMY_MESSAGE,
             "data": base64.b64encode(dummy_data).decode('utf-8')
         }
-        
-        # Convert to JSON string for encrypt_message (it expects a string)
-        dummy_text = json.dumps(dummy_message)
-        
-        # Encrypt the dummy message like a real message
-        return self.encrypt_message(dummy_text)
+        return self.encrypt_message(json.dumps(dummy_message))
     
     def _sender_loop(self) -> None:
         """Background thread loop that sends messages every 500ms.
@@ -373,13 +366,9 @@ class SecureChatProtocol:
                 # If no real message, generate a dummy message
                 # Skip dummy messages during file transfers
                 if item is None and self.send_dummy_messages and not self.has_active_file_transfers():
-                    if self.shared_key and self.send_chain_key:  # Only send dummy if encryption is ready
-                        try:
-                            item = self._generate_dummy_message()  # already encrypted bytes
-                        except Exception:
-                            # If dummy message generation fails, skip this cycle
-                            pass
-                
+                    if self.encryption_ready and configs.SEND_DUMMY_PACKETS:
+                        item = self._generate_dummy_message()
+                        
                 # Resolve the queue item into bytes to send
                 to_send: bytes | None = None
                 post_action: str | None = None
@@ -431,7 +420,7 @@ class SecureChatProtocol:
                                 pass
                     except Exception:
                         # If sending fails, the connection is likely broken
-                        # The main thread will handle reconnection
+                        # The main thread will handle reconnection and/or cleanup
                         pass
                 
                 # Wait 250ms before next cycle
@@ -948,18 +937,14 @@ class SecureChatProtocol:
             "action": "commit",
         }
     
-    def process_rekey_commit(self, message: dict) -> dict:
+    @staticmethod
+    def process_rekey_commit(message: dict) -> dict:
         """Process a REKEY commit on the responder; return a commit_ack to be sent under old key.
         Switching to the new keys should happen immediately after sending the ack.
         """
         if message.get("type") != MessageType.REKEY or message.get("action") != "commit":
             raise ValueError("Invalid REKEY commit message")
-        if not self.rekey_in_progress:
-            # Nothing pending; ignore gracefully
-            return {
-                "type":   MessageType.REKEY,
-                "action": "commit_ack",
-            }
+        
         return {
             "type":   MessageType.REKEY,
             "action": "commit_ack",
@@ -982,13 +967,10 @@ class SecureChatProtocol:
             while chunk := f.read(16384):
                 file_hash.update(chunk)
         
-        # Calculate the actual number of chunks that will be sent
-        # This is critical for large files to ensure correct progress tracking
         total_chunks: int = 0
         total_processed_size: int = 0
         
         try:
-            # Use the same chunking logic as chunk_file to get accurate count
             for chunk in self.chunk_file(file_path, compress=compress):
                 total_chunks += 1
                 total_processed_size += len(chunk)
@@ -1071,7 +1053,6 @@ class SecureChatProtocol:
         ciphertext = aesgcm.encrypt(nonce, plaintext, aad)
         
         # Delete the message key
-        # This isn't 100% secure in Python, but I'm not particularly concerned about memory scraping attacks
         message_key = b'\x00' * len(message_key)
         del message_key
         
@@ -1130,7 +1111,6 @@ class SecureChatProtocol:
                     compressor.finalize()
                 except:
                     # We don't care if finalize fails during cleanup, we're in an error state anyway
-                    # Shouldn't hide the original exception
                     pass
                 raise e
         else:

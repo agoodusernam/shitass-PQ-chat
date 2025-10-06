@@ -16,6 +16,7 @@ from typing import Callable, Any
 
 import tkinterdnd2
 
+import configs
 import shared
 
 try:
@@ -187,12 +188,12 @@ class FileTransferWindow:
         
         # Theme colors (use provided theme or defaults)
         if theme_colors:
-            self.BG_COLOR = theme_colors.get("BG_COLOR", "#2b2b2b")
-            self.FG_COLOR = theme_colors.get("FG_COLOR", "#d4d4d4")
-            self.ENTRY_BG_COLOR = theme_colors.get("ENTRY_BG_COLOR", "#3c3c3c")
-            self.BUTTON_BG_COLOR = theme_colors.get("BUTTON_BG_COLOR", "#555555")
-            self.TEXT_BG_COLOR = theme_colors.get("TEXT_BG_COLOR", "#1e1e1e")
-            self.SPEED_LABEL_COLOR = theme_colors.get("SPEED_LABEL_COLOR", "#4CAF50")
+            self.BG_COLOR = theme_colors["BG_COLOR"]
+            self.FG_COLOR = theme_colors["FG_COLOR"]
+            self.ENTRY_BG_COLOR = theme_colors["ENTRY_BG_COLOR"]
+            self.BUTTON_BG_COLOR = theme_colors["BUTTON_BG_COLOR"]
+            self.TEXT_BG_COLOR = theme_colors["TEXT_BG_COLOR"]
+            self.SPEED_LABEL_COLOR = theme_colors["SPEED_LABEL_COLOR"]
         else:
             # Default dark theme colors
             self.BG_COLOR = "#2b2b2b"
@@ -346,12 +347,12 @@ class ChatGUI:
             self.TEXT_BG_COLOR = "#1e1e1e"
         else:
             # Use provided theme colors
-            self.BG_COLOR = theme_colors.get("BG_COLOR", "#2b2b2b")
-            self.FG_COLOR = theme_colors.get("FG_COLOR", "#d4d4d4")
-            self.ENTRY_BG_COLOR = theme_colors.get("ENTRY_BG_COLOR", "#3c3c3c")
-            self.BUTTON_BG_COLOR = theme_colors.get("BUTTON_BG_COLOR", "#555555")
-            self.BUTTON_ACTIVE_BG = theme_colors.get("BUTTON_ACTIVE_BG", "#6a6a6a")
-            self.TEXT_BG_COLOR = theme_colors.get("TEXT_BG_COLOR", "#1e1e1e")
+            self.BG_COLOR = theme_colors["BG_COLOR"]
+            self.FG_COLOR = theme_colors["FG_COLOR"]
+            self.ENTRY_BG_COLOR = theme_colors["ENTRY_BG_COLOR"]
+            self.BUTTON_BG_COLOR = theme_colors["BUTTON_BG_COLOR"]
+            self.BUTTON_ACTIVE_BG = theme_colors["BUTTON_ACTIVE_BG"]
+            self.TEXT_BG_COLOR = theme_colors["TEXT_BG_COLOR"]
         
         self.root.configure(bg=self.BG_COLOR)
         
@@ -363,10 +364,10 @@ class ChatGUI:
         # Ephemeral mode state
         # Modes: "OFF", "LOCAL", "GLOBAL"
         self.ephemeral_mode = "OFF"
-        self.ephemeral_global_owner_id = None  # owner client id when mode is GLOBAL
-        self.local_client_id = str(uuid.uuid4())  # unique id for this client instance
+        self.ephemeral_global_owner_id = None
+        self.local_client_id = str(uuid.uuid4())
         self.ephemeral_messages = {}  # Track messages with timestamps for removal
-        self.message_counter = 0  # Counter for unique message IDs
+        self.message_counter = 0
         
         # Delivery confirmation tracking
         self.sent_messages = {}  # Track sent messages: {message_counter: tag_id}
@@ -374,7 +375,7 @@ class ChatGUI:
         
         # Notification sound settings
         self.notification_enabled = True
-        self.window_focused = True  # Track if window is focused
+        self.window_focused = True
         
         # Windows system notification settings
         self.windows_notifications_enabled = True
@@ -390,10 +391,8 @@ class ChatGUI:
         self.spell_checker = SpellChecker()
         self.spellcheck_timer = None
         self.spellcheck_enabled = True
-        self.misspelled_tags = set()  # Track tags for misspelled words
+        self.misspelled_tags = set()
         
-        # Initialize UI elements that may be created conditionally
-        self.windows_notif_btn = None
         
         # Create GUI elements
         self.create_widgets()
@@ -456,7 +455,7 @@ class ChatGUI:
                             title="Secure Chat Notification",
                             message=display_message,
                             app_name="Secure Chat Client",
-                            timeout=2,
+                            timeout=5,
                             app_icon=None
                     )
                 except Exception:
@@ -820,7 +819,7 @@ class ChatGUI:
                 color = self.theme_colors[status_key]
             else:
                 # Default color if status not recognized
-                color = self.theme_colors.get("STATUS_NOT_CONNECTED", "#ff6b6b")
+                color = self.theme_colors["STATUS_NOT_CONNECTED"]
         
         self.status_label.config(text=status_text, fg=color)  # type: ignore
     
@@ -847,11 +846,6 @@ class ChatGUI:
     def toggle_windows_notifications(self):
         """Toggle Windows system notifications on/off."""
         self.windows_notifications_enabled = not self.windows_notifications_enabled
-        if self.windows_notif_btn:
-            if self.windows_notifications_enabled:
-                self.windows_notif_btn.config(text="System notifs ON")
-            else:
-                self.windows_notif_btn.config(text="System notifs OFF")
     
     def open_config_dialog(self):
         """Open a small configuration window with common settings."""
@@ -1017,14 +1011,6 @@ class ChatGUI:
         CHUNK = int(VOICE_SAMPLE_RATE * 0.01)
         FORMAT = pyaudio.paInt32
         self.client.request_voice_call(rate=44100, chunk_size=CHUNK, audio_format=FORMAT)
-    
-    def end_call(self):
-        """End the current voice call."""
-        try:
-
-            self.client.end_call()
-        except Exception as e:
-            self.append_to_chat(f"Error ending call: {e}")
     
     def connect_to_server(self):
         if self.connected:
@@ -1606,7 +1592,7 @@ class ChatGUI:
             # Show the menu
             context_menu.tk_popup(event.x_root, event.y_root)
         
-        except Exception as e:
+        except Exception:
             # Silently ignore menu errors
             pass
     
@@ -1756,11 +1742,11 @@ class ChatGUI:
         try:
             # Color feedback
             if self.ephemeral_mode == "GLOBAL":
-                bg = self.theme_colors.get("EPHEMERAL_GLOBAL_BG", "#6bff6b")
-                fg = self.theme_colors.get("EPHEMERAL_GLOBAL_FG", "#ffffff")
+                bg = self.theme_colors["EPHEMERAL_GLOBAL_BG"]
+                fg = self.theme_colors["EPHEMERAL_GLOBAL_FG"]
             elif self.ephemeral_mode == "LOCAL":
-                bg = self.theme_colors.get("EPHEMERAL_ACTIVE_BG", "#ff6b6b")
-                fg = self.theme_colors.get("EPHEMERAL_ACTIVE_FG", "#ffffff")
+                bg = self.theme_colors["EPHEMERAL_LOCAL_BG"]
+                fg = self.theme_colors["EPHEMERAL_LOCAL_FG"]
             else:
                 bg = self.BUTTON_BG_COLOR
                 fg = self.FG_COLOR
@@ -1809,15 +1795,15 @@ class ChatGUI:
         
         # Create a modal dialog to prompt the user to accept or reject
         def on_accept():
-            self.client.on_user_response(True, shared.VOICE_RATE, shared.VOICE_CHUNK,
-                                         shared.VOICE_FORMAT)
+            self.client.on_user_response(True, configs.VOICE_RATE, configs.VOICE_CHUNK,
+                                         configs.VOICE_FORMAT)
             prompt.destroy()
             nonlocal keep_ringing
             keep_ringing = False
             message = {
-                "rate":         shared.VOICE_RATE,
-                "chunk_size":   shared.VOICE_CHUNK,
-                "audio_format": shared.VOICE_FORMAT,
+                "rate":         configs.VOICE_RATE,
+                "chunk_size":   configs.VOICE_CHUNK,
+                "audio_format": configs.VOICE_FORMAT,
             }
             # Spoof an accept message to start the call
             self.client.handle_voice_call_accept(json.dumps(message))
@@ -1832,11 +1818,11 @@ class ChatGUI:
         # Play a simple ringing sound in a separate thread
         def play_ringtone():
             try:
-                if not os.path.exists(shared.RINGTONE_FILE):
+                if not os.path.exists(configs.RINGTONE_FILE):
                     print("Ringtone file not found.")
                     return
                 
-                with wave.open(shared.RINGTONE_FILE, "rb") as w:
+                with wave.open(configs.RINGTONE_FILE, "rb") as w:
                     p = pyaudio.PyAudio()
                     stream = p.open(format=p.get_format_from_width(w.getsampwidth()),
                                     channels=w.getnchannels(),
@@ -1852,7 +1838,7 @@ class ChatGUI:
                     if keep_ringing:
                         # Auto-reject the call when ringtone playback finishes without user action
                         try:
-                            self.root.after(0, on_reject)
+                            self.on_tkinter_thread(on_reject)
                         except Exception:
                             try:
                                 on_reject()
@@ -2025,8 +2011,8 @@ class GUISecureChatClient(SecureChatClient):
                 self.gui.on_tkinter_thread(
                         self.gui.voice_call_btn.config,
                         text="End Call",
-                        state=tk.NORMAL,  # type: ignore
-                        command=self.gui.end_call  # type: ignore
+                        state=tk.NORMAL,
+                        command=self.end_call
                 )
             except Exception:
                 pass
@@ -2528,7 +2514,7 @@ class GUISecureChatClient(SecureChatClient):
             # Get transfer info including compression setting
             transfer_info = self.pending_file_transfers[transfer_id]
             total_chunks = transfer_info["metadata"]["total_chunks"]
-            compress = transfer_info.get("compress", True)  # Default to compressed for backward compatibility
+            compress = transfer_info.get("compress", True)
             
             chunk_generator = self.protocol.chunk_file(file_path, compress=compress)
             bytes_transferred = 0
