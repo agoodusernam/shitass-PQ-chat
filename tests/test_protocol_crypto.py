@@ -44,6 +44,8 @@ class ProtocolCryptoTests(unittest.TestCase):
         c2 = self.alice.encrypt_message(m2)
         m3 = "Third message"
         c3 = self.alice.encrypt_message(m3)
+        m4 = "Fourth message"
+        c4 = self.alice.encrypt_message(m4)
         p3 = self.bob.decrypt_message(c3)  # out-of-order acceptable forward
         self.assertEqual(p3, m3)
         self.assertEqual(self.bob.peer_counter, 3)
@@ -55,7 +57,7 @@ class ProtocolCryptoTests(unittest.TestCase):
             self.bob.decrypt_message(c2)
 
         # Tamper with ciphertext bytes -> should fail authentication
-        tampered = json.loads(c3.decode("utf-8"))
+        tampered = json.loads(c4.decode("utf-8"))
         ct_bytes = bytearray(base64.b64decode(tampered["ciphertext"]))
         ct_bytes[0] ^= 0x01
         tampered["ciphertext"] = base64.b64encode(bytes(ct_bytes)).decode("utf-8")
@@ -64,7 +66,7 @@ class ProtocolCryptoTests(unittest.TestCase):
             self.bob.decrypt_message(tampered_bytes)
 
         # Tamper with AAD (nonce) -> should fail authentication
-        tampered2 = json.loads(c3.decode("utf-8"))
+        tampered2 = json.loads(c4.decode("utf-8"))
         n = base64.b64decode(tampered2["nonce"])  # keep ct same
         n = bytearray(n)
         n[-1] ^= 0x01
@@ -74,11 +76,19 @@ class ProtocolCryptoTests(unittest.TestCase):
             self.bob.decrypt_message(tampered2_bytes)
 
         # Tamper with counter in JSON (AAD) -> should fail authentication
-        tampered3 = json.loads(c3.decode("utf-8"))
-        tampered3["counter"] = 566
+        tampered3 = json.loads(c4.decode("utf-8"))
+        tampered3["counter"] = 999999
         tampered3_bytes = json.dumps(tampered3).encode("utf-8")
         with self.assertRaises(ValueError):
             self.bob.decrypt_message(tampered3_bytes)
+        
+        tampered4 = json.loads(c4.decode("utf-8"))
+        ver_bytes = bytearray(base64.b64decode(tampered["verification"]))
+        ver_bytes[0] ^= 0x01
+        tampered4["verification"] = base64.b64encode(bytes(ver_bytes)).decode("utf-8")
+        tampered4_bytes = json.dumps(tampered4).encode("utf-8")
+        with self.assertRaises(ValueError):
+            self.bob.decrypt_message(tampered4_bytes)
 
     def test_version_mismatch_warning(self):
         # Craft init with fake version to trigger warning

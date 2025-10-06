@@ -313,9 +313,6 @@ def print_report(results: dict[str, Any]) -> None:
             continue
         print(f"  {b:<8} {data['messages']:>8}   {data['plaintext_bytes']:>15}   {data['encrypted_bytes']:>15}")
 
-    # Simple JSON-ish output hint
-    print("\nTip: For machine-readable output, you can adapt this script to emit JSON.")
-
 # ---------------------------------- CLI ---------------------------------- #
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:

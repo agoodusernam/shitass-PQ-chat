@@ -449,11 +449,10 @@ class SecureChatProtocol:
     
     def derive_keys(self, shared_secret: bytes) -> bytes:
         """Derive encryption and MAC keys from shared secret using HKDF."""
-        # Derive 64 bytes: 32 for AES-GCM, 32 for HMAC
         hkdf = HKDF(
-                algorithm=hashes.SHA3_512(),
+                algorithm=hashes.SHA3_256(),
                 length=64,
-                salt=b"ReallyCoolAndSecureSalt",
+                salt=b"ReallyCoolAndSecureSalt2",
                 info=b"key_derivation"
         )
         derived = hkdf.derive(shared_secret)
@@ -461,7 +460,7 @@ class SecureChatProtocol:
         # Initialize chain keys for perfect forward secrecy
         self._initialize_chain_keys(shared_secret)
         
-        return derived[:len(derived) // 2]  # encryption_key
+        return derived
     
     def _initialize_chain_keys(self, shared_secret: bytes) -> None:
         """Initialize separate chain keys for sending and receiving."""
@@ -469,7 +468,7 @@ class SecureChatProtocol:
         chain_hkdf = HKDF(
                 algorithm=hashes.SHA3_512(),
                 length=64,
-                salt=b"ReallyCoolAndSecureSalt",
+                salt=b"ReallyCoolAndSecureSalt1",
                 info=b"chain_key_root"
         )
         
@@ -780,27 +779,43 @@ class SecureChatProtocol:
             "ciphertext": base64.b64encode(ciphertext).decode('utf-8')
         }
         
+        verif_hasher = hashlib.sha3_512()
+        verif_hasher.update(self.encryption_key)
+        verif_hasher.update(json.dumps(encrypted_message).encode('utf-8'))
+        
+        encrypted_message["verification"] = base64.b64encode(verif_hasher.digest()).decode('utf-8')
+        
         return json.dumps(encrypted_message).encode('utf-8')
     
     def decrypt_message(self, data: bytes) -> str:
         """Decrypt and authenticate a message using perfect forward secrecy with proper state management."""
         if not self.shared_key or not self.receive_chain_key:
             raise ValueError("No shared key or receive chain key established")
-        
+        legitimate = False
         try:
-            message = json.loads(data.decode('utf-8'))
-            if message["type"] != MessageType.ENCRYPTED_MESSAGE:
-                raise ValueError("Invalid message type")
-            
-            nonce = base64.b64decode(message["nonce"])
-            ciphertext = base64.b64decode(message["ciphertext"])
+            message: dict[str, Any] = json.loads(data.decode('utf-8'))
+            nonce: bytes = base64.b64decode(message["nonce"])
+            ciphertext: bytes = base64.b64decode(message["ciphertext"])
             counter = message["counter"]
             
+            expected_verification: bytes = base64.b64decode(message["verification"])
+            verif_hasher = hashlib.sha3_512()
+            verif_hasher.update(self.encryption_key)
+            verif_hasher.update(json.dumps({
+                "type":       message["type"],
+                "counter":    counter,
+                "nonce":      message["nonce"],
+                "ciphertext": message["ciphertext"]
+            }).encode('utf-8'))
+            actual_verification = verif_hasher.digest()
+            if actual_verification != expected_verification:
+                raise ValueError("Message verification failed - possible tampering or corruption")
+            
+            legitimate = True
             # Check for replay attacks or old messages
             if counter <= self.peer_counter:
-                raise ValueError(
-                        f"Replay attack or out-of-order message detected. Expected higher than" +
-                        f" {self.peer_counter}, got {counter}")
+                raise ValueError(f"Message legitimate but counter has unexpected value: higher than"
+                                 f" {self.peer_counter} got {counter}")
             
             temp_chain_key = self.receive_chain_key
             for i in range(self.peer_counter + 1, counter):
@@ -840,7 +855,11 @@ class SecureChatProtocol:
             return decrypted_data.decode('utf-8')
         
         except Exception as e:
-            raise ValueError(f"Decryption failed: {e}") from e
+            if legitimate:
+                raise ValueError(f"Message is legitimate but decryption failed: {e}") from e
+            else:
+                raise ValueError(f"Message is NOT legitimate or has been tampered with and decryption failed: {e}") \
+                    from e
     
     # Rekey methods
     def activate_pending_keys(self) -> None:

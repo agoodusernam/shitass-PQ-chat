@@ -456,8 +456,8 @@ class ChatGUI:
                             title="Secure Chat Notification",
                             message=display_message,
                             app_name="Secure Chat Client",
-                            timeout=5,  # Notification will disappear after 5 seconds
-                            app_icon=None  # You can specify an icon file if desired
+                            timeout=2,
+                            app_icon=None
                     )
                 except Exception:
                     pass
