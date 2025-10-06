@@ -29,7 +29,7 @@ except ImportError as exc_:
     raise ImportError("Please install the required libraries with pip install -r requirements.txt") from exc_
 
 # Protocol constants
-PROTOCOL_VERSION: Final[str] = "2.5.0"
+PROTOCOL_VERSION: Final[str] = "3.0.0"
 # Protocol compatibility is denoted by version number
 # Major.Minor.Patch - only Major are checked for compatibility.
 # Major version changes may introduce breaking changes and are not guaranteed to be compatible with previous major versions.
