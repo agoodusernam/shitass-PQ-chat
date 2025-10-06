@@ -33,9 +33,9 @@ try:
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
-    Image = None  # type: ignore
-    ImageTk = None  # type: ignore
-    ImageGrab = None  # type: ignore
+    Image = None
+    ImageTk = None
+    ImageGrab = None
 
 # Plyer for system notifications
 try:
@@ -44,7 +44,7 @@ try:
     PLYER_AVAILABLE = True
 except ImportError:
     PLYER_AVAILABLE = False
-    notification = None  # type: ignore
+    notification = None
 
 # py-spellchecker for spell checking
 try:
@@ -53,7 +53,7 @@ try:
     SPELLCHECKER_AVAILABLE = True
 except ImportError:
     SPELLCHECKER_AVAILABLE = False
-    SpellChecker = None  # type: ignore
+    SpellChecker = None
 
 # tkinterdnd2 for drag-and-drop file support
 try:
@@ -62,8 +62,8 @@ try:
     TKINTERDND2_AVAILABLE = True
 except ImportError:
     TKINTERDND2_AVAILABLE = False
-    DND_FILES = None  # type: ignore
-    TkinterDnD = None  # type: ignore
+    DND_FILES = None
+    TkinterDnD = None
 
 try:
     import pyaudio
@@ -71,7 +71,7 @@ try:
     PYAUDIO_AVAILABLE = True
 except ImportError:
     PYAUDIO_AVAILABLE = False
-    pyaudio = None  # type: ignore
+    pyaudio = None
 
 from client import SecureChatClient
 from shared import bytes_to_human_readable, send_message, MessageType
@@ -141,7 +141,7 @@ def display_image(image: Image.Image, root):
     # Convert the (possibly resized) PIL image to a PhotoImage
     photo = ImageTk.PhotoImage(to_display_image, master=root)
     
-    label = tk.Label(window, image=photo)  # type: ignore
+    label = tk.Label(window, image=photo) # type: ignore
     # Keep a reference to the image to prevent it from being garbage collected
     label.image = photo
     label.pack()
@@ -216,7 +216,7 @@ class FileTransferWindow:
             
             # Top frame for speed display
             top_frame = tk.Frame(self.window, bg=self.BG_COLOR)
-            top_frame.pack(fill=tk.X, padx=10, pady=5)  # type: ignore
+            top_frame.pack(fill=tk.X, padx=10, pady=5)
             
             # Speed label in top right
             self.speed_label = tk.Label(
@@ -226,7 +226,7 @@ class FileTransferWindow:
                     fg=self.SPEED_LABEL_COLOR,
                     font=("Consolas", 10, "bold")
             )
-            self.speed_label.pack(side=tk.RIGHT)  # type: ignore
+            self.speed_label.pack(side=tk.RIGHT)
             
             # Title label
             title_label = tk.Label(
@@ -236,11 +236,11 @@ class FileTransferWindow:
                     fg=self.FG_COLOR,
                     font=("Consolas", 12, "bold")
             )
-            title_label.pack(side=tk.LEFT)  # type: ignore
+            title_label.pack(side=tk.LEFT)
             
             # Main frame for transfer list
             main_frame = tk.Frame(self.window, bg=self.BG_COLOR)
-            main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)  # type: ignore
+            main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
             
             # Scrollable text area for transfer updates
             self.transfer_list = scrolledtext.ScrolledText(
@@ -254,7 +254,7 @@ class FileTransferWindow:
                     insertbackground=self.FG_COLOR,
                     relief=tk.FLAT
             )
-            self.transfer_list.pack(fill=tk.BOTH, expand=True)  # type: ignore
+            self.transfer_list.pack(fill=tk.BOTH, expand=True)
             
             # Handle window closing
             self.window.protocol("WM_DELETE_WINDOW", self.hide_window)
@@ -439,7 +439,7 @@ class ChatGUI:
         except Exception:
             pass
     
-    def show_windows_notification(self, message_text):
+    def show_windows_notification(self, message_text: str):
         """Show a Windows system notification if the window is not focused."""
         if not self.windows_notifications_enabled or self.window_focused:
             return
@@ -469,55 +469,55 @@ class ChatGUI:
         """Create the GUI widgets."""
         # Main frame
         main_frame = tk.Frame(self.root, bg=self.BG_COLOR)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)  # type: ignore
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
         # Connection frame
         conn_frame = tk.Frame(main_frame, bg=self.BG_COLOR)
-        conn_frame.pack(fill=tk.X, pady=(0, 10))  # type: ignore
+        conn_frame.pack(fill=tk.X, pady=(0, 10))
         
         # Host and port inputs
-        tk.Label(conn_frame, text="Host:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=tk.LEFT)  # type: ignore
+        tk.Label(conn_frame, text="Host:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=tk.LEFT)
         self.host_entry = tk.Entry(
                 conn_frame, width=15, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR,
-                insertbackground=self.FG_COLOR, relief=tk.FLAT  # type: ignore
+                insertbackground=self.FG_COLOR, relief=tk.FLAT
         )
-        self.host_entry.pack(side=tk.LEFT, padx=(5, 10))  # type: ignore
+        self.host_entry.pack(side=tk.LEFT, padx=(5, 10))
         self.host_entry.insert(0, "localhost")
         
-        tk.Label(conn_frame, text="Port:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=tk.LEFT)  # type: ignore
+        tk.Label(conn_frame, text="Port:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=tk.LEFT)
         self.port_entry = tk.Entry(
                 conn_frame, width=8, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR,
-                insertbackground=self.FG_COLOR, relief=tk.FLAT  # type: ignore
+                insertbackground=self.FG_COLOR, relief=tk.FLAT
         )
-        self.port_entry.pack(side=tk.LEFT, padx=(5, 10))  # type: ignore
+        self.port_entry.pack(side=tk.LEFT, padx=(5, 10))
         self.port_entry.insert(0, "16384")
         
         # Connect/Disconnect button
         self.connect_btn = tk.Button(
                 conn_frame, text="Connect", command=self.toggle_connection,
-                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,  # type: ignore
+                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,
                 activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR
         )
-        self.connect_btn.pack(side=tk.LEFT, padx=(10, 0))  # type: ignore
+        self.connect_btn.pack(side=tk.LEFT, padx=(10, 0))
         
         # Config menu button
         self.config_btn = tk.Button(
                 conn_frame, text="Config", command=self.open_config_dialog,
-                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,  # type: ignore
+                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,
                 activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
                 font=("Consolas", 10)
         )
-        self.config_btn.pack(side=tk.LEFT, padx=(10, 0))  # type: ignore
+        self.config_btn.pack(side=tk.LEFT, padx=(10, 0))
         
         if PYAUDIO_AVAILABLE:
             self.voice_call_btn = tk.Button(
                     conn_frame, text="Voice Call", command=self.start_call,
-                    bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,  # type: ignore
+                    bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,
                     activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
                     font=("Consolas", 10)
             )
             
-            self.voice_call_btn.pack(side=tk.LEFT, padx=(10, 0))  # type: ignore
+            self.voice_call_btn.pack(side=tk.LEFT, padx=(10, 0))
         
         # Status indicator (top right)
         self.status_label = tk.Label(
@@ -525,7 +525,7 @@ class ChatGUI:
                 bg=self.BG_COLOR, fg=self.theme_colors.get("STATUS_NOT_CONNECTED", "#ff6b6b"),
                 font=("Consolas", 9, "bold")
         )
-        self.status_label.pack(side=tk.RIGHT, padx=(10, 0))  # type: ignore
+        self.status_label.pack(side=tk.RIGHT, padx=(10, 0))
         
         # Chat display area
         self.chat_display = scrolledtext.ScrolledText(
@@ -539,21 +539,21 @@ class ChatGUI:
                 insertbackground=self.FG_COLOR,
                 relief=tk.FLAT
         )
-        self.chat_display.pack(fill=tk.BOTH, expand=True, pady=(0, 10))  # type: ignore
+        self.chat_display.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
         if TKINTERDND2_AVAILABLE:
-            self.chat_display.drop_target_register(DND_FILES)  # type: ignore
-            self.chat_display.dnd_bind('<<Drop>>', self.handle_drop)  # type: ignore
+            self.chat_display.drop_target_register(DND_FILES) # type: ignore
+            self.chat_display.dnd_bind('<<Drop>>', self.handle_drop) # type: ignore
         
         # Input frame
         self.input_frame = tk.Frame(main_frame, bg=self.BG_COLOR)
-        self.input_frame.pack(fill=tk.X)  # type: ignore
+        self.input_frame.pack(fill=tk.X)
         
         # Message input
         self.message_entry = tk.Text(
                 self.input_frame, height=1, font=("Consolas", 10), bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR, width=15,
-                insertbackground=self.FG_COLOR, relief=tk.FLAT, wrap=tk.NONE  # type: ignore
+                insertbackground=self.FG_COLOR, relief=tk.FLAT, wrap=tk.NONE # type: ignore
         )
-        self.message_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))  # type: ignore
+        self.message_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         
         # Configure text tags for spellcheck
         self.message_entry.tag_configure("misspelled", underline=True,
@@ -579,27 +579,27 @@ class ChatGUI:
         try:
             self.ephemeral_menu.config(bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR,
                                        activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
-                                       relief=tk.FLAT)  # type: ignore
+                                       relief=tk.FLAT)
         except Exception:
             pass
-        self.ephemeral_menu.pack(side=tk.RIGHT, padx=(0, 5))  # type: ignore
+        self.ephemeral_menu.pack(side=tk.RIGHT, padx=(0, 5))
         
         # File Transfer window button
         self.file_transfer_btn = tk.Button(
                 self.input_frame, text="Transfers", command=self.show_file_transfer_window,
-                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,  # type: ignore
+                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,
                 activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
                 font=("Consolas", 9)
         )
-        self.file_transfer_btn.pack(side=tk.RIGHT, padx=(0, 10))  # type: ignore
+        self.file_transfer_btn.pack(side=tk.RIGHT, padx=(0, 10))
         
         # Send File button
         self.send_file_btn = tk.Button(
                 self.input_frame, text="Send File", command=self.send_file,
-                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,  # type: ignore
+                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,
                 activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR
         )
-        self.send_file_btn.pack(side=tk.RIGHT, padx=(0, 5))  # type: ignore
+        self.send_file_btn.pack(side=tk.RIGHT, padx=(0, 5))
         
         # Bind button click event to detect shift key
         self.send_file_btn.bind("<Button-1>", self.on_send_file_click)
@@ -607,20 +607,20 @@ class ChatGUI:
         # Send button
         self.send_btn = tk.Button(
                 self.input_frame, text="Send", command=self.send_message,
-                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,  # type: ignore
+                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,
                 activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR
         )
-        self.send_btn.pack(side=tk.RIGHT)  # type: ignore
+        self.send_btn.pack(side=tk.RIGHT)
         
         # Initially disable input until connected
-        self.message_entry.config(state=tk.DISABLED)  # type: ignore
-        self.send_btn.config(state=tk.DISABLED)  # type: ignore
-        self.send_file_btn.config(state=tk.DISABLED)  # type: ignore
+        self.message_entry.config(state=tk.DISABLED)
+        self.send_btn.config(state=tk.DISABLED)
+        self.send_file_btn.config(state=tk.DISABLED)
         try:
-            self.ephemeral_menu.config(state=tk.DISABLED)  # type: ignore
+            self.ephemeral_menu.config(state=tk.DISABLED)
         except Exception:
             pass
-        self.file_transfer_btn.config(state=tk.DISABLED)  # type: ignore
+        self.file_transfer_btn.config(state=tk.DISABLED)
         
         # Start ephemeral message cleanup thread
         self.start_ephemeral_cleanup()
@@ -679,7 +679,7 @@ class ChatGUI:
     def _append_to_chat(self, text, is_message=False, show_time=True):
         """Append text to the chat display."""
         text = str(text)
-        self.chat_display.config(state=tk.NORMAL)  # type: ignore
+        self.chat_display.config(state=tk.NORMAL)
         formatted_time = time.strftime("%H:%M:%S")
         
         # If ephemeral mode is enabled and this is a message, track it
@@ -709,11 +709,11 @@ class ChatGUI:
             self.show_windows_notification(text)
         
         self.chat_display.see(tk.END)
-        self.chat_display.config(state=tk.DISABLED)  # type: ignore
+        self.chat_display.config(state=tk.DISABLED)
     
     def append_to_chat_with_delivery_status(self, text, message_counter=None, is_message=False):
         """Append text to chat display with delivery status tracking for sent messages."""
-        self.chat_display.config(state=tk.NORMAL)  # type: ignore
+        self.chat_display.config(state=tk.NORMAL)
         formatted_time = time.strftime("%H:%M:%S")
         
         # Create unique tag for this message if we have a message counter
@@ -754,14 +754,14 @@ class ChatGUI:
             self.show_windows_notification(text)
         
         self.chat_display.see(tk.END)
-        self.chat_display.config(state=tk.DISABLED)  # type: ignore
+        self.chat_display.config(state=tk.DISABLED)
     
     def update_message_delivery_status(self, message_counter):
         """Update the delivery status of a sent message to show it was delivered."""
         if message_counter in self.sent_messages:
             tag_id = self.sent_messages[message_counter]
             
-            self.chat_display.config(state=tk.NORMAL)  # type: ignore
+            self.chat_display.config(state=tk.NORMAL)
             
             # Get the text range for this tag
             try:
@@ -785,7 +785,7 @@ class ChatGUI:
                 # Tag might not exist anymore, ignore
                 pass
             
-            self.chat_display.config(state=tk.DISABLED)  # type: ignore
+            self.chat_display.config(state=tk.DISABLED)
     
     def update_status(self, status_text, color=None):
         """
@@ -821,7 +821,7 @@ class ChatGUI:
                 # Default color if status not recognized
                 color = self.theme_colors["STATUS_NOT_CONNECTED"]
         
-        self.status_label.config(text=status_text, fg=color)  # type: ignore
+        self.status_label.config(text=status_text, fg=color)
     
     def show_file_transfer_window(self):
         """Show the file transfer progress window."""
@@ -866,7 +866,7 @@ class ChatGUI:
         self.config_window.resizable(False, False)
         
         container = tk.Frame(self.config_window, bg=self.BG_COLOR)
-        container.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)  # type: ignore
+        container.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
         
         # Tk variables reflecting current settings
         self.var_sound_notif: tk.BooleanVar = tk.BooleanVar(value=self.notification_enabled)
@@ -953,7 +953,7 @@ class ChatGUI:
             nick_entry = tk.Entry(nick_frame, textvariable=self.var_peer_nickname, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR, insertbackground=self.FG_COLOR)
         except Exception:
             nick_entry = tk.Entry(nick_frame, textvariable=self.var_peer_nickname)
-        nick_entry.pack(side="left", fill=tk.X, expand=True) # type: ignore
+        nick_entry.pack(side="left", fill=tk.X, expand=True)
         
         def apply_peer_nickname():
             try:
@@ -977,7 +977,7 @@ class ChatGUI:
         except Exception:
             apply_btn = tk.Button(nick_frame, text="Apply", command=apply_peer_nickname)
         apply_btn.pack(side="left", padx=(6, 0))
-        nick_frame.pack(fill=tk.X, pady=(8, 4)) # type: ignore
+        nick_frame.pack(fill=tk.X, pady=(8, 4))
         
         # Close button
         close_btn = tk.Button(
@@ -986,7 +986,7 @@ class ChatGUI:
             command=self.config_window.destroy,
             bg=self.BUTTON_BG_COLOR,
             fg=self.FG_COLOR,
-            relief=tk.FLAT,  # type: ignore
+            relief=tk.FLAT,
             activebackground=self.BUTTON_ACTIVE_BG,
             activeforeground=self.FG_COLOR,
         )
@@ -1005,7 +1005,7 @@ class ChatGUI:
             messagebox.showwarning("Warning", "Cannot start call - verification not complete")
             return
         
-        self.voice_call_btn.config(state=tk.DISABLED)  # type: ignore
+        self.voice_call_btn.config(state=tk.DISABLED)
         
         VOICE_SAMPLE_RATE = 44100
         CHUNK = int(VOICE_SAMPLE_RATE * 0.01)
@@ -1037,13 +1037,13 @@ class ChatGUI:
         """Called when successfully connected."""
         self.connected = True
         self.connect_btn.config(text="Disconnect")
-        self.host_entry.config(state=tk.DISABLED)  # type: ignore
-        self.port_entry.config(state=tk.DISABLED)  # type: ignore
-        self.message_entry.config(state=tk.NORMAL)  # type: ignore
-        self.send_btn.config(state=tk.NORMAL)  # type: ignore
-        self.send_file_btn.config(state=tk.NORMAL)  # type: ignore
-        self.ephemeral_menu.config(state=tk.NORMAL)  # type: ignore
-        self.file_transfer_btn.config(state=tk.NORMAL)  # type: ignore
+        self.host_entry.config(state=tk.DISABLED)
+        self.port_entry.config(state=tk.DISABLED)
+        self.message_entry.config(state=tk.NORMAL)
+        self.send_btn.config(state=tk.NORMAL)
+        self.send_file_btn.config(state=tk.NORMAL)
+        self.ephemeral_menu.config(state=tk.NORMAL)
+        self.file_transfer_btn.config(state=tk.NORMAL)
         self.message_entry.focus()
         self.update_status("Connected, waiting for other client")
         self.start_chat_monitoring()
@@ -1053,16 +1053,16 @@ class ChatGUI:
         self.client.disconnect()
         self.connected = False
         self.connect_btn.config(text="Connect")
-        self.host_entry.config(state=tk.NORMAL)  # type: ignore
-        self.port_entry.config(state=tk.NORMAL)  # type: ignore
-        self.message_entry.config(state=tk.DISABLED)  # type: ignore
-        self.send_btn.config(state=tk.DISABLED)  # type: ignore
-        self.send_file_btn.config(state=tk.DISABLED)  # type: ignore
+        self.host_entry.config(state=tk.NORMAL)
+        self.port_entry.config(state=tk.NORMAL)
+        self.message_entry.config(state=tk.DISABLED)
+        self.send_btn.config(state=tk.DISABLED)
+        self.send_file_btn.config(state=tk.DISABLED)
         try:
-            self.ephemeral_menu.config(state=tk.DISABLED)  # type: ignore
+            self.ephemeral_menu.config(state=tk.DISABLED)
         except Exception:
             pass
-        self.file_transfer_btn.config(state=tk.DISABLED)  # type: ignore
+        self.file_transfer_btn.config(state=tk.DISABLED)
         self.append_to_chat("Disconnected from server.")
         self.update_status("Not Connected")
     
@@ -1751,22 +1751,22 @@ class ChatGUI:
                 bg = self.BUTTON_BG_COLOR
                 fg = self.FG_COLOR
             self.ephemeral_menu.config(bg=bg, fg=fg, activebackground=self.BUTTON_ACTIVE_BG,
-                                       activeforeground=fg)  # type: ignore
+                                       activeforeground=fg)
         except Exception:
             pass
         # Lock control if global owned by peer
         try:
             if self.ephemeral_mode == "GLOBAL" and self.ephemeral_global_owner_id and self.ephemeral_global_owner_id != self.local_client_id:
-                self.ephemeral_menu.config(state=tk.DISABLED)  # type: ignore
+                self.ephemeral_menu.config(state=tk.DISABLED)
             else:
-                self.ephemeral_menu.config(state=tk.NORMAL)  # type: ignore
+                self.ephemeral_menu.config(state=tk.NORMAL)
         except Exception:
             pass
     
     def remove_ephemeral_messages(self, message_ids):
         """Remove ephemeral messages from the chat display."""
         try:
-            self.chat_display.config(state=tk.NORMAL)  # type: ignore
+            self.chat_display.config(state=tk.NORMAL)
             for message_id in message_ids:
                 # Find the tagged message range
                 tag_ranges = self.chat_display.tag_ranges(message_id)
@@ -1778,7 +1778,7 @@ class ChatGUI:
                 self.ephemeral_messages.pop(message_id, None)
             
             self.chat_display.see(tk.END)
-            self.chat_display.config(state=tk.DISABLED)  # type: ignore
+            self.chat_display.config(state=tk.DISABLED)
         
         except Exception:
             # If removal fails, just clean up the tracking dict
@@ -1975,7 +1975,7 @@ class GUISecureChatClient(SecureChatClient):
                 "chunk_size":   chunk_size,
                 "audio_format": audio_format,
             }))
-            self.gui.voice_call_btn.config(state=tk.DISABLED)  # type: ignore
+            self.gui.voice_call_btn.config(state=tk.DISABLED)
         else:
             self.protocol.queue_message(("encrypt_json", {
                 "type": MessageType.VOICE_CALL_REJECT,
@@ -2070,7 +2070,7 @@ class GUISecureChatClient(SecureChatClient):
     def handle_voice_call_reject(self):
         """Handle rejection of a voice call request."""
         self.gui.append_to_chat(f"Voice call rejected")
-        self.gui.voice_call_btn.config(state=tk.NORMAL)  # type: ignore
+        self.gui.voice_call_btn.config(state=tk.NORMAL)
     
     def handle_voice_call_data(self, decrypted_text: str) -> None:
         """Handle incoming voice call data (console feedback)."""
@@ -2104,8 +2104,8 @@ class GUISecureChatClient(SecureChatClient):
                 self.gui.on_tkinter_thread(
                         self.gui.voice_call_btn.config,
                         text="Voice Call",
-                        state=tk.NORMAL,  # type: ignore
-                        command=self.gui.start_call  # type: ignore
+                        state=tk.NORMAL,
+                        command=self.gui.start_call
                 )
             except Exception:
                 pass
@@ -2131,8 +2131,8 @@ class GUISecureChatClient(SecureChatClient):
                 self.gui.on_tkinter_thread(
                         self.gui.voice_call_btn.config,
                         text="Voice Call",
-                        state=tk.NORMAL,  # type: ignore
-                        command=self.gui.start_call  # type: ignore
+                        state=tk.NORMAL,
+                        command=self.gui.start_call
                 )
             except Exception:
                 pass
