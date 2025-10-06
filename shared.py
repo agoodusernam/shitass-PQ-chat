@@ -37,37 +37,51 @@ PROTOCOL_VERSION: Final[str] = "3.0.0"
 # Patch versions are for bug fixes and minor improvements that do not affect compatibility.
 
 class MessageType(IntEnum):
-    """Enumeration of all message types used in the secure chat protocol."""
-    KEY_EXCHANGE_INIT = 1
-    KEY_EXCHANGE_RESPONSE = 2
-    ENCRYPTED_MESSAGE = 3
-    ERROR = 4
-    KEY_VERIFICATION = 5
-    FILE_METADATA = 6
-    FILE_ACCEPT = 7
-    FILE_REJECT = 8
-    FILE_CHUNK = 9
-    FILE_COMPLETE = 10
-    KEY_EXCHANGE_RESET = 11
-    KEEP_ALIVE = 12
-    KEEP_ALIVE_RESPONSE = 13
-    DELIVERY_CONFIRMATION = 14
-    EMERGENCY_CLOSE = 15
-    INITIATE_KEY_EXCHANGE = 16
-    SERVER_FULL = 17
-    KEY_EXCHANGE_COMPLETE = 18
-    SERVER_VERSION_INFO = 19
-    DUMMY_MESSAGE = 20
-    EPHEMERAL_MODE_CHANGE = 21
-    REKEY = 22
-    SERVER_DISCONNECT = 23
-    VOICE_CALL_INIT = 24
-    VOICE_CALL_ACCEPT = 25
-    VOICE_CALL_REJECT = 26
-    VOICE_CALL_DATA = 27
-    VOICE_CALL_END = 28
-    NICKNAME_CHANGE = 29
-    CLIENT_DISCONNECT = 30
+    # Key Exchange
+    # Server to client
+    INITIATE_KEY_EXCHANGE = 1
+    KEY_EXCHANGE_COMPLETE = 2
+    KEY_EXCHANGE_RESET = 3
+    # Client to server
+    KEY_EXCHANGE_RESPONSE = 4
+    KEY_EXCHANGE_INIT = 5
+    
+    # Messaging
+    ENCRYPTED_MESSAGE = 10
+    DELIVERY_CONFIRMATION = 11
+    DUMMY_MESSAGE = 12
+    
+    # File Transfer
+    FILE_METADATA = 20
+    FILE_ACCEPT = 21
+    FILE_REJECT = 22
+    FILE_CHUNK = 23
+    FILE_COMPLETE = 24
+
+    # Voice Call
+    VOICE_CALL_INIT = 30
+    VOICE_CALL_ACCEPT = 31
+    VOICE_CALL_REJECT = 32
+    VOICE_CALL_DATA = 33
+    VOICE_CALL_END = 34
+
+    # Server-to-Client Control
+    SERVER_FULL = 40
+    SERVER_VERSION_INFO = 41
+    SERVER_DISCONNECT = 42
+    ERROR = 43
+    KEEP_ALIVE = 44
+
+    # Client-to-Server Control
+    CLIENT_DISCONNECT = 50
+    KEEP_ALIVE_RESPONSE = 51
+    
+    # Client-to-Client Control
+    EMERGENCY_CLOSE = 60
+    EPHEMERAL_MODE_CHANGE = 61
+    KEY_VERIFICATION = 62
+    NICKNAME_CHANGE = 63
+    REKEY = 64
 
 
 # File transfer constants
