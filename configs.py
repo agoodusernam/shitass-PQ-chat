@@ -25,7 +25,7 @@ MESSAGE_NOTIF_SOUND_FILE: Final[str] = "notification_sound.wav"
 ## VOICE SETTINGS
 VOICE_SEND_FREQUENCY: Final[float] = 100
 # How many times per second to send voice data.
-# Keep above ~10 and below ~200 for a smooth experience
+# Keep between 10 and 200 for a smooth experience
 # Default: 100
 # Range: 1 - 1000
 
