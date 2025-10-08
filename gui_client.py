@@ -12,8 +12,9 @@ import uuid
 import wave
 from collections import deque
 from tkinter import scrolledtext, messagebox, filedialog
-from typing import Callable, Any, Literal
+from typing import Callable, Any, Literal, ParamSpec
 
+import config_handler
 import config_manager
 
 assert config_manager  # remove unused import warning
@@ -77,11 +78,14 @@ except ImportError:
 from client import SecureChatClient
 from shared import bytes_to_human_readable, send_message, MessageType
 
+P = ParamSpec('P')
+
 
 class Ltk:
     """
     Literal types for Tkinter constants because type checking YAY
     """
+    
     def __init__(self):
         self.W: Literal["w"] = "w"
         self.X: Literal["x"] = "x"
@@ -98,6 +102,7 @@ class Ltk:
         self.WORD: Literal["word"] = "word"
         self.NONE: Literal["none"] = "none"
 
+
 ltk: Ltk = Ltk()
 
 
@@ -111,7 +116,11 @@ def get_image_from_clipboard() -> Image.Image | None:
             return image
         
         return None
-    except Exception:
+    except (OSError, ValueError):
+        # Clipboard unsupported or empty / contains invalid data
+        return None
+    except Exception:  # Fallback: unexpected clipboard handling error
+        # Intentional broad catch: we don't want clipboard issues to break the app
         return None
 
 
@@ -360,6 +369,7 @@ class ChatGUI:
         self.client: GUISecureChatClient | None = None
         self.connected = False
         self.peer_nickname = "Other user"
+        self.config: config_handler.ConfigHandler = config_handler.ConfigHandler()
         
         # Ephemeral mode state
         # Modes: "OFF", "LOCAL", "GLOBAL"
@@ -374,15 +384,15 @@ class ChatGUI:
         self.sent_message_tags = {}  # Track tag IDs for sent messages: {tag_id: message_counter}
         
         # Notification sound settings
-        self.notification_enabled = True
+        self.notification_enabled = self.config["notification_sound"]
         self.window_focused = True
         
         # Windows system notification settings
-        self.windows_notifications_enabled = True
+        self.windows_notifications_enabled = self.config["system_notifications"] and PLYER_AVAILABLE
         
         # Additional settings
-        self.allow_voice_calls = True
-        self.auto_display_images = True
+        self.allow_voice_calls = self.config["allow_voice_calls"] and PYAUDIO_AVAILABLE
+        self.auto_display_images = self.config["auto_display_images"] and PIL_AVAILABLE
         
         # File transfer window with theme colors
         self.file_transfer_window = FileTransferWindow(self.root, self.theme_colors)
@@ -402,9 +412,15 @@ class ChatGUI:
         # Handle window closing
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
     
-    def on_tkinter_thread(self, func: Callable, *args, **kwargs) -> None:
+    def on_tk_thread(self, func: Callable[[P], Any], /, *args: P.args, **kwargs: P.kwargs) -> None:
         """Run a function on the Tkinter main thread."""
         self.root.after(0, lambda: func(*args, **kwargs))
+        return None
+    
+    def no_types_tk_thread(self, func: Callable, /, *args, **kwargs) -> None:
+        """Run a function on the Tkinter main thread (no type checking)."""
+        self.root.after(0, lambda: func(*args, **kwargs))
+        return None
     
     def setup_focus_tracking(self):
         """Setup window focus tracking for notification sounds."""
@@ -428,26 +444,27 @@ class ChatGUI:
             return
         
         try:
-            # Play a system notification sound (non-blocking)
-            if os.path.exists(configs.MESSAGE_NOTIF_SOUND_FILE):
+            if os.path.exists(configs.MESSAGE_NOTIF_SOUND_FILE) and WINSOUND_AVAILABLE and winsound:
                 threading.Thread(
                         target=winsound.PlaySound,
                         args=(configs.MESSAGE_NOTIF_SOUND_FILE, winsound.SND_FILENAME),
                         daemon=True
                 ).start()
+        except (FileNotFoundError, OSError) as e:
+            # Non-critical: sound file missing or device error
+            pass
         except Exception:
+            # Unexpected winsound failure is ignored to avoid disrupting UX
             pass
     
     def show_windows_notification(self, message_text: str):
         """Show a Windows system notification if the window is not focused."""
-        if not self.windows_notifications_enabled or self.window_focused:
+        if not self.windows_notifications_enabled or self.window_focused or not PLYER_AVAILABLE or not notification:
             return
         
         try:
-            # Extract the actual message content (remove "Other user: " prefix)
             display_message = message_text.replace("Other user: ", "")
             
-            # Show notification in a separate thread to avoid blocking
             def show_notification():
                 try:
                     notification.notify(
@@ -457,11 +474,19 @@ class ChatGUI:
                             timeout=5,
                             app_icon=None
                     )
+                except (ValueError, OSError):
+                    # Notification backend error (non-fatal)
+                    pass
                 except Exception:
+                    # Unexpected plyer error - ignored to avoid breaking UI thread
                     pass
             
             threading.Thread(target=show_notification, daemon=True).start()
+        except (RuntimeError, OSError):
+            # Thread start or system limitation; safe to ignore
+            pass
         except Exception:
+            # Unexpected outer failure; non-critical
             pass
     
     # noinspection PyAttributeOutsideInit
@@ -580,7 +605,11 @@ class ChatGUI:
             self.ephemeral_menu.config(bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR,
                                        activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
                                        relief=ltk.FLAT)
+        except (tk.TclError, AttributeError):
+            # Some platforms/widgets may not support styling all attributes
+            pass
         except Exception:
+            # Ignore unexpected styling issues; purely cosmetic
             pass
         self.ephemeral_menu.pack(side=ltk.RIGHT, padx=(0, 5))
         
@@ -666,15 +695,19 @@ class ChatGUI:
             if result:
                 self.append_to_chat(f"Sending file: {file_name} ({compression_text})")
                 self.client.send_file(file_path, compress=compress)
+        except (FileNotFoundError, PermissionError) as e:
+            self.append_to_chat(f"File send error (file access): {e}")
+        except (OSError, ValueError) as e:
+            self.append_to_chat(f"File send error (I/O): {e}")
         except Exception as e:
-            self.append_to_chat(f"File send error: {e}")
+            self.append_to_chat(f"File send error (unexpected): {e}")
     
     def append_to_chat(self, text, is_message=False, show_time=True):
         """
         Append text to the chat display.
         Automatically runs on the Tkinter thread.
         """
-        self.on_tkinter_thread(self._append_to_chat, text, is_message, show_time)
+        self.on_tk_thread(self._append_to_chat, text, is_message, show_time)
     
     def _append_to_chat(self, text, is_message=False, show_time=True):
         """Append text to the chat display."""
@@ -792,7 +825,7 @@ class ChatGUI:
         Update the status indicator with new text and color.
         Automatically runs on the Tkinter thread.
         """
-        self.on_tkinter_thread(self._update_status, status_text, color)
+        self.on_tk_thread(self._update_status, status_text, color)
     
     def _update_status(self, status_text, color=None):
         """Update the status indicator with new text and color.
@@ -847,6 +880,31 @@ class ChatGUI:
         """Toggle Windows system notifications on/off."""
         self.windows_notifications_enabled = not self.windows_notifications_enabled
     
+    def save_and_destroy_config_window(self):
+        """Save settings from the config window and close it."""
+        self.config_from_vars()
+        try:
+            if hasattr(self, "config_window") and self.config_window and self.config_window.winfo_exists():
+                self.config_window.destroy()
+        except Exception:
+            pass
+        return
+    
+    def config_from_vars(self):
+        """Update config settings from internal variables"""
+        self.config["notification_sound"] = self.notification_enabled
+        self.config["system_notifications"] = self.windows_notifications_enabled
+        self.config["auto_display_images"] = self.auto_display_images
+        self.config["allow_voice_calls"] = self.allow_voice_calls
+        if self.client:
+            self.config["allow_file_transfers"] = self.client.allow_file_transfers
+            self.config["send_delivery_receipts"] = self.client.send_delivery_receipts
+            self.config["nickname_change_allowed"] = self.client.nickname_change_allowed
+        self.config.save()
+        if self.client:
+            self.client.protocol.config.reload()
+        return
+    
     # noinspection PyAttributeOutsideInit
     def open_config_dialog(self):
         """Open a small configuration window with common settings."""
@@ -875,11 +933,11 @@ class ChatGUI:
         self.var_auto_images: tk.BooleanVar = tk.BooleanVar(value=self.client.display_images if self.client else True)
         self.var_allow_calls: tk.BooleanVar = tk.BooleanVar(value=self.allow_voice_calls)
         self.var_allow_file_transfers: tk.BooleanVar = tk.BooleanVar(
-            value=self.client.allow_file_transfers if self.client else True)
+                value=self.client.allow_file_transfers if self.client else True)
         self.var_send_delivery_receipts: tk.BooleanVar = tk.BooleanVar(
-            value=self.client.send_delivery_receipts if self.client else True)
+                value=self.client.send_delivery_receipts if self.client else True)
         self.var_nickname_change_allowed = tk.BooleanVar(
-            value=self.client.nickname_change_allowed if self.client else False)
+                value=self.client.nickname_change_allowed if self.client else False)
         # New: Peer nickname StringVar for manual setting
         try:
             current_peer_nick: str = (self.client.peer_nickname if self.client else self.peer_nickname)
@@ -922,7 +980,7 @@ class ChatGUI:
                 text="Allow file transfers",
                 variable=self.var_allow_file_transfers,
                 command=lambda: (setattr(self.client, 'allow_file_transfers',
-                                         self.var_allow_file_transfers.get()) if self.client else None),
+                                         self.var_allow_file_transfers.get()) if self.client else True),
         )
         
         cb6 = tk.Checkbutton(
@@ -930,7 +988,7 @@ class ChatGUI:
                 text="Send delivery receipts",
                 variable=self.var_send_delivery_receipts,
                 command=lambda: (setattr(self.client, 'send_delivery_receipts',
-                                         self.var_send_delivery_receipts.get()) if self.client else None),
+                                         self.var_send_delivery_receipts.get()) if self.client else True),
         )
         
         cb7 = tk.Checkbutton(
@@ -938,7 +996,7 @@ class ChatGUI:
                 text="Allow peer to change their nickname",
                 variable=self.var_nickname_change_allowed,
                 command=lambda: (setattr(self.client, 'nickname_change_allowed',
-                                         self.var_nickname_change_allowed.get()) if self.client else None),
+                                         self.var_nickname_change_allowed.get()) if self.client else True),
         )
         
         # Try to style to match theme (some platforms may ignore)
@@ -995,7 +1053,7 @@ class ChatGUI:
         close_btn = tk.Button(
                 container,
                 text="Close",
-                command=self.config_window.destroy,
+                command=self.save_and_destroy_config_window,
                 bg=self.BUTTON_BG_COLOR,
                 fg=self.FG_COLOR,
                 relief=ltk.FLAT,
@@ -1040,8 +1098,8 @@ class ChatGUI:
         def worker():
             self.client = GUISecureChatClient(self, host, port)
             if not self.client.connect():
-                self.on_tkinter_thread(self.append_to_chat, "Connection failed.")
-                self.on_tkinter_thread(self.update_status, "Not Connected")
+                self.on_tk_thread(self.append_to_chat, "Connection failed.")
+                self.on_tk_thread(self.update_status, "Not Connected")
         
         threading.Thread(target=worker, daemon=True).start()
     
@@ -1091,7 +1149,7 @@ class ChatGUI:
                         self.client.verification_started = True
                         
                         # Show verification dialogue
-                        self.on_tkinter_thread(self.show_verification_dialog)
+                        self.on_tk_thread(self.show_verification_dialog)
                     
                     time.sleep(0.1)
             
@@ -1441,7 +1499,7 @@ class ChatGUI:
             self._append_to_chat(f"Error handling paste: {e}")
             return "break"  # Prevent default paste behavior on error
     
-    def handle_clipboard_image(self, image):
+    def handle_clipboard_image(self, image: Image.Image):
         """
         Handle pasted clipboard image by saving to temp file and sending.
         Must be run from the main Tkinter thread.
@@ -1636,7 +1694,7 @@ class ChatGUI:
                 if self.client.socket:
                     self.client.socket.close()
             # Close the application immediately
-            self.on_tkinter_thread(self.root.quit)
+            self.on_tk_thread(self.root.quit)
             sys.exit(1)
         except Exception as e:
             # Even if there's an error, still close the application
@@ -1665,7 +1723,7 @@ class ChatGUI:
                         
                         # Remove expired messages
                         if expired_message_ids:
-                            self.on_tkinter_thread(self.remove_ephemeral_messages, expired_message_ids)
+                            self.on_tk_thread(self.remove_ephemeral_messages, expired_message_ids)
                     
                     time.sleep(1.0)  # Check every second
                 except Exception:
@@ -1846,11 +1904,10 @@ class ChatGUI:
                     
                     stream.close()
                     p.terminate()
-                    # ADD CALL REJECTION LOGIC HERE
                     if keep_ringing:
                         # Auto-reject the call when ringtone playback finishes without user action
                         try:
-                            self.on_tkinter_thread(on_reject)
+                            self.on_tk_thread(on_reject)
                         except Exception:
                             try:
                                 on_reject()
@@ -1890,7 +1947,7 @@ class GUISecureChatClient(SecureChatClient):
     
     def __init__(self, gui: "ChatGUI", host='localhost', port=16384):
         super().__init__(host, port)
-        self.display_images: bool = True
+        self.display_images: bool = self.protocol.config["display_images"]
         self.voice_data_queue: deque[bytes] = deque()
         self.voice_call_active: bool = False
         self.gui: "ChatGUI" = gui
@@ -1906,7 +1963,7 @@ class GUISecureChatClient(SecureChatClient):
         ok = super().connect()
         if ok:
             # Inform GUI (thread-safe dispatch if needed)
-            self.gui.on_tkinter_thread(self.gui.on_connected)
+            self.gui.on_tk_thread(self.gui.on_connected)
         return ok
     
     @staticmethod
@@ -1972,7 +2029,7 @@ class GUISecureChatClient(SecureChatClient):
                 return
             
             # Prompt user in the GUI thread
-            self.gui.on_tkinter_thread(self.gui.prompt_voice_call)
+            self.gui.on_tk_thread(self.gui.prompt_voice_call)
         
         except Exception as e:
             self.gui.append_to_chat(f"Error handling voice call init: {e}")
@@ -2018,7 +2075,7 @@ class GUISecureChatClient(SecureChatClient):
             
             # Switch the GUI button to 'End Call'
             try:
-                self.gui.on_tkinter_thread(
+                self.gui.no_types_tk_thread(
                         self.gui.voice_call_btn.config,
                         text="End Call",
                         state=ltk.NORMAL,
@@ -2111,7 +2168,7 @@ class GUISecureChatClient(SecureChatClient):
                 self.gui.append_to_chat(f"Error notifying peer of call end: {e}")
             # Reset UI button back to 'Voice Call'
             try:
-                self.gui.on_tkinter_thread(
+                self.gui.no_types_tk_thread(
                         self.gui.voice_call_btn.config,
                         text="Voice Call",
                         state=ltk.NORMAL,
@@ -2138,7 +2195,7 @@ class GUISecureChatClient(SecureChatClient):
                 pass
             # Update UI
             try:
-                self.gui.on_tkinter_thread(
+                self.gui.no_types_tk_thread(
                         self.gui.voice_call_btn.config,
                         text="Voice Call",
                         state=ltk.NORMAL,
@@ -2156,7 +2213,7 @@ class GUISecureChatClient(SecureChatClient):
             confirmed_counter = json.loads(message_data).get("confirmed_counter")
             # Update the GUI to show the message was delivered
             if confirmed_counter:
-                self.gui.on_tkinter_thread(self.gui.update_message_delivery_status, confirmed_counter)
+                self.gui.on_tk_thread(self.gui.update_message_delivery_status, confirmed_counter)
             else:
                 # Fallback to console output if no GUI
                 print(f"\n✓ Message {confirmed_counter} delivered")
@@ -2352,7 +2409,7 @@ class GUISecureChatClient(SecureChatClient):
                 # Store the transfer ID for command processing
                 self.pending_file_requests[transfer_id] = metadata
             
-            self.gui.on_tkinter_thread(show_file_notification)
+            self.gui.on_tk_thread(show_file_notification)
         
         except Exception as e:
             self.gui.append_to_chat(f"Error handling file metadata: {e}")
@@ -2364,15 +2421,15 @@ class GUISecureChatClient(SecureChatClient):
             transfer_id = message["transfer_id"]
             
             if transfer_id not in self.pending_file_transfers:
-                self.gui.on_tkinter_thread(self.gui.file_transfer_window.add_transfer_message,
-                                           "Received acceptance for unknown file transfer")
+                self.gui.on_tk_thread(self.gui.file_transfer_window.add_transfer_message,
+                                      "Received acceptance for unknown file transfer")
                 return
             
             transfer_info = self.pending_file_transfers[transfer_id]
             filename = transfer_info["metadata"]["filename"]
             
-            self.gui.on_tkinter_thread(self.gui.file_transfer_window.add_transfer_message,
-                                       f"File transfer accepted. Sending {filename}...")
+            self.gui.on_tk_thread(self.gui.file_transfer_window.add_transfer_message,
+                                  f"File transfer accepted. Sending {filename}...")
             
             self.protocol.send_dummy_messages = False
             # Start sending file chunks in a separate thread to avoid blocking message processing
@@ -2395,8 +2452,8 @@ class GUISecureChatClient(SecureChatClient):
             
             if transfer_id in self.pending_file_transfers:
                 filename = self.pending_file_transfers[transfer_id]["metadata"]["filename"]
-                self.gui.on_tkinter_thread(self.gui.file_transfer_window.add_transfer_message,
-                                           f"File transfer rejected: {filename} - {reason}")
+                self.gui.on_tk_thread(self.gui.file_transfer_window.add_transfer_message,
+                                      f"File transfer rejected: {filename} - {reason}")
                 self.gui.append_to_chat(f"File transfer rejected: {filename} - {reason}")
                 del self.pending_file_transfers[transfer_id]
         
@@ -2409,8 +2466,8 @@ class GUISecureChatClient(SecureChatClient):
             transfer_id = chunk_info["transfer_id"]
             
             if transfer_id not in self.active_file_metadata:
-                self.gui.on_tkinter_thread(self.gui.file_transfer_window.add_transfer_message,
-                                           "Received chunk for unknown file transfer")
+                self.gui.on_tk_thread(self.gui.file_transfer_window.add_transfer_message,
+                                      "Received chunk for unknown file transfer")
                 return
             
             metadata = self.active_file_metadata[transfer_id]
@@ -2437,20 +2494,20 @@ class GUISecureChatClient(SecureChatClient):
             
             # Update GUI with transfer progress every 10 chunks or for small transfers
             if received_chunks % 10 == 0 or received_chunks == 1 or metadata["total_chunks"] <= 10:
-                self.gui.root.after(0, self.gui.file_transfer_window.update_transfer_progress,
-                                    transfer_id, metadata['filename'], received_chunks, metadata['total_chunks'],
-                                    bytes_transferred
-                                    )
+                self.gui.on_tk_thread(self.gui.file_transfer_window.update_transfer_progress,
+                                      metadata['filename'], received_chunks, metadata['total_chunks'],
+                                      bytes_transferred
+                                      )
             
             if is_complete:
                 # Final progress update to ensure 100% is shown
                 # Use processed_size for final progress to match the transfer type
                 final_bytes_transferred = metadata.get("processed_size", metadata["file_size"])
-                self.gui.root.after(0, self.gui.file_transfer_window.update_transfer_progress,
-                                    transfer_id, metadata['filename'], metadata['total_chunks'],
-                                    metadata['total_chunks'],
-                                    final_bytes_transferred
-                                    )
+                self.gui.on_tk_thread(self.gui.file_transfer_window.update_transfer_progress,
+                                      transfer_id, metadata['filename'], metadata['total_chunks'],
+                                      metadata['total_chunks'],
+                                      final_bytes_transferred
+                                      )
                 
                 # Reassemble file
                 # Use user-selected save path if provided; otherwise default to CWD with conflict handling
@@ -2489,15 +2546,15 @@ class GUISecureChatClient(SecureChatClient):
                     self.protocol.queue_message(("encrypt_json", complete_msg))
                 
                 except Exception as e:
-                    self.gui.on_tkinter_thread(self.gui.file_transfer_window.add_transfer_message,
-                                               f"File reassembly failed: {e}")
+                    self.gui.on_tk_thread(self.gui.file_transfer_window.add_transfer_message,
+                                          f"File reassembly failed: {e}")
                 
                 # Clean up
                 del self.active_file_metadata[transfer_id]
         
         except Exception as e:
-            self.gui.on_tkinter_thread(self.gui.file_transfer_window.add_transfer_message,
-                                       f"Error handling binary file chunk: {e}")
+            self.gui.on_tk_thread(self.gui.file_transfer_window.add_transfer_message,
+                                  f"Error handling binary file chunk: {e}")
     
     def handle_file_complete(self, decrypted_message: str):
         """Handle file transfer completion notification with GUI updates."""
@@ -2507,16 +2564,16 @@ class GUISecureChatClient(SecureChatClient):
             
             if transfer_id in self.pending_file_transfers:
                 filename = self.pending_file_transfers[transfer_id]["metadata"]["filename"]
-                self.gui.on_tkinter_thread(self.gui.file_transfer_window.add_transfer_message,
-                                           f"File transfer completed: {filename}")
+                self.gui.on_tk_thread(self.gui.file_transfer_window.add_transfer_message,
+                                      f"File transfer completed: {filename}")
                 
                 self.gui.file_transfer_window.clear_speed()
                 del self.pending_file_transfers[transfer_id]
                 self.protocol.send_dummy_messages = True
         
         except Exception as e:
-            self.gui.on_tkinter_thread(self.gui.file_transfer_window.add_transfer_message,
-                                       f"Error handling file completion: {e}")
+            self.gui.on_tk_thread(self.gui.file_transfer_window.add_transfer_message,
+                                  f"Error handling file completion: {e}")
     
     def _send_file_chunks(self, transfer_id: str, file_path: str):
         """Send file chunks to peer with GUI progress updates."""
@@ -2544,24 +2601,23 @@ class GUISecureChatClient(SecureChatClient):
                     filename = os.path.basename(file_path)
                     current_chunk = i + 1
                     compression_text = "compressed" if compress else "uncompressed"
-                    self.gui.root.after(0, self.gui.file_transfer_window.update_transfer_progress, transfer_id,
-                                        filename, current_chunk, total_chunks, bytes_transferred, compression_text)
+                    self.gui.on_tk_thread(self.gui.file_transfer_window.update_transfer_progress,
+                                          filename, current_chunk, total_chunks, bytes_transferred, compression_text)
             
             # Final update to ensure 100% progress is shown
             filename = os.path.basename(file_path)
             compression_text = "compressed" if compress else "uncompressed"
-            self.gui.root.after(0,
-                                self.gui.file_transfer_window.update_transfer_progress, transfer_id, filename,
-                                total_chunks,
-                                total_chunks, bytes_transferred, compression_text)
-            self.gui.root.after(0, self.gui.file_transfer_window.add_transfer_message,
-                                f"File chunks sent successfully ({compression_text}).")
+            self.gui.on_tk_thread(self.gui.file_transfer_window.update_transfer_progress, filename,
+                                  total_chunks,
+                                  total_chunks, bytes_transferred, compression_text)
+            self.gui.on_tk_thread(self.gui.file_transfer_window.add_transfer_message,
+                                  f"File chunks sent successfully ({compression_text}).")
             # Clear speed when transfer completes
             self.gui.file_transfer_window.clear_speed()
         
         except Exception as e:
-            self.gui.on_tkinter_thread(self.gui.file_transfer_window.add_transfer_message,
-                                       f"Error sending file chunks: {e}")
+            self.gui.on_tk_thread(self.gui.file_transfer_window.add_transfer_message,
+                                  f"Error sending file chunks: {e}")
     
     def send_voice_data(self, audio_data: bytes):
         """Send voice data to the peer during an active voice call."""

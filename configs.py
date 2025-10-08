@@ -9,10 +9,11 @@ You may also delete the file entirely to reset to defaults.
 Note that the generated file will not include comments and may be ordered and formatted differently.
 """
 from typing import Final
+
 false = no = off = No = Off = False
 true = yes = on = Yes = On = True
 
-# CLIENT CONFIG
+### CLIENT CONFIG
 ## GENERAL SETTINGS
 MESSAGE_NOTIF_SOUND_FILE: Final[str] = "notification_sound.wav"
 # The file to play for message notifications.
@@ -53,16 +54,13 @@ WORDLIST_FILE: Final[str] = "wordlist.txt"
 # Default: "wordlist.txt"
 
 
-
-
-
 ## ADVANCED SETTINGS
 # Don't change these unless you know what you're doing
 
-### VOICE
-VOICE_RATE: Final[int] = 44100 # Sampling rate in Hz
+# VOICE
+VOICE_RATE: Final[int] = 44100  # Sampling rate in Hz
 VOICE_CHANNELS: Final[int] = 1
-VOICE_CHUNK: Final[int] = int(VOICE_RATE * (1/VOICE_SEND_FREQUENCY))
+VOICE_CHUNK: Final[int] = int(VOICE_RATE * (1 / VOICE_SEND_FREQUENCY))
 VOICE_FORMAT: Final[int] = 2
 """
 unsigned 8-bit integer: 32
@@ -75,7 +73,7 @@ Default: 2 (32-bit integer)
 See pyaudio documentation for more details.
 """
 
-# SERVER CONFIG
+### SERVER CONFIG
 MAX_UNEXPECTED_MSGS: Final[int] = 10
 # Maximum number of unexpected messages a client can send before being disconnected.
 # Default: 10

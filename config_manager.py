@@ -2,6 +2,7 @@ import os
 
 __all__ = []
 
+
 def ensure_config_exists():
     """Generate default configs.py if it doesn't exist."""
     if os.path.exists("configs.py"):
@@ -74,5 +75,6 @@ def validate_configs() -> None:
     
     if not os.path.isfile(configs.RINGTONE_FILE):
         print(f"Warning: Ringtone file not found: {configs.RINGTONE_FILE}")
+
 
 validate_configs()

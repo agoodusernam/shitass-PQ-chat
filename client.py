@@ -10,7 +10,6 @@ import sys
 import os
 import time
 
-import configs
 import shared
 from shared import (SecureChatProtocol, send_message, receive_message, MessageType,
                     PROTOCOL_VERSION)
@@ -55,7 +54,7 @@ class SecureChatClient:
         self.verification_complete: bool = False
         self.receive_thread: threading.Thread | None = None
         self.peer_nickname: str = "Other user"
-        self.nickname_change_allowed: bool = True
+        self.nickname_change_allowed: bool = self.protocol.config["peer_nickname_change"]
         self.allow_file_transfers: bool = True
         self.send_delivery_receipts: bool = True
         
@@ -371,7 +370,7 @@ class SecureChatClient:
             
             if verified:
                 print("\n✓ Key verification successful!")
-                
+            
             else:
                 print("\nKey verification failed or declined")
                 print("Communication will proceed but may not be secure.")
@@ -589,7 +588,7 @@ class SecureChatClient:
             self.protocol.queue_message(("encrypt_json", metadata))
             compression_text = "compressed" if compress else "uncompressed"
             print(
-                f"File transfer request sent: {metadata['filename']} ({metadata['file_size']} bytes, {compression_text})")
+                    f"File transfer request sent: {metadata['filename']} ({metadata['file_size']} bytes, {compression_text})")
         
         except Exception as e:
             print(f"Failed to send file: {e}")
@@ -823,7 +822,7 @@ class SecureChatClient:
                 is_complete or
                 received_chunks == 1):  # Always show first chunk
             print(
-                f"Receiving {metadata['filename']}: {progress:.1f}% ({received_chunks}/{metadata['total_chunks']} chunks)")
+                    f"Receiving {metadata['filename']}: {progress:.1f}% ({received_chunks}/{metadata['total_chunks']} chunks)")
             self._last_progress_shown[transfer_id] = progress
         
         if is_complete:
@@ -896,7 +895,7 @@ class SecureChatClient:
             # Check compatibility
             if self.server_protocol_version != PROTOCOL_VERSION:
                 print(
-                    f"Protocol version mismatch: Client v{PROTOCOL_VERSION}, Server v{self.server_protocol_version}")
+                        f"Protocol version mismatch: Client v{PROTOCOL_VERSION}, Server v{self.server_protocol_version}")
                 # Use local compatibility matrix since server no longer sends it
                 major_server = self.server_protocol_version.split('.')[0]
                 major_client = PROTOCOL_VERSION.split('.')[0]
@@ -929,8 +928,8 @@ class SecureChatClient:
             
             for i, chunk in enumerate(chunk_generator):
                 # Queue chunk instruction; loop will encrypt and send
-                send_message(self.socket ,self.protocol.create_file_chunk_message(transfer_id,
-                                                                                   i, chunk))
+                send_message(self.socket, self.protocol.create_file_chunk_message(transfer_id,
+                                                                                  i, chunk))
                 
                 # Show progress
                 progress = ((i + 1) / total_chunks) * 100
@@ -997,7 +996,7 @@ class SecureChatClient:
                             print(f"Nickname changed to: {self.peer_nickname}")
                         else:
                             print("Usage: /nick <new_nickname>")
-                            
+                    
                     elif message.strip():
                         if not self.send_message(message):
                             continue
@@ -1044,7 +1043,7 @@ class SecureChatClient:
                     pass
             
             print("\nDisconnected from server.")
-            
+    
     def end_call(self, notify_peer: bool = True) -> None:
         pass
 

@@ -16,6 +16,7 @@ from tkinterdnd2 import TkinterDnD, DND_FILES
 from gui_client import ChatGUI, GUISecureChatClient, ltk
 from shared import PROTOCOL_VERSION, send_message, SecureChatProtocol, MessageType
 
+
 # noinspection PyBroadException
 class DebugProtocol(SecureChatProtocol):
     def __init__(self) -> None:
@@ -71,7 +72,6 @@ class DebugProtocol(SecureChatProtocol):
     def encrypt_message(self, plaintext: str) -> bytes:
         # Snapshot state before encrypt
         prev_ck = self.send_chain_key
-        prev_counter = self.message_counter
         try:
             # Call base implementation
             result = super().encrypt_message(plaintext)
@@ -99,7 +99,6 @@ class DebugProtocol(SecureChatProtocol):
             msg = {}
         
         # Determine if plaintext looked like control/dummy
-        is_control = False
         try:
             obj = json.loads(plaintext)
             t = obj.get("type")
@@ -126,10 +125,10 @@ class DebugProtocol(SecureChatProtocol):
             plaintext_type = t
             try:
                 plaintext_type_name = MessageType(t).name if isinstance(t, int) else str(t)
-                
+            
             except Exception:
                 plaintext_type_name = str(t)
-                
+        
         except Exception:
             plaintext_type_name = "TEXT"
             
@@ -277,8 +276,7 @@ class DebugProtocol(SecureChatProtocol):
         raise ValueError(err or "Decryption failed")
 
 
-
-# noinspection DuplicatedCode, PyBroadException
+# noinspection PyBroadException
 class DebugChatGUI(ChatGUI):
     """Debug version of ChatGUI - extends base with debug features."""
     
@@ -432,8 +430,8 @@ class DebugChatGUI(ChatGUI):
                 relief=ltk.FLAT
         )
         self.chat_display.pack(fill=ltk.BOTH, expand=True, pady=(0, 10))
-        self.chat_display.drop_target_register(DND_FILES) # type: ignore
-        self.chat_display.dnd_bind('<<Drop>>', self.handle_drop) # type: ignore
+        self.chat_display.drop_target_register(DND_FILES)  # type: ignore
+        self.chat_display.dnd_bind('<<Drop>>', self.handle_drop)  # type: ignore
         
         # Input frame (in chat frame)
         self.input_frame = tk.Frame(chat_frame, bg=self.BG_COLOR)
@@ -630,7 +628,6 @@ class DebugChatGUI(ChatGUI):
                 font=("Consolas", 9, "bold")
         )
         self.force_disconnect_btn.pack(fill=ltk.X, padx=5, pady=2)
-        
         
         # View fingerprints button
         self.view_fingerprints_btn = tk.Button(
@@ -1158,7 +1155,6 @@ class DebugChatGUI(ChatGUI):
         except Exception as e:
             self.append_to_chat(f"Error during force disconnect: {e}")
     
-    
     def view_key_fingerprints(self):
         """View key fingerprints in a dialog."""
         if not self.client or not self.client.protocol:
@@ -1304,7 +1300,8 @@ class DebugChatGUI(ChatGUI):
                     font=("Consolas", 12, "bold")
             ).pack(pady=10)
             
-            # Message inpu
+            # Message input
+            # noinspection DuplicatedCode
             tk.Label(
                     dialog,
                     text="Message:",
@@ -1361,6 +1358,7 @@ class DebugChatGUI(ChatGUI):
                 
                 dialog.destroy()
             
+            # noinspection DuplicatedCode
             tk.Button(
                     button_frame,
                     text="Send",
@@ -1512,6 +1510,7 @@ class DebugChatGUI(ChatGUI):
             ).pack(pady=10)
             
             # Message input
+            # noinspection DuplicatedCode
             tk.Label(
                     dialog,
                     text="Message:",
@@ -1582,6 +1581,7 @@ class DebugChatGUI(ChatGUI):
                 
                 dialog.destroy()
             
+            # noinspection DuplicatedCode
             tk.Button(
                     button_frame,
                     text="Send",
@@ -1632,6 +1632,7 @@ class DebugChatGUI(ChatGUI):
                     anchor="w"
             ).pack(fill=ltk.X, padx=20, pady=(20, 5))
             
+            # noinspection DuplicatedCode
             send_counter_entry = tk.Entry(
                     dialog,
                     width=20,
@@ -1654,6 +1655,7 @@ class DebugChatGUI(ChatGUI):
                     anchor="w"
             ).pack(fill=ltk.X, padx=20, pady=(10, 5))
             
+            # noinspection DuplicatedCode
             peer_counter_entry = tk.Entry(
                     dialog,
                     width=20,
@@ -1766,7 +1768,7 @@ class DebugChatGUI(ChatGUI):
         
         dialog = tk.Toplevel(self.root)
         dialog.transient(self.root)
-        dialog.title(f"Ratchet {'Send' if ratchet_type=='send' else 'Peer'} Keys")
+        dialog.title(f"Ratchet {'Send' if ratchet_type == 'send' else 'Peer'} Keys")
         dialog.configure(bg=self.BG_COLOR)
         # Place near cursor
         try:
@@ -1813,16 +1815,17 @@ class DebugChatGUI(ChatGUI):
             dialog.destroy()
         
         apply_btn = tk.Button(btn_frame, text="Apply", command=apply,
-                               bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT,
-                               activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR)
+                              bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT,
+                              activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR)
         apply_btn.pack(side=ltk.LEFT, padx=(0, 5))
         cancel_btn = tk.Button(btn_frame, text="Cancel", command=close,
-                                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT,
-                                activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR)
+                               bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT,
+                               activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR)
         cancel_btn.pack(side=ltk.RIGHT)
         
         def on_enter(_event):
             apply()
+        
         entry.bind('<Return>', on_enter)
         dialog.bind('<Escape>', lambda _e: close())
         
@@ -1853,8 +1856,8 @@ class DebugChatGUI(ChatGUI):
         def worker():
             self.client = DebugGUISecureChatClient(self, host, port)
             if not self.client.connect():
-                self.on_tkinter_thread(self.append_to_chat, "Connection failed.")
-                self.on_tkinter_thread(self.update_status, "Not Connected")
+                self.on_tk_thread(self.append_to_chat, "Connection failed.")
+                self.on_tk_thread(self.update_status, "Not Connected")
         
         threading.Thread(target=worker, daemon=True).start()
     
@@ -1864,6 +1867,7 @@ class DebugChatGUI(ChatGUI):
         self._stop_debug_timer()
         # Call parent cleanup
         super().on_closing()
+
 
 # noinspection PyBroadException
 class DebugGUISecureChatClient(GUISecureChatClient):
@@ -1952,7 +1956,7 @@ class DebugGUISecureChatClient(GUISecureChatClient):
                 if self._last_outgoing_appended_counter != expected_counter:
                     formatted = self._format_crypto_info(info, "send")
                     if formatted:
-                        self.gui.on_tkinter_thread(self.gui.append_to_chat, formatted, False, False)
+                        self.gui.on_tk_thread(self.gui.append_to_chat, formatted, False, False)
                         self._last_outgoing_appended_counter = expected_counter
                 return
         except Exception:
@@ -1973,7 +1977,7 @@ class DebugGUISecureChatClient(GUISecureChatClient):
         if self.packet_loss_percentage > 0:
             if random.randint(1, 100) <= self.packet_loss_percentage:
                 self.gui.append_to_chat(f"DEBUG: Packet loss simulated ({self.packet_loss_percentage}%)",
-                                            is_message=False)
+                                        is_message=False)
                 return
         
         super().handle_message(message_data)
@@ -1994,7 +1998,7 @@ class DebugGUISecureChatClient(GUISecureChatClient):
             if isinstance(ctr, int) and ctr and ctr != self._last_incoming_appended_counter:
                 formatted = self._format_crypto_info(info, "recv")
                 if formatted:
-                    self.gui.on_tkinter_thread(self.gui.append_to_chat, formatted, False, False)
+                    self.gui.on_tk_thread(self.gui.append_to_chat, formatted, False, False)
                     self._last_incoming_appended_counter = ctr
         except Exception:
             pass
@@ -2008,13 +2012,13 @@ class DebugGUISecureChatClient(GUISecureChatClient):
             
             # Debug logging
             self.gui.append_to_chat(f"DEBUG: Key exchange init from peer (version {self.peer_version})",
-                                        is_message=False)
+                                    is_message=False)
             
             # Call parent method to handle the key exchange
             super().handle_key_exchange_init(message_data)
             
             # Update debug info after key exchange init
-            self.gui.on_tkinter_thread(self.gui.update_debug_info)
+            self.gui.on_tk_thread(self.gui.update_debug_info)
         
         except Exception as e:
             self.gui.append_to_chat(f"Key exchange init error: {e}")
@@ -2028,13 +2032,13 @@ class DebugGUISecureChatClient(GUISecureChatClient):
             
             # Debug logging
             self.gui.append_to_chat(f"DEBUG: Key exchange response from peer (version {self.peer_version})",
-                                        is_message=False)
+                                    is_message=False)
             
             # Call parent method to handle the key exchange
             super().handle_key_exchange_response(message_data)
             
             # Update debug info after key exchange response
-            self.gui.on_tkinter_thread(self.gui.update_debug_info)
+            self.gui.on_tk_thread(self.gui.update_debug_info)
         
         except Exception as e:
             self.gui.append_to_chat(f"Key exchange response error: {e}")
@@ -2065,7 +2069,7 @@ class DebugGUISecureChatClient(GUISecureChatClient):
         if self.packet_loss_percentage > 0:
             if random.randint(1, 100) <= self.packet_loss_percentage:
                 self.gui.append_to_chat(f"DEBUG: Packet loss simulated ({self.packet_loss_percentage}%) " +
-                                            "for delivery confirmation", is_message=False)
+                                        "for delivery confirmation", is_message=False)
                 return
         
         super()._send_delivery_confirmation(confirmed_counter)
@@ -2080,7 +2084,7 @@ class DebugGUISecureChatClient(GUISecureChatClient):
             if self.packet_loss_percentage > 0:
                 if random.randint(1, 100) <= self.packet_loss_percentage:
                     self.gui.append_to_chat("DEBUG: Packet loss simulated " +
-                                                f"({self.packet_loss_percentage}%)", is_message=False)
+                                            f"({self.packet_loss_percentage}%)", is_message=False)
                     return None
             
             # Simulate network latency if configured

@@ -16,8 +16,11 @@ from collections import deque
 from enum import IntEnum
 from typing import Final, Any, SupportsIndex, SupportsBytes
 from collections.abc import Generator, Buffer
+import binascii  # for base64 decode error differentiation
 
+import config_handler
 import config_manager
+
 assert config_manager  # silence unused import warning
 import configs
 
@@ -59,21 +62,21 @@ class MessageType(IntEnum):
     FILE_REJECT = 22
     FILE_CHUNK = 23
     FILE_COMPLETE = 24
-
+    
     # Voice Call
     VOICE_CALL_INIT = 30
     VOICE_CALL_ACCEPT = 31
     VOICE_CALL_REJECT = 32
     VOICE_CALL_DATA = 33
     VOICE_CALL_END = 34
-
+    
     # Server-to-Client Control
     SERVER_FULL = 40
     SERVER_VERSION_INFO = 41
     SERVER_DISCONNECT = 42
     ERROR = 43
     KEEP_ALIVE = 44
-
+    
     # Client-to-Server Control
     CLIENT_DISCONNECT = 50
     KEEP_ALIVE_RESPONSE = 51
@@ -181,6 +184,7 @@ class SecureChatProtocol:
             ack_counters (set): Set of message counters to be acknowledged when the next message is sent.
             send_dummy_messages (bool): Whether to send dummy messages when idle.
         """
+        self.config: config_handler.ConfigHandler = config_handler.ConfigHandler()
         self.peer_version: str = ""
         self.own_private_key: bytes = bytes()
         self.encryption_key: bytes = bytes()
@@ -208,9 +212,8 @@ class SecureChatProtocol:
         self.sender_thread: threading.Thread | None = None
         self.sender_running: bool = False
         self.sender_lock: threading.Lock = threading.Lock()
-        # self.ack_counters: set[int] = set()
         
-        self.send_dummy_messages: bool = True
+        self.send_dummy_messages: bool = self.config["send_dummy_messages"]
         
         # Rekey state
         self.rekey_in_progress: bool = False
@@ -252,9 +255,9 @@ class SecureChatProtocol:
         for file_handle in self.open_file_handles.values():
             try:
                 file_handle.close()
-            except:
-                pass  # Ignore errors closing file handles; they may already be closed.
-                # If they are still open, the OS will close them eventually.
+            except (OSError, ValueError):
+                # Non-critical: file handle might already be closed or invalid
+                pass
         self.open_file_handles = {}
         
         # Clean up any temporary files
@@ -262,9 +265,9 @@ class SecureChatProtocol:
             try:
                 if os.path.exists(temp_path):
                     os.remove(temp_path)
-            except:
-                pass  # Don't really care if it fails to delete, it's a temporary file.
-                # The OS should clean up the files eventually on its own either way.
+            except (OSError, PermissionError):
+                # Non-critical: leftover temp file will be cleaned by OS eventually
+                pass
         self.temp_file_paths = {}
         self.sending_transfers = {}
     
@@ -349,7 +352,16 @@ class SecureChatProtocol:
                 # Fall back to plaintext immediate send
                 send_message(self.socket, json.dumps(emergency_message).encode('utf-8'))
             return True
-        except Exception:
+        except (OSError, ConnectionError) as sock_err:
+            # Socket level failure
+            print(f"Failed to send emergency close (socket issue): {sock_err}")
+            return False
+        except ValueError as proto_err:
+            # Encryption state not ready / protocol state issue
+            print(f"Failed to send emergency close (protocol issue): {proto_err}")
+            return False
+        except Exception as unknown_err:  # keep broad catch for any unforeseen error
+            print(f"Failed to send emergency close (unexpected error): {unknown_err}")
             return False
     
     def _generate_dummy_message(self) -> bytes:
@@ -383,7 +395,7 @@ class SecureChatProtocol:
                 if item is None and self.send_dummy_messages and not self.has_active_file_transfers():
                     if self.encryption_ready and configs.SEND_DUMMY_PACKETS:
                         item = self._generate_dummy_message()
-                        
+                
                 # Resolve the queue item into bytes to send
                 to_send: bytes | None = None
                 post_action: str | None = None
@@ -398,6 +410,8 @@ class SecureChatProtocol:
                                 item = json.dumps(item)
                             if self.shared_key and self.send_chain_key:
                                 to_send = self.encrypt_message(item)
+                            else:
+                                raise ValueError("Encryption keys not ready for plaintext item")
                         # Instruction tuple
                         elif isinstance(item, tuple) and item:
                             kind = item[0]
@@ -405,22 +419,35 @@ class SecureChatProtocol:
                                 text = item[1]
                                 if isinstance(text, str) and self.shared_key and self.send_chain_key:
                                     to_send = self.encrypt_message(text)
+                                else:
+                                    raise ValueError("Invalid text encryption request or keys not ready")
                             elif kind == "encrypt_json" and len(item) >= 2:
                                 obj = item[1]
                                 if isinstance(obj, dict) and self.shared_key and self.send_chain_key:
                                     to_send = self.encrypt_message(json.dumps(obj))
+                                else:
+                                    raise ValueError("Invalid JSON encryption request or keys not ready")
                             elif kind == "encrypt_json_then_switch" and len(item) >= 2:
                                 obj = item[1]
                                 if isinstance(obj, dict) and self.shared_key and self.send_chain_key:
                                     to_send = self.encrypt_message(json.dumps(obj))
                                     post_action = "switch_keys"
+                                else:
+                                    raise ValueError("Invalid JSON (switch) request or keys not ready")
                             elif kind in ("plaintext", "encrypted") and len(item) >= 2:
                                 data = item[1]
                                 if isinstance(data, (SupportsIndex, SupportsBytes, Buffer)):
                                     to_send = bytes(data)
-                    except Exception as e:
+                                else:
+                                    raise TypeError("Provided data is not bytes-like for plaintext/encrypted send")
+                            else:
+                                raise ValueError(f"Unsupported instruction tuple: {kind}")
+                    except (ValueError, TypeError) as e:
                         # If preparing this item fails, drop it and continue
-                        print(f"An error occurred preparing message for sending: {e}")
+                        print(f"Message preparation error (dropped): {e}")
+                        to_send = None
+                    except Exception as e:  # keep broad for any unforeseen preparation issue
+                        print(f"Unexpected error preparing message (dropped): {e}")
                         to_send = None
                 
                 # Send the message if we have one and a socket
@@ -431,18 +458,25 @@ class SecureChatProtocol:
                         if post_action == "switch_keys":
                             try:
                                 self.activate_pending_keys()
+                            except (ValueError, RuntimeError) as key_err:
+                                # Non-critical: failure to switch keys now just delays rekey activation
+                                print(f"Deferred key activation due to non-critical error: {key_err}")
                             except Exception:
-                                pass
-                    except Exception:
+                                # Ignored intentionally: unknown error during optional key switch shouldn't kill sender
+                                pass  # safe to ignore: key activation can be retried later
+                    except (OSError, ConnectionError) as send_err:
                         # If sending fails, the connection is likely broken
-                        # The main thread will handle reconnection and/or cleanup
-                        pass
+                        print(f"Send failed, likely broken connection: {send_err}")
+                        # Main thread expected to handle reconnection/cleanup
+                    except Exception as send_unknown:
+                        print(f"Unexpected send error: {send_unknown}")
                 
                 # Wait 250ms before next cycle
                 time.sleep(0.25)
             
-            except Exception:
-                # Continue running even if there's an unexpected error
+            except Exception as loop_err:
+                # Continue running even if there's an unexpected error; log for visibility
+                print(f"Sender loop unexpected error (continuing): {loop_err}")
                 time.sleep(0.25)
     
     def generate_keypair(self) -> tuple[bytes, bytes]:
@@ -615,8 +649,10 @@ class SecureChatProtocol:
         try:
             message = json.loads(data.decode('utf-8'))
             return message.get("verified", False)
-        except Exception as e:
-            raise ValueError(f"Key verification message processing failed: {e}") from e
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            raise ValueError(f"Key verification message decoding failed: {e}") from e
+        except Exception as e:  # fallback for any unforeseen error
+            raise ValueError(f"Key verification message processing failed (unexpected): {e}") from e
     
     def should_allow_communication(self) -> tuple[bool, str]:
         """Check if communication should be allowed based on verification status."""
@@ -659,14 +695,14 @@ class SecureChatProtocol:
             message = json.loads(data.decode('utf-8'))
             if message["type"] != MessageType.KEY_EXCHANGE_INIT:
                 raise ValueError("Invalid message type")
-            
             # Check protocol version
             self.peer_version = str(message["version"])
             peer_version = message.get("version")
             version_warning = None
             if peer_version != "" and peer_version != PROTOCOL_VERSION:
-                version_warning = f"WARNING: Protocol version mismatch. Local: {PROTOCOL_VERSION}, Peer: {peer_version}. Communication may not work properly."
-            
+                version_warning = (
+                    f"WARNING: Protocol version mismatch. Local: {PROTOCOL_VERSION}, Peer: {peer_version}. "
+                    f"Communication may not work properly.")
             public_key = base64.b64decode(message["public_key"])
             # Store peer's public key for verification
             self.peer_public_key = public_key
@@ -683,8 +719,14 @@ class SecureChatProtocol:
             self.shared_key = shared_secret
             
             return shared_secret, ciphertext, version_warning
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            raise ValueError(f"Key exchange init decode error: {e}") from e
+        except KeyError as e:
+            raise ValueError(f"Key exchange init missing field: {e}") from e
+        except (binascii.Error, ValueError) as e:
+            raise ValueError(f"Key exchange init value error: {e}") from e
         except Exception as e:
-            raise ValueError(f"Key exchange init failed: {e}") from e
+            raise ValueError(f"Key exchange init failed (unexpected): {e}") from e
     
     def process_key_exchange_response(self, data: bytes, private_key: bytes) -> tuple[bytes, str | None]:
         """Process key exchange response and derive shared key.
@@ -716,8 +758,14 @@ class SecureChatProtocol:
             self.shared_key = shared_secret
             
             return shared_secret, version_warning
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            raise ValueError(f"Key exchange response decode error: {e}") from e
+        except KeyError as e:
+            raise ValueError(f"Key exchange response missing field: {e}") from e
+        except (binascii.Error, ValueError) as e:
+            raise ValueError(f"Key exchange response value error: {e}") from e
         except Exception as e:
-            raise ValueError(f"Key exchange response failed: {e}") from e
+            raise ValueError(f"Key exchange response failed (unexpected): {e}") from e
     
     def encrypt_message(self, plaintext: str) -> bytes:
         """
@@ -854,13 +902,19 @@ class SecureChatProtocol:
             del message_key
             
             return decrypted_data.decode('utf-8')
-        
-        except Exception as e:
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            raise ValueError(f"Message decode failed: {e}") from e
+        except KeyError as e:
+            raise ValueError(f"Missing required field in message: {e}") from e
+        except (binascii.Error, ValueError) as e:
             if legitimate:
                 raise ValueError(f"Message is legitimate but decryption failed: {e}") from e
+            raise ValueError(f"Message illegitimate or tampered: {e}") from e
+        except Exception as e:  # Catch-all
+            if legitimate:
+                raise ValueError(f"Message is legitimate but decryption failed (unexpected): {e}") from e
             else:
-                raise ValueError(f"Message is NOT legitimate or has been tampered with and decryption failed: {e}") \
-                    from e
+                raise ValueError(f"Message is NOT legitimate or has been tampered with (unexpected): {e}") from e
     
     # Rekey methods
     def activate_pending_keys(self) -> None:
@@ -986,11 +1040,18 @@ class SecureChatProtocol:
             for chunk in self.chunk_file(file_path, compress=compress):
                 total_chunks += 1
                 total_processed_size += len(chunk)
-        except Exception as e:
-            # Fallback to estimation if chunking fails
-            print(f"Warning: Could not pre-calculate chunks, using estimation: {e}")
+        except (OSError, IOError) as e:
+            print(f"Warning: I/O error during pre-chunking, using estimation: {e}")
             total_chunks = (file_size + SEND_CHUNK_SIZE - 1) // SEND_CHUNK_SIZE
-            total_processed_size = file_size if not compress else int(file_size * 0.85)  # Rough estimate
+            total_processed_size = file_size if not compress else int(file_size * 0.85)
+        except ValueError as e:
+            print(f"Warning: Value error during pre-chunking, using estimation: {e}")
+            total_chunks = (file_size + SEND_CHUNK_SIZE - 1) // SEND_CHUNK_SIZE
+            total_processed_size = file_size if not compress else int(file_size * 0.85)
+        except Exception as e:
+            print(f"Warning: Unexpected error during pre-chunking, using estimation: {e}")
+            total_chunks = (file_size + SEND_CHUNK_SIZE - 1) // SEND_CHUNK_SIZE
+            total_processed_size = file_size if not compress else int(file_size * 0.85)
         
         # Generate unique transfer ID
         transfer_id: str = hashlib.sha3_512(f"{file_name}{file_size}{file_hash.hexdigest()}".encode()).hexdigest()[:16]
@@ -1117,13 +1178,19 @@ class SecureChatProtocol:
                     if pending_data:
                         yield pending_data
             
-            except Exception as e:
+            except (OSError, IOError) as e:
                 # Clean up on error
                 try:
                     compressor.finalize()
-                except:
-                    # We don't care if finalize fails during cleanup, we're in an error state anyway
-                    pass
+                except Exception:  # ignore finalize issues because we're already failing
+                    pass  # intentional: cleanup best-effort
+                raise e
+            except Exception as e:
+                # Clean up on unexpected error
+                try:
+                    compressor.finalize()
+                except Exception:
+                    pass  # intentional: cleanup best-effort
                 raise e
         else:
             # Send uncompressed chunks directly
@@ -1131,10 +1198,8 @@ class SecureChatProtocol:
                 while True:
                     # Read a chunk from the original file
                     file_chunk = original_file.read(SEND_CHUNK_SIZE)
-                    
                     if not file_chunk:
                         break
-                    
                     yield file_chunk
     
     @staticmethod
@@ -1152,8 +1217,12 @@ class SecureChatProtocol:
                 "compressed":     message.get("compressed", True),
                 "processed_size": message.get("processed_size", message.get("compressed_size", 0))
             }
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            raise ValueError(f"File metadata JSON decode failed: {e}") from e
+        except KeyError as e:
+            raise ValueError(f"File metadata missing field: {e}") from e
         except Exception as e:
-            raise ValueError(f"File metadata processing failed: {e}")
+            raise ValueError(f"File metadata processing failed (unexpected): {e}") from e
     
     def process_file_chunk(self, encrypted_data: bytes) -> dict:
         """Process an optimized file chunk message with binary format."""
@@ -1222,12 +1291,16 @@ class SecureChatProtocol:
                 "chunk_index": header["chunk_index"],
                 "chunk_data":  chunk_data
             }
-        
         except ValueError as e:
-            # Re-raise specific value errors to be handled by the caller
             raise e
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            raise ValueError(f"File chunk JSON decode failed: {e}") from e
+        except KeyError as e:
+            raise ValueError(f"File chunk missing field: {e}") from e
+        except (binascii.Error, struct.error) as e:
+            raise ValueError(f"File chunk structural decode error: {e}") from e
         except Exception as e:
-            raise ValueError(f"File chunk processing failed: {e}")
+            raise ValueError(f"File chunk processing failed (unexpected): {e}")
     
     def add_file_chunk(self, transfer_id: str, chunk_index: int, chunk_data: bytes, total_chunks: int) -> bool:
         """Add a received file chunk and return True if file is complete.
@@ -1353,25 +1426,36 @@ class SecureChatProtocol:
                 
                 # Move the final file to the output path
                 os.rename(final_file_path, output_path)
-            except Exception as e:
+            except (OSError, PermissionError) as e:
                 # If moving fails, try copying instead
                 try:
                     shutil.copy2(final_file_path, output_path)
                     os.remove(final_file_path)
-                except Exception as copy_error:
+                except (OSError, PermissionError) as copy_error:
                     raise ValueError(f"Failed to move file: {e}, copy error: {copy_error}") from e
-            
             # Clean up the temporary received file (if different from final file)
             if compressed and os.path.exists(temp_received_path):
                 os.remove(temp_received_path)
         
-        except Exception as e:
+        except (OSError, IOError, gzip.BadGzipFile) as e:
             # Clean up any temporary files on error
             if os.path.exists(temp_received_path):
                 os.remove(temp_received_path)
             if compressed and final_file_path != temp_received_path and os.path.exists(final_file_path):
                 os.remove(final_file_path)
-            raise ValueError(f"File processing failed: {e}") from e
+            raise ValueError(f"File processing failed (I/O or gzip): {e}") from e
+        except ValueError as e:
+            if os.path.exists(temp_received_path):
+                os.remove(temp_received_path)
+            if compressed and final_file_path != temp_received_path and os.path.exists(final_file_path):
+                os.remove(final_file_path)
+            raise
+        except Exception as e:
+            if os.path.exists(temp_received_path):
+                os.remove(temp_received_path)
+            if compressed and final_file_path != temp_received_path and os.path.exists(final_file_path):
+                os.remove(final_file_path)
+            raise ValueError(f"File processing failed (unexpected): {e}") from e
         
         # Clean up tracking data
         del self.received_chunks[transfer_id]

@@ -13,10 +13,12 @@ from typing import Final, Self
 from shared import send_message, receive_message, create_error_message, \
     create_reset_message, MessageType, PROTOCOL_VERSION
 import config_manager
-assert config_manager # Remove unused import warning
+
+assert config_manager  # Remove unused import warning
 import configs
 
 SERVER_VERSION: Final[int] = 6
+
 
 # noinspection PyBroadException
 class SecureChatServer(socketserver.ThreadingTCPServer):
@@ -41,7 +43,7 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
         self.running = False
         self.client_counter = 0  # Counter for unique client IDs
         
-        super().__init__((host, port), SecureChatRequestHandler) # type: ignore
+        super().__init__((host, port), SecureChatRequestHandler)  # type: ignore
         
         print(f"Secure chat server started on {host}:{port}")
         print("Waiting for clients to connect...")
@@ -58,7 +60,7 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
             self.clients[client_id] = client_handler
             
             print(f"Client {client_id} connected from {client_handler.client_address}")
-            
+        
         # If we now have exactly 2 clients, start key exchange
         if len(self.clients) == 2:
             print("Two clients connected. Starting key exchange...")
@@ -79,34 +81,39 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
                         # Send key exchange reset message
                         reset_msg = create_reset_message()
                         send_message(remaining_client.request, reset_msg)
-                        
-                        # Reset the remaining client's key exchange state
                         remaining_client.key_exchange_complete = False
-                        
-                    except: # pylint: disable=bare-except
+                    except (OSError, ConnectionError, ValueError):
+                        # Best-effort notification; connection likely gone or invalid state
+                        pass
+                    except Exception:
+                        # Unexpected issue notifying remaining client; non-fatal
                         pass
     
     def initiate_key_exchange(self):
         """Initiate the key exchange process between two connected clients."""
         with self.clients_lock:
-            
             if len(self.clients) != 2:
                 return
-                
+            
             client_handlers = list(self.clients.values())
             client1 = client_handlers[0]
             
             # Tell first client to start key exchange
             try:
                 initiate_message = {
-                    "type": MessageType.INITIATE_KEY_EXCHANGE,
+                    "type":    MessageType.INITIATE_KEY_EXCHANGE,
                     "message": "Starting key exchange..."
                 }
                 message_data = json.dumps(initiate_message).encode('utf-8')
                 send_message(client1.request, message_data)
-                
-            except Exception as e:
-                print(f"Key exchange initiation failed: {e}")
+            except (OSError, ConnectionError) as e:
+                print(f"Key exchange initiation socket failure: {e}")
+                self.broadcast_error("Key exchange failed (socket error)")
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                print(f"Key exchange initiation encoding failure: {e}")
+                self.broadcast_error("Key exchange failed (encoding error)")
+            except Exception as e:  # fallback unknown
+                print(f"Key exchange initiation failed (unexpected): {e}")
                 self.broadcast_error("Key exchange failed")
     
     def route_message(self, sender_id: str, message_data: bytes):
@@ -116,8 +123,11 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
                 if client_id != sender_id and client_handler.is_connected():
                     try:
                         send_message(client_handler.request, message_data)
+                    except (OSError, ConnectionError) as e:
+                        print(f"Failed to route message to {client_id} (socket): {e}")
+                        client_handler.disconnect(f"Routing failure (socket): {e}")
                     except Exception as e:
-                        print(f"Failed to route message to {client_id}: {e}")
+                        print(f"Failed to route message to {client_id} (unexpected): {e}")
                         client_handler.disconnect(f"Routing failure: {e}")
     
     def broadcast_error(self, error_text: str):
@@ -127,7 +137,11 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
             for client_handler in self.clients.values():
                 try:
                     send_message(client_handler.request, error_msg)
-                except: # pylint: disable=bare-except
+                except (OSError, ConnectionError):
+                    # Ignore: client already disconnected or unreachable
+                    pass
+                except Exception:
+                    # unexpected, ignore to continue broadcasting to other clients
                     pass
     
     def start_server(self):
@@ -177,7 +191,6 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         self.unexpected_message_count = 0
         
         super().__init__(request, client_address, server)
-        
     
     def setup(self) -> None:
         """Called before handle() to perform initialization."""
@@ -190,8 +203,8 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                 }
                 message_data = json.dumps(rejection_message).encode('utf-8')
                 send_message(self.request, message_data)
-            except:
-                # we don't care if this fails, the client is being rejected either way
+            except (OSError, ConnectionError):
+                # Ignore: client can't receive rejection or already disconnected
                 pass
             return
         
@@ -228,7 +241,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                     if message_type == MessageType.KEY_VERIFICATION:
                         self.route_verification_message(message_data)
                         continue
-                        
+                    
                     if message_type == MessageType.CLIENT_DISCONNECT:
                         self.announced_disconnect = True
                         self.disconnect("Client announced disconnect", notify=False)
@@ -247,48 +260,45 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                         continue
                     
                     self.server.route_message(self.client_id, message_data)
-                        
+                
                 except ConnectionError as e:
                     print(f"Client {self.client_id} disconnected unexpectedly: {e}")
                     break
-                except Exception as e:
-                    print(f"Error handling client {self.client_id}: {e}")
+                except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                    print(f"Client {self.client_id} sent undecodable message: {e}")
                     break
-                    
+                except Exception as e:
+                    print(f"Error handling client {self.client_id} (unexpected): {e}")
+                    break
+        
         finally:
             if not self.announced_disconnect:
                 self.disconnect()
     
-    def handle_key_exchange(self, message_data: bytes)-> None:
+    def handle_key_exchange(self, message_data: bytes) -> None:
         """Handle key exchange messages by routing them to the other client."""
         try:
-            # Parse message to determine type for logging
             try:
                 message = json.loads(message_data.decode('utf-8'))
                 message_type = message.get("type")
-                
             except (json.JSONDecodeError, UnicodeDecodeError):
                 # If we can't parse the message, assume it's binary key exchange data
                 message_type = "binary_key_exchange"
-            
             # Route the message to the other client
             other_client = self.get_other_client()
             if other_client:
                 send_message(other_client.request, message_data)
-                
-                # If this is a key exchange response, the key exchange is complete
                 if message_type == MessageType.KEY_EXCHANGE_RESPONSE:
-                    # Mark both clients as having completed key exchange
                     self.key_exchange_complete = True
                     other_client.key_exchange_complete = True
-                    # Notify both clients that key exchange is complete
                     self.notify_key_exchange_complete()
-                    
             else:
                 self.server.broadcast_error("Key exchange failed - no other client")
-                    
+        except (OSError, ConnectionError) as e:
+            print(f"Key exchange routing socket error for {self.client_id}: {e}")
+            self.server.broadcast_error("Key exchange failed (socket error)")
         except Exception as e:
-            print(f"Key exchange routing error for {self.client_id}: {e}")
+            print(f"Key exchange routing error for {self.client_id} (unexpected): {e}")
             self.server.broadcast_error("Key exchange failed")
     
     def route_verification_message(self, message_data: bytes) -> None:
@@ -297,35 +307,36 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             if self.key_exchange_complete:
                 self.handle_unexpected_message("verification after key exchange")
                 return
-            # Route the verification message to the other client
             other_client = self.get_other_client()
             if other_client:
                 send_message(other_client.request, message_data)
             else:
                 self.server.broadcast_error("Verification failed - no other client")
-                
+        except (OSError, ConnectionError) as e:
+            print(f"Verification routing socket error for {self.client_id}: {e}")
+            self.server.broadcast_error("Verification failed (socket error)")
         except Exception as e:
-            print(f"Verification routing error for {self.client_id}: {e}")
+            print(f"Verification routing error for {self.client_id} (unexpected): {e}")
             self.server.broadcast_error("Verification failed")
     
     def notify_key_exchange_complete(self) -> None:
         """Notify both clients that key exchange is complete."""
         try:
             complete_message = {
-                "type": MessageType.KEY_EXCHANGE_COMPLETE,
+                "type":    MessageType.KEY_EXCHANGE_COMPLETE,
                 "message": "Key exchange completed successfully"
             }
             message_data = json.dumps(complete_message).encode('utf-8')
-            
-            # Send to both clients
             with self.server.clients_lock:
                 for client_handler in self.server.clients.values():
                     try:
                         send_message(client_handler.request, message_data)
-                    except: # pylint: disable=bare-except
+                    except (OSError, ConnectionError):
+                        # best-effort send; ignore unreachable client
                         pass
-                        
-            
+                    except Exception:
+                        # unexpected, ignore to continue notifying others
+                        pass
         except Exception as e:
             print(f"Failed to notify key exchange completion: {e}")
     
@@ -362,34 +373,36 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                     if self.keepalive_failures >= 3:
                         self.disconnect("Keepalive timeout: no response after 3 attempts")
                         return
-                    
+                
                 self.send_keepalive()
-
-                    
+            except (OSError, ConnectionError) as e:
+                print(f"Keepalive socket error for {self.client_id}: {e}")
+                break
             except Exception as e:
-                print(f"Keepalive error for {self.client_id}: {e}")
+                print(f"Keepalive error for {self.client_id} (unexpected): {e}")
                 break
     
     def send_keepalive(self) -> None:
         """Send a keepalive message to the client."""
         try:
             keepalive_message = {
-                "type": MessageType.KEEP_ALIVE,
+                "type":      MessageType.KEEP_ALIVE,
                 "timestamp": time.time()
             }
             message_data = json.dumps(keepalive_message).encode('utf-8')
             send_message(self.request, message_data)
-            
             self.waiting_for_keepalive_response = True
             self.last_keepalive_time = time.time()
-            
+        except (OSError, ConnectionError) as e:
+            print(f"Failed to send keepalive to {self.client_id} (socket): {e}")
+            self.disconnect(f"Keepalive send failed: {e}")
         except Exception as e:
-            print(f"Failed to send keepalive to {self.client_id}: {e}")
+            print(f"Failed to send keepalive to {self.client_id} (unexpected): {e}")
             self.disconnect(f"Keepalive send failed: {e}")
     
     def handle_keepalive_response(self) -> None:
         """Handle keepalive response from client."""
-
+        
         if self.waiting_for_keepalive_response:
             self.waiting_for_keepalive_response = False
             self.keepalive_failures = 0
@@ -400,17 +413,16 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
     def send_server_version_info(self) -> None:
         """Send protocol version information to the client."""
         try:
-            # Create protocol version message (only protocol version, no compatibility matrix or server version)
             version_message = {
-                "type": MessageType.SERVER_VERSION_INFO,
+                "type":             MessageType.SERVER_VERSION_INFO,
                 "protocol_version": PROTOCOL_VERSION
             }
-            
             message_data = json.dumps(version_message).encode('utf-8')
             send_message(self.request, message_data)
-            
+        except (OSError, ConnectionError) as e:
+            print(f"Error sending protocol version info to {self.client_id} (socket): {e}")
         except Exception as e:
-            print(f"Error sending protocol version info to {self.client_id}: {e}")
+            print(f"Error sending protocol version info to {self.client_id} (unexpected): {e}")
     
     def disconnect(self, reason: str = "", notify: bool = True) -> None:
         """Disconnect the client and clean up.
@@ -421,26 +433,31 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         if self.connected:
             print("Disconnecting client", self.client_id, "Reason:", reason if reason else "No reason provided")
             self.connected = False
-
+            
             # Attempt to notify client about server-initiated disconnect
             if notify:
                 try:
                     disconnect_message = {
-                        "type": MessageType.SERVER_DISCONNECT,
+                        "type":   MessageType.SERVER_DISCONNECT,
                         "reason": reason if reason else "Server disconnect",
                     }
                     message_data = json.dumps(disconnect_message).encode('utf-8')
                     send_message(self.request, message_data)
-                except:  # pylint: disable=bare-except
-                    # Best-effort notification; continue with disconnect
+                except (OSError, ConnectionError):
+                    # ignore: connection already broken
                     pass
-            
+                except Exception:
+                    # ignore unexpected: best-effort notification
+                    pass
             if self.client_id:
                 self.server.remove_client(self.client_id)
-            
             try:
                 self.request.close()
-            except: # pylint: disable=bare-except
+            except (OSError, ConnectionError):
+                # ignore: closing a dead socket
+                pass
+            except Exception:
+                # ignore unexpected during cleanup
                 pass
     
     def handle_unexpected_message(self, extra_info: str = "") -> None:
@@ -455,8 +472,12 @@ def main() -> None:
     try:
         server = SecureChatServer()
         server.start_server()
+    except (OSError, ConnectionError) as e:
+        print(f"Server socket error: {e}")
+    except KeyboardInterrupt:
+        print("Server interrupted by user")
     except Exception as e:
-        print(f"Server error: {e}")
+        print(f"Server error (unexpected): {e}")
 
 
 if __name__ == "__main__":
