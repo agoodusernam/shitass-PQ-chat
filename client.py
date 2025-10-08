@@ -10,6 +10,7 @@ import sys
 import os
 import time
 
+import configs
 import shared
 from shared import (SecureChatProtocol, send_message, receive_message, MessageType,
                     PROTOCOL_VERSION)

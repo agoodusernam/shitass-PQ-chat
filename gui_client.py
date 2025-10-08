@@ -12,10 +12,11 @@ import uuid
 import wave
 from collections import deque
 from tkinter import scrolledtext, messagebox, filedialog
-from typing import Callable, Any
+from typing import Callable, Any, Literal
 
-import tkinterdnd2
+import config_manager
 
+assert config_manager  # remove unused import warning
 import configs
 import shared
 
@@ -77,16 +78,27 @@ from client import SecureChatClient
 from shared import bytes_to_human_readable, send_message, MessageType
 
 
-def get_in_from_mic(stream: pyaudio.Stream, chunk_size: int) -> bytes:
-    """Capture audio from the microphone and return as bytes."""
-    if not PYAUDIO_AVAILABLE or not stream:
-        raise RuntimeError("PyAudio is not available or stream is None")
-    try:
-        data = stream.read(chunk_size, exception_on_overflow=False)
-        return data
-    except Exception:
-        # On error return empty bytes, it's better to send silence than crash
-        return b""
+class Ltk:
+    """
+    Literal types for Tkinter constants because type checking YAY
+    """
+    def __init__(self):
+        self.W: Literal["w"] = "w"
+        self.X: Literal["x"] = "x"
+        self.Y: Literal["y"] = "y"
+        self.BOTH: Literal["both"] = "both"
+        self.RIGHT: Literal["right"] = "right"
+        self.LEFT: Literal["left"] = "left"
+        self.DISABLED: Literal["disabled"] = "disabled"
+        self.NORMAL: Literal["normal"] = "normal"
+        self.ACTIVE: Literal["active"] = "active"
+        self.FLAT: Literal["flat"] = "flat"
+        self.HORIZONTAL: Literal["horizontal"] = "horizontal"
+        self.VERTICAL: Literal["vertical"] = "vertical"
+        self.WORD: Literal["word"] = "word"
+        self.NONE: Literal["none"] = "none"
+
+ltk: Ltk = Ltk()
 
 
 def get_image_from_clipboard() -> Image.Image | None:
@@ -141,7 +153,7 @@ def display_image(image: Image.Image, root):
     # Convert the (possibly resized) PIL image to a PhotoImage
     photo = ImageTk.PhotoImage(to_display_image, master=root)
     
-    label = tk.Label(window, image=photo) # type: ignore
+    label = tk.Label(window, image=photo)  # type: ignore
     # Keep a reference to the image to prevent it from being garbage collected
     label.image = photo
     label.pack()
@@ -216,7 +228,7 @@ class FileTransferWindow:
             
             # Top frame for speed display
             top_frame = tk.Frame(self.window, bg=self.BG_COLOR)
-            top_frame.pack(fill=tk.X, padx=10, pady=5)
+            top_frame.pack(fill=ltk.X, padx=10, pady=5)
             
             # Speed label in top right
             self.speed_label = tk.Label(
@@ -226,7 +238,7 @@ class FileTransferWindow:
                     fg=self.SPEED_LABEL_COLOR,
                     font=("Consolas", 10, "bold")
             )
-            self.speed_label.pack(side=tk.RIGHT)
+            self.speed_label.pack(side=ltk.RIGHT)
             
             # Title label
             title_label = tk.Label(
@@ -236,25 +248,25 @@ class FileTransferWindow:
                     fg=self.FG_COLOR,
                     font=("Consolas", 12, "bold")
             )
-            title_label.pack(side=tk.LEFT)
+            title_label.pack(side=ltk.LEFT)
             
             # Main frame for transfer list
             main_frame = tk.Frame(self.window, bg=self.BG_COLOR)
-            main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+            main_frame.pack(fill=ltk.BOTH, expand=True, padx=10, pady=5)
             
             # Scrollable text area for transfer updates
             self.transfer_list = scrolledtext.ScrolledText(
                     main_frame,
-                    state=tk.DISABLED,
-                    wrap=tk.WORD,
+                    state=ltk.DISABLED,
+                    wrap=ltk.WORD,
                     height=20,
                     font=("Consolas", 9),
                     bg=self.TEXT_BG_COLOR,
                     fg=self.FG_COLOR,
                     insertbackground=self.FG_COLOR,
-                    relief=tk.FLAT
+                    relief=ltk.FLAT
             )
-            self.transfer_list.pack(fill=tk.BOTH, expand=True)
+            self.transfer_list.pack(fill=ltk.BOTH, expand=True)
             
             # Handle window closing
             self.window.protocol("WM_DELETE_WINDOW", self.hide_window)
@@ -275,11 +287,11 @@ class FileTransferWindow:
         self.create_window()
         
         if self.transfer_list:
-            self.transfer_list.config(state=tk.NORMAL)
+            self.transfer_list.config(state=ltk.NORMAL)
             timestamp = time.strftime("%H:%M:%S")
             self.transfer_list.insert(tk.END, f"[{timestamp}] {message}\n")
             self.transfer_list.see(tk.END)
-            self.transfer_list.config(state=tk.DISABLED)
+            self.transfer_list.config(state=ltk.DISABLED)
         
         # Show window if not visible
         if self.window.state() == 'withdrawn':
@@ -335,7 +347,6 @@ class ChatGUI:
         # Store the theme colors dictionary
         self.theme_colors = load_theme_colors()
         
-
         self.BG_COLOR = self.theme_colors["BG_COLOR"]
         self.FG_COLOR = self.theme_colors["FG_COLOR"]
         self.ENTRY_BG_COLOR = self.theme_colors["ENTRY_BG_COLOR"]
@@ -382,7 +393,6 @@ class ChatGUI:
         self.spellcheck_enabled = True
         self.misspelled_tags = set()
         
-        
         # Create GUI elements
         self.create_widgets()
         
@@ -419,10 +429,10 @@ class ChatGUI:
         
         try:
             # Play a system notification sound (non-blocking)
-            if os.path.exists("notification_sound.wav"):
+            if os.path.exists(configs.MESSAGE_NOTIF_SOUND_FILE):
                 threading.Thread(
                         target=winsound.PlaySound,
-                        args=("notification_sound.wav", winsound.SND_FILENAME),
+                        args=(configs.MESSAGE_NOTIF_SOUND_FILE, winsound.SND_FILENAME),
                         daemon=True
                 ).start()
         except Exception:
@@ -454,59 +464,60 @@ class ChatGUI:
         except Exception:
             pass
     
+    # noinspection PyAttributeOutsideInit
     def create_widgets(self):
         """Create the GUI widgets."""
         # Main frame
         main_frame = tk.Frame(self.root, bg=self.BG_COLOR)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        main_frame.pack(fill=ltk.BOTH, expand=True, padx=10, pady=10)
         
         # Connection frame
         conn_frame = tk.Frame(main_frame, bg=self.BG_COLOR)
-        conn_frame.pack(fill=tk.X, pady=(0, 10))
+        conn_frame.pack(fill=ltk.X, pady=(0, 10))
         
         # Host and port inputs
-        tk.Label(conn_frame, text="Host:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=tk.LEFT)
+        tk.Label(conn_frame, text="Host:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=ltk.LEFT)
         self.host_entry = tk.Entry(
                 conn_frame, width=15, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR,
-                insertbackground=self.FG_COLOR, relief=tk.FLAT
+                insertbackground=self.FG_COLOR, relief=ltk.FLAT
         )
-        self.host_entry.pack(side=tk.LEFT, padx=(5, 10))
+        self.host_entry.pack(side=ltk.LEFT, padx=(5, 10))
         self.host_entry.insert(0, "localhost")
         
-        tk.Label(conn_frame, text="Port:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=tk.LEFT)
+        tk.Label(conn_frame, text="Port:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=ltk.LEFT)
         self.port_entry = tk.Entry(
                 conn_frame, width=8, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR,
-                insertbackground=self.FG_COLOR, relief=tk.FLAT
+                insertbackground=self.FG_COLOR, relief=ltk.FLAT
         )
-        self.port_entry.pack(side=tk.LEFT, padx=(5, 10))
+        self.port_entry.pack(side=ltk.LEFT, padx=(5, 10))
         self.port_entry.insert(0, "16384")
         
         # Connect/Disconnect button
         self.connect_btn = tk.Button(
                 conn_frame, text="Connect", command=self.toggle_connection,
-                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,
+                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT,
                 activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR
         )
-        self.connect_btn.pack(side=tk.LEFT, padx=(10, 0))
+        self.connect_btn.pack(side=ltk.LEFT, padx=(10, 0))
         
         # Config menu button
         self.config_btn = tk.Button(
                 conn_frame, text="Config", command=self.open_config_dialog,
-                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,
+                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT,
                 activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
                 font=("Consolas", 10)
         )
-        self.config_btn.pack(side=tk.LEFT, padx=(10, 0))
+        self.config_btn.pack(side=ltk.LEFT, padx=(10, 0))
         
         if PYAUDIO_AVAILABLE:
             self.voice_call_btn = tk.Button(
                     conn_frame, text="Voice Call", command=self.start_call,
-                    bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,
+                    bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT,
                     activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
                     font=("Consolas", 10)
             )
             
-            self.voice_call_btn.pack(side=tk.LEFT, padx=(10, 0))
+            self.voice_call_btn.pack(side=ltk.LEFT, padx=(10, 0))
         
         # Status indicator (top right)
         self.status_label = tk.Label(
@@ -514,35 +525,35 @@ class ChatGUI:
                 bg=self.BG_COLOR, fg=self.theme_colors.get("STATUS_NOT_CONNECTED", "#ff6b6b"),
                 font=("Consolas", 9, "bold")
         )
-        self.status_label.pack(side=tk.RIGHT, padx=(10, 0))
+        self.status_label.pack(side=ltk.RIGHT, padx=(10, 0))
         
         # Chat display area
         self.chat_display = scrolledtext.ScrolledText(
                 main_frame,
-                state=tk.DISABLED,
-                wrap=tk.WORD,
+                state=ltk.DISABLED,
+                wrap=ltk.WORD,
                 height=20,
                 font=("Consolas", 10),
                 bg=self.TEXT_BG_COLOR,
                 fg=self.FG_COLOR,
                 insertbackground=self.FG_COLOR,
-                relief=tk.FLAT
+                relief=ltk.FLAT
         )
-        self.chat_display.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        self.chat_display.pack(fill=ltk.BOTH, expand=True, pady=(0, 10))
         if TKINTERDND2_AVAILABLE:
-            self.chat_display.drop_target_register(DND_FILES) # type: ignore
-            self.chat_display.dnd_bind('<<Drop>>', self.handle_drop) # type: ignore
+            self.chat_display.drop_target_register(DND_FILES)  # type: ignore
+            self.chat_display.dnd_bind('<<Drop>>', self.handle_drop)  # type: ignore
         
         # Input frame
         self.input_frame = tk.Frame(main_frame, bg=self.BG_COLOR)
-        self.input_frame.pack(fill=tk.X)
+        self.input_frame.pack(fill=ltk.X)
         
         # Message input
         self.message_entry = tk.Text(
                 self.input_frame, height=1, font=("Consolas", 10), bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR, width=15,
-                insertbackground=self.FG_COLOR, relief=tk.FLAT, wrap=tk.NONE # type: ignore
+                insertbackground=self.FG_COLOR, relief=ltk.FLAT, wrap=ltk.NONE
         )
-        self.message_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        self.message_entry.pack(side=ltk.LEFT, fill=ltk.X, expand=True, padx=(0, 10))
         
         # Configure text tags for spellcheck
         self.message_entry.tag_configure("misspelled", underline=True,
@@ -568,27 +579,27 @@ class ChatGUI:
         try:
             self.ephemeral_menu.config(bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR,
                                        activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
-                                       relief=tk.FLAT)
+                                       relief=ltk.FLAT)
         except Exception:
             pass
-        self.ephemeral_menu.pack(side=tk.RIGHT, padx=(0, 5))
+        self.ephemeral_menu.pack(side=ltk.RIGHT, padx=(0, 5))
         
         # File Transfer window button
         self.file_transfer_btn = tk.Button(
                 self.input_frame, text="Transfers", command=self.show_file_transfer_window,
-                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,
+                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT,
                 activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
                 font=("Consolas", 9)
         )
-        self.file_transfer_btn.pack(side=tk.RIGHT, padx=(0, 10))
+        self.file_transfer_btn.pack(side=ltk.RIGHT, padx=(0, 10))
         
         # Send File button
         self.send_file_btn = tk.Button(
                 self.input_frame, text="Send File", command=self.send_file,
-                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,
+                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT,
                 activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR
         )
-        self.send_file_btn.pack(side=tk.RIGHT, padx=(0, 5))
+        self.send_file_btn.pack(side=ltk.RIGHT, padx=(0, 5))
         
         # Bind button click event to detect shift key
         self.send_file_btn.bind("<Button-1>", self.on_send_file_click)
@@ -596,20 +607,20 @@ class ChatGUI:
         # Send button
         self.send_btn = tk.Button(
                 self.input_frame, text="Send", command=self.send_message,
-                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT,
+                bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT,
                 activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR
         )
-        self.send_btn.pack(side=tk.RIGHT)
+        self.send_btn.pack(side=ltk.RIGHT)
         
         # Initially disable input until connected
-        self.message_entry.config(state=tk.DISABLED)
-        self.send_btn.config(state=tk.DISABLED)
-        self.send_file_btn.config(state=tk.DISABLED)
+        self.message_entry.config(state=ltk.DISABLED)
+        self.send_btn.config(state=ltk.DISABLED)
+        self.send_file_btn.config(state=ltk.DISABLED)
         try:
-            self.ephemeral_menu.config(state=tk.DISABLED)
+            self.ephemeral_menu.config(state=ltk.DISABLED)
         except Exception:
             pass
-        self.file_transfer_btn.config(state=tk.DISABLED)
+        self.file_transfer_btn.config(state=ltk.DISABLED)
         
         # Start ephemeral message cleanup thread
         self.start_ephemeral_cleanup()
@@ -668,7 +679,7 @@ class ChatGUI:
     def _append_to_chat(self, text, is_message=False, show_time=True):
         """Append text to the chat display."""
         text = str(text)
-        self.chat_display.config(state=tk.NORMAL)
+        self.chat_display.config(state=ltk.NORMAL)
         formatted_time = time.strftime("%H:%M:%S")
         
         # If ephemeral mode is enabled and this is a message, track it
@@ -698,11 +709,11 @@ class ChatGUI:
             self.show_windows_notification(text)
         
         self.chat_display.see(tk.END)
-        self.chat_display.config(state=tk.DISABLED)
+        self.chat_display.config(state=ltk.DISABLED)
     
     def append_to_chat_with_delivery_status(self, text, message_counter=None, is_message=False):
         """Append text to chat display with delivery status tracking for sent messages."""
-        self.chat_display.config(state=tk.NORMAL)
+        self.chat_display.config(state=ltk.NORMAL)
         formatted_time = time.strftime("%H:%M:%S")
         
         # Create unique tag for this message if we have a message counter
@@ -743,14 +754,14 @@ class ChatGUI:
             self.show_windows_notification(text)
         
         self.chat_display.see(tk.END)
-        self.chat_display.config(state=tk.DISABLED)
+        self.chat_display.config(state=ltk.DISABLED)
     
     def update_message_delivery_status(self, message_counter):
         """Update the delivery status of a sent message to show it was delivered."""
         if message_counter in self.sent_messages:
             tag_id = self.sent_messages[message_counter]
             
-            self.chat_display.config(state=tk.NORMAL)
+            self.chat_display.config(state=ltk.NORMAL)
             
             # Get the text range for this tag
             try:
@@ -774,7 +785,7 @@ class ChatGUI:
                 # Tag might not exist anymore, ignore
                 pass
             
-            self.chat_display.config(state=tk.DISABLED)
+            self.chat_display.config(state=ltk.DISABLED)
     
     def update_status(self, status_text, color=None):
         """
@@ -836,6 +847,7 @@ class ChatGUI:
         """Toggle Windows system notifications on/off."""
         self.windows_notifications_enabled = not self.windows_notifications_enabled
     
+    # noinspection PyAttributeOutsideInit
     def open_config_dialog(self):
         """Open a small configuration window with common settings."""
         try:
@@ -855,16 +867,19 @@ class ChatGUI:
         self.config_window.resizable(False, False)
         
         container = tk.Frame(self.config_window, bg=self.BG_COLOR)
-        container.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+        container.pack(padx=10, pady=10, fill=ltk.BOTH, expand=True)
         
         # Tk variables reflecting current settings
         self.var_sound_notif: tk.BooleanVar = tk.BooleanVar(value=self.notification_enabled)
         self.var_system_notif: tk.BooleanVar = tk.BooleanVar(value=self.windows_notifications_enabled)
         self.var_auto_images: tk.BooleanVar = tk.BooleanVar(value=self.client.display_images if self.client else True)
         self.var_allow_calls: tk.BooleanVar = tk.BooleanVar(value=self.allow_voice_calls)
-        self.var_allow_file_transfers: tk.BooleanVar = tk.BooleanVar(value=self.client.allow_file_transfers if self.client else True)
-        self.var_send_delivery_receipts: tk.BooleanVar = tk.BooleanVar(value=self.client.send_delivery_receipts if self.client else True)
-        self.var_nickname_change_allowed = tk.BooleanVar(value=self.client.nickname_change_allowed if self.client else False)
+        self.var_allow_file_transfers: tk.BooleanVar = tk.BooleanVar(
+            value=self.client.allow_file_transfers if self.client else True)
+        self.var_send_delivery_receipts: tk.BooleanVar = tk.BooleanVar(
+            value=self.client.send_delivery_receipts if self.client else True)
+        self.var_nickname_change_allowed = tk.BooleanVar(
+            value=self.client.nickname_change_allowed if self.client else False)
         # New: Peer nickname StringVar for manual setting
         try:
             current_peer_nick: str = (self.client.peer_nickname if self.client else self.peer_nickname)
@@ -874,52 +889,56 @@ class ChatGUI:
         
         # Checkbuttons
         cb1 = tk.Checkbutton(
-            container,
-            text="Notification sounds",
-            variable=self.var_sound_notif,
-            command=lambda: setattr(self, 'notification_enabled', self.var_sound_notif.get()),
+                container,
+                text="Notification sounds",
+                variable=self.var_sound_notif,
+                command=lambda: setattr(self, 'notification_enabled', self.var_sound_notif.get()),
         )
         
         cb2 = tk.Checkbutton(
-            container,
-            text="System notifications",
-            variable=self.var_system_notif,
-            command=lambda: setattr(self, 'windows_notifications_enabled', self.var_system_notif.get()),
+                container,
+                text="System notifications",
+                variable=self.var_system_notif,
+                command=lambda: setattr(self, 'windows_notifications_enabled', self.var_system_notif.get()),
         )
         
         cb3 = tk.Checkbutton(
-            container,
-            text="Auto-display images",
-            variable=self.var_auto_images,
-            command=lambda: (setattr(self.client, 'display_images', self.var_auto_images.get()) if self.client else None),
+                container,
+                text="Auto-display images",
+                variable=self.var_auto_images,
+                command=lambda: (
+                    setattr(self.client, 'display_images', self.var_auto_images.get()) if self.client else None),
         )
         
         cb4 = tk.Checkbutton(
-            container,
-            text="Allow voice calls",
-            variable=self.var_allow_calls,
-            command=lambda: setattr(self, 'allow_voice_calls', self.var_allow_calls.get()),
+                container,
+                text="Allow voice calls",
+                variable=self.var_allow_calls,
+                command=lambda: setattr(self, 'allow_voice_calls', self.var_allow_calls.get()),
         )
         
         cb5 = tk.Checkbutton(
-            container,
-            text="Allow file transfers",
-            variable=self.var_allow_file_transfers,
-            command=lambda: (setattr(self.client, 'allow_file_transfers', self.var_allow_file_transfers.get()) if self.client else None),
+                container,
+                text="Allow file transfers",
+                variable=self.var_allow_file_transfers,
+                command=lambda: (setattr(self.client, 'allow_file_transfers',
+                                         self.var_allow_file_transfers.get()) if self.client else None),
         )
         
         cb6 = tk.Checkbutton(
-            container,
-            text="Send delivery receipts",
-            variable=self.var_send_delivery_receipts,
-            command=lambda: (setattr(self.client, 'send_delivery_receipts', self.var_send_delivery_receipts.get()) if self.client else None),
+                container,
+                text="Send delivery receipts",
+                variable=self.var_send_delivery_receipts,
+                command=lambda: (setattr(self.client, 'send_delivery_receipts',
+                                         self.var_send_delivery_receipts.get()) if self.client else None),
         )
         
         cb7 = tk.Checkbutton(
-            container,
-            text="Allow peer to change their nickname",
-            variable=self.var_nickname_change_allowed,
-            command=lambda: (setattr(self.client, 'nickname_change_allowed', self.var_nickname_change_allowed.get()) if self.client else None),
+                container,
+                text="Allow peer to change their nickname",
+                variable=self.var_nickname_change_allowed,
+                command=lambda: (setattr(self.client, 'nickname_change_allowed',
+                                         self.var_nickname_change_allowed.get()) if self.client else None),
         )
         
         # Try to style to match theme (some platforms may ignore)
@@ -934,15 +953,17 @@ class ChatGUI:
         # Peer nickname controls
         nick_frame = tk.Frame(container, bg=self.BG_COLOR)
         try:
-            tk.Label(nick_frame, text="Peer nickname:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side="left", padx=(0, 6))
+            tk.Label(nick_frame, text="Peer nickname:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side="left",
+                                                                                                 padx=(0, 6))
         except Exception:
             tk.Label(nick_frame, text="Peer nickname:").pack(side="left", padx=(0, 6))
         
         try:
-            nick_entry = tk.Entry(nick_frame, textvariable=self.var_peer_nickname, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR, insertbackground=self.FG_COLOR)
+            nick_entry = tk.Entry(nick_frame, textvariable=self.var_peer_nickname, bg=self.ENTRY_BG_COLOR,
+                                  fg=self.FG_COLOR, insertbackground=self.FG_COLOR)
         except Exception:
             nick_entry = tk.Entry(nick_frame, textvariable=self.var_peer_nickname)
-        nick_entry.pack(side="left", fill=tk.X, expand=True)
+        nick_entry.pack(side="left", fill=ltk.X, expand=True)
         
         def apply_peer_nickname():
             try:
@@ -953,7 +974,7 @@ class ChatGUI:
                 self.peer_nickname = new_nick
                 if self.client:
                     self.client.peer_nickname = new_nick
-                    
+                
                 self.append_to_chat(f"[SYSTEM] Peer nickname set to: {new_nick}", is_message=False, show_time=False)
             except Exception:
                 try:
@@ -962,22 +983,24 @@ class ChatGUI:
                     pass
         
         try:
-            apply_btn = tk.Button(nick_frame, text="Apply", command=apply_peer_nickname, bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR)
+            apply_btn = tk.Button(nick_frame, text="Apply", command=apply_peer_nickname, bg=self.BUTTON_BG_COLOR,
+                                  fg=self.FG_COLOR, activebackground=self.BUTTON_ACTIVE_BG,
+                                  activeforeground=self.FG_COLOR)
         except Exception:
             apply_btn = tk.Button(nick_frame, text="Apply", command=apply_peer_nickname)
         apply_btn.pack(side="left", padx=(6, 0))
-        nick_frame.pack(fill=tk.X, pady=(8, 4))
+        nick_frame.pack(fill=ltk.X, pady=(8, 4))
         
         # Close button
         close_btn = tk.Button(
-            container,
-            text="Close",
-            command=self.config_window.destroy,
-            bg=self.BUTTON_BG_COLOR,
-            fg=self.FG_COLOR,
-            relief=tk.FLAT,
-            activebackground=self.BUTTON_ACTIVE_BG,
-            activeforeground=self.FG_COLOR,
+                container,
+                text="Close",
+                command=self.config_window.destroy,
+                bg=self.BUTTON_BG_COLOR,
+                fg=self.FG_COLOR,
+                relief=ltk.FLAT,
+                activebackground=self.BUTTON_ACTIVE_BG,
+                activeforeground=self.FG_COLOR,
         )
         close_btn.pack(pady=(8, 0), anchor="e")
     
@@ -994,7 +1017,7 @@ class ChatGUI:
             messagebox.showwarning("Warning", "Cannot start call - verification not complete")
             return
         
-        self.voice_call_btn.config(state=tk.DISABLED)
+        self.voice_call_btn.config(state=ltk.DISABLED)
         
         VOICE_SAMPLE_RATE = 44100
         CHUNK = int(VOICE_SAMPLE_RATE * 0.01)
@@ -1026,13 +1049,13 @@ class ChatGUI:
         """Called when successfully connected."""
         self.connected = True
         self.connect_btn.config(text="Disconnect")
-        self.host_entry.config(state=tk.DISABLED)
-        self.port_entry.config(state=tk.DISABLED)
-        self.message_entry.config(state=tk.NORMAL)
-        self.send_btn.config(state=tk.NORMAL)
-        self.send_file_btn.config(state=tk.NORMAL)
-        self.ephemeral_menu.config(state=tk.NORMAL)
-        self.file_transfer_btn.config(state=tk.NORMAL)
+        self.host_entry.config(state=ltk.DISABLED)
+        self.port_entry.config(state=ltk.DISABLED)
+        self.message_entry.config(state=ltk.NORMAL)
+        self.send_btn.config(state=ltk.NORMAL)
+        self.send_file_btn.config(state=ltk.NORMAL)
+        self.ephemeral_menu.config(state=ltk.NORMAL)
+        self.file_transfer_btn.config(state=ltk.NORMAL)
         self.message_entry.focus()
         self.update_status("Connected, waiting for other client")
         self.start_chat_monitoring()
@@ -1042,16 +1065,16 @@ class ChatGUI:
         self.client.disconnect()
         self.connected = False
         self.connect_btn.config(text="Connect")
-        self.host_entry.config(state=tk.NORMAL)
-        self.port_entry.config(state=tk.NORMAL)
-        self.message_entry.config(state=tk.DISABLED)
-        self.send_btn.config(state=tk.DISABLED)
-        self.send_file_btn.config(state=tk.DISABLED)
+        self.host_entry.config(state=ltk.NORMAL)
+        self.port_entry.config(state=ltk.NORMAL)
+        self.message_entry.config(state=ltk.DISABLED)
+        self.send_btn.config(state=ltk.DISABLED)
+        self.send_file_btn.config(state=ltk.DISABLED)
         try:
-            self.ephemeral_menu.config(state=tk.DISABLED)
+            self.ephemeral_menu.config(state=ltk.DISABLED)
         except Exception:
             pass
-        self.file_transfer_btn.config(state=tk.DISABLED)
+        self.file_transfer_btn.config(state=ltk.DISABLED)
         self.append_to_chat("Disconnected from server.")
         self.update_status("Not Connected")
     
@@ -1112,7 +1135,7 @@ class ChatGUI:
         
         except Exception as e:
             self._append_to_chat(f"Verification error: {e}")
-            
+    
     def verify_yes(self) -> None:
         """Handle '/y' command to confirm key verification."""
         try:
@@ -1161,7 +1184,7 @@ class ChatGUI:
                 self.client.active_file_metadata[transfer_id]['save_path'] = selected_path
             else:
                 metadata['save_path'] = selected_path
-                
+            
             # Send acceptance
             self.client.protocol.queue_message(("encrypt_json", {
                 "type":        MessageType.FILE_ACCEPT,
@@ -1175,10 +1198,10 @@ class ChatGUI:
             self.append_to_chat(f"Accepted file transfer: {metadata['filename']}")
             # Remove from pending requests
             del self.client.pending_file_requests[transfer_id]
-            
+        
         except Exception as e:
             self.append_to_chat(f"Error accepting file transfer: {e}")
-            
+        
         self.message_entry.delete("1.0", tk.END)
         return None
     
@@ -1199,10 +1222,10 @@ class ChatGUI:
             del self.client.pending_file_requests[transfer_id]
             if transfer_id in self.client.active_file_metadata:
                 del self.client.active_file_metadata[transfer_id]
-                
+        
         except Exception as e:
             self.append_to_chat(f"Error rejecting file transfer: {e}")
-            
+        
         return None
     
     def send_message(self, event=None):
@@ -1251,7 +1274,7 @@ class ChatGUI:
             self.append_to_chat("/y or /yes - Confirm key verification or accept file transfer")
             self.append_to_chat("/n or /no - Deny key verification or reject file transfer")
             self.append_to_chat(
-                "/rekey - Generate a new key pair and restart key exchange (requires prior verification)")
+                    "/rekey - Generate a new key pair and restart key exchange (requires prior verification)")
             self.append_to_chat("/quit - Disconnect and exit the application")
             self.message_entry.delete("1.0", tk.END)
             return "break"
@@ -1262,11 +1285,11 @@ class ChatGUI:
             if self.client.verification_pending:
                 self.verify_yes()
                 return "break"
-
+            
             elif self.client.pending_file_requests:
                 self.file_transfer_yes()
                 return "break"
-
+            
             else:
                 self.append_to_chat("No verification or file transfer pending.")
                 return "break"
@@ -1668,7 +1691,7 @@ class ChatGUI:
         if selected == "LOCAL":
             # If we were the GLOBAL owner, inform peer to disable global
             was_global_owner = (
-                        self.ephemeral_mode == "GLOBAL" and self.ephemeral_global_owner_id == self.local_client_id)
+                    self.ephemeral_mode == "GLOBAL" and self.ephemeral_global_owner_id == self.local_client_id)
             previous_owner = self.ephemeral_global_owner_id
             self.ephemeral_mode = "LOCAL"
             self.ephemeral_global_owner_id = None
@@ -1698,7 +1721,7 @@ class ChatGUI:
                 return
             # Turn off locally and broadcast OFF if we are the owner
             was_global_owner = (
-                        self.ephemeral_mode == "GLOBAL" and self.ephemeral_global_owner_id == self.local_client_id)
+                    self.ephemeral_mode == "GLOBAL" and self.ephemeral_global_owner_id == self.local_client_id)
             self.ephemeral_mode = "OFF"
             previous_owner = self.ephemeral_global_owner_id
             self.ephemeral_global_owner_id = None
@@ -1746,16 +1769,16 @@ class ChatGUI:
         # Lock control if global owned by peer
         try:
             if self.ephemeral_mode == "GLOBAL" and self.ephemeral_global_owner_id and self.ephemeral_global_owner_id != self.local_client_id:
-                self.ephemeral_menu.config(state=tk.DISABLED)
+                self.ephemeral_menu.config(state=ltk.DISABLED)
             else:
-                self.ephemeral_menu.config(state=tk.NORMAL)
+                self.ephemeral_menu.config(state=ltk.NORMAL)
         except Exception:
             pass
     
     def remove_ephemeral_messages(self, message_ids):
         """Remove ephemeral messages from the chat display."""
         try:
-            self.chat_display.config(state=tk.NORMAL)
+            self.chat_display.config(state=ltk.NORMAL)
             for message_id in message_ids:
                 # Find the tagged message range
                 tag_ranges = self.chat_display.tag_ranges(message_id)
@@ -1767,7 +1790,7 @@ class ChatGUI:
                 self.ephemeral_messages.pop(message_id, None)
             
             self.chat_display.see(tk.END)
-            self.chat_display.config(state=tk.DISABLED)
+            self.chat_display.config(state=ltk.DISABLED)
         
         except Exception:
             # If removal fails, just clean up the tracking dict
@@ -1878,7 +1901,6 @@ class GUISecureChatClient(SecureChatClient):
         # Initialize file transfer state
         self.pending_file_requests: dict[Any, Any] = {}
     
-
     def connect(self) -> bool:
         # Call base connect (starts receive thread)
         ok = super().connect()
@@ -1919,7 +1941,6 @@ class GUISecureChatClient(SecureChatClient):
         # Append as system message in chat
         self.gui.append_to_chat(f"[SYSTEM] Server disconnected: {reason}", is_message=False, show_time=False)
         self.gui.disconnect_from_server()
-
     
     def request_voice_call(self, rate: int, chunk_size: int, audio_format: int):
         """
@@ -1964,7 +1985,7 @@ class GUISecureChatClient(SecureChatClient):
                 "chunk_size":   chunk_size,
                 "audio_format": audio_format,
             }))
-            self.gui.voice_call_btn.config(state=tk.DISABLED)
+            self.gui.voice_call_btn.config(state=ltk.DISABLED)
         else:
             self.protocol.queue_message(("encrypt_json", {
                 "type": MessageType.VOICE_CALL_REJECT,
@@ -2000,7 +2021,7 @@ class GUISecureChatClient(SecureChatClient):
                 self.gui.on_tkinter_thread(
                         self.gui.voice_call_btn.config,
                         text="End Call",
-                        state=tk.NORMAL,
+                        state=ltk.NORMAL,
                         command=self.end_call
                 )
             except Exception:
@@ -2059,7 +2080,7 @@ class GUISecureChatClient(SecureChatClient):
     def handle_voice_call_reject(self):
         """Handle rejection of a voice call request."""
         self.gui.append_to_chat(f"Voice call rejected")
-        self.gui.voice_call_btn.config(state=tk.NORMAL)
+        self.gui.voice_call_btn.config(state=ltk.NORMAL)
     
     def handle_voice_call_data(self, decrypted_text: str) -> None:
         """Handle incoming voice call data (console feedback)."""
@@ -2080,7 +2101,7 @@ class GUISecureChatClient(SecureChatClient):
             self.voice_call_active = False
             self.protocol.send_dummy_messages = True
             # Clear any buffered audio
-
+            
             self.voice_data_queue.clear()
             # Notify peer
             try:
@@ -2093,7 +2114,7 @@ class GUISecureChatClient(SecureChatClient):
                 self.gui.on_tkinter_thread(
                         self.gui.voice_call_btn.config,
                         text="Voice Call",
-                        state=tk.NORMAL,
+                        state=ltk.NORMAL,
                         command=self.gui.start_call
                 )
             except Exception:
@@ -2120,7 +2141,7 @@ class GUISecureChatClient(SecureChatClient):
                 self.gui.on_tkinter_thread(
                         self.gui.voice_call_btn.config,
                         text="Voice Call",
-                        state=tk.NORMAL,
+                        state=ltk.NORMAL,
                         command=self.gui.start_call
                 )
             except Exception:
@@ -2183,7 +2204,7 @@ class GUISecureChatClient(SecureChatClient):
                     self.gui.root.after(0, set_off_from_owner)
                 else:
                     self.gui.append_to_chat(
-                        "Peer attempted to disable GLOBAL ephemeral mode but is not the owner; ignoring.")
+                            "Peer attempted to disable GLOBAL ephemeral mode but is not the owner; ignoring.")
         
         except Exception as e:
             self.gui.append_to_chat(f"Error handling ephemeral mode change: {e}")
@@ -2488,7 +2509,7 @@ class GUISecureChatClient(SecureChatClient):
                 filename = self.pending_file_transfers[transfer_id]["metadata"]["filename"]
                 self.gui.on_tkinter_thread(self.gui.file_transfer_window.add_transfer_message,
                                            f"File transfer completed: {filename}")
-
+                
                 self.gui.file_transfer_window.clear_speed()
                 del self.pending_file_transfers[transfer_id]
                 self.protocol.send_dummy_messages = True
@@ -2511,7 +2532,7 @@ class GUISecureChatClient(SecureChatClient):
             for i, chunk in enumerate(chunk_generator):
                 # Queue chunk instruction; loop will encrypt and send
                 shared.send_message(self.socket, self.protocol.create_file_chunk_message(transfer_id,
-                                                                                   i, chunk))
+                                                                                         i, chunk))
                 
                 # Update bytes transferred
                 bytes_transferred += len(chunk)
@@ -2655,15 +2676,17 @@ def load_theme_colors() -> dict[str, str]:
 def main():
     """Main function to run the GUI chat client."""
     if TKINTERDND2_AVAILABLE:
+        import tkinterdnd2
+        
         root: tk.Tk | tkinterdnd2.Tk = TkinterDnD.Tk()
         root.title("Secure Chat Client")
     else:
         root = tk.Tk()
         root.title("Secure Chat Client, no DnD support")
-        
+    
     # Create GUI
     gui: ChatGUI = ChatGUI(root)
-    assert gui # Remove the unused variable warning
+    assert gui  # Remove the unused variable warning
     
     # Start the GUI
     root.mainloop()

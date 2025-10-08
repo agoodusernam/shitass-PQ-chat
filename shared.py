@@ -17,6 +17,8 @@ from enum import IntEnum
 from typing import Final, Any, SupportsIndex, SupportsBytes
 from collections.abc import Generator, Buffer
 
+import config_manager
+assert config_manager  # silence unused import warning
 import configs
 
 try:
@@ -352,7 +354,7 @@ class SecureChatProtocol:
     
     def _generate_dummy_message(self) -> bytes:
         """Generate a dummy message with random data."""
-        dummy_data = os.urandom(256)
+        dummy_data = os.urandom(configs.MAX_DUMMY_PACKET_SIZE)
         
         dummy_message = {
             "type": MessageType.DUMMY_MESSAGE,

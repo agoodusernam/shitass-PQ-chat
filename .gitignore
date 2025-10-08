@@ -12,3 +12,5 @@
 /themes.json
 /.idea/dictionaries/project.xml
 /theme.json
+/config.json
+/configs.py

@@ -12,10 +12,11 @@ from typing import Final, Self
 
 from shared import send_message, receive_message, create_error_message, \
     create_reset_message, MessageType, PROTOCOL_VERSION
+import config_manager
+assert config_manager # Remove unused import warning
+import configs
 
 SERVER_VERSION: Final[int] = 6
-MAX_UNEXPECTED_MSGS: Final[int] = 10
-
 
 # noinspection PyBroadException
 class SecureChatServer(socketserver.ThreadingTCPServer):
@@ -445,7 +446,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
     def handle_unexpected_message(self, extra_info: str = "") -> None:
         """Handle unexpected messages from the client."""
         self.unexpected_message_count += 1
-        if self.unexpected_message_count >= MAX_UNEXPECTED_MSGS:
+        if self.unexpected_message_count >= configs.MAX_UNEXPECTED_MSGS:
             self.disconnect("Too many unexpected messages" + extra_info)
 
 
