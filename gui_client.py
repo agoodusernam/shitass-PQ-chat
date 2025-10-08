@@ -897,9 +897,9 @@ class ChatGUI:
         self.config["auto_display_images"] = self.auto_display_images
         self.config["allow_voice_calls"] = self.allow_voice_calls
         if self.client:
-            self.config["allow_file_transfers"] = self.client.allow_file_transfers
-            self.config["send_delivery_receipts"] = self.client.send_delivery_receipts
-            self.config["nickname_change_allowed"] = self.client.nickname_change_allowed
+            self.config["allow_file_transfer"] = self.client.allow_file_transfers
+            self.config["delivery_receipts"] = self.client.send_delivery_receipts
+            self.config["peer_nickname_change"] = self.client.nickname_change_allowed
         self.config.save()
         if self.client:
             self.client.protocol.config.reload()
@@ -1947,7 +1947,7 @@ class GUISecureChatClient(SecureChatClient):
     
     def __init__(self, gui: "ChatGUI", host='localhost', port=16384):
         super().__init__(host, port)
-        self.display_images: bool = self.protocol.config["display_images"]
+        self.display_images: bool = self.protocol.config["auto_display_images"]
         self.voice_data_queue: deque[bytes] = deque()
         self.voice_call_active: bool = False
         self.gui: "ChatGUI" = gui

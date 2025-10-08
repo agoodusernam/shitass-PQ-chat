@@ -213,7 +213,7 @@ class SecureChatProtocol:
         self.sender_running: bool = False
         self.sender_lock: threading.Lock = threading.Lock()
         
-        self.send_dummy_messages: bool = self.config["send_dummy_messages"]
+        self.send_dummy_messages: bool = configs.SEND_DUMMY_PACKETS
         
         # Rekey state
         self.rekey_in_progress: bool = False
