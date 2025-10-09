@@ -348,18 +348,22 @@ class SecureChatProtocol:
                 # Encrypt immediately using normal ratcheting
                 encrypted = self.encrypt_message(json.dumps(emergency_message))
                 send_message(self.socket, encrypted)
+                
             else:
                 # Fall back to plaintext immediate send
                 send_message(self.socket, json.dumps(emergency_message).encode('utf-8'))
+                
             return True
         except (OSError, ConnectionError) as sock_err:
             # Socket level failure
             print(f"Failed to send emergency close (socket issue): {sock_err}")
             return False
+        
         except ValueError as proto_err:
             # Encryption state not ready / protocol state issue
             print(f"Failed to send emergency close (protocol issue): {proto_err}")
             return False
+        
         except Exception as unknown_err:  # keep broad catch for any unforeseen error
             print(f"Failed to send emergency close (unexpected error): {unknown_err}")
             return False
@@ -737,14 +741,13 @@ class SecureChatProtocol:
         """
         try:
             message = json.loads(data.decode('utf-8'))
-            if message["type"] != MessageType.KEY_EXCHANGE_RESPONSE:
-                raise ValueError("Invalid message type")
             
             # Check protocol version
-            peer_version = message.get("version")
+            peer_version = message.get("version", None)
             version_warning = None
             if peer_version is not None and peer_version != PROTOCOL_VERSION:
-                version_warning = f"WARNING: Protocol version mismatch. Local: {PROTOCOL_VERSION}, Peer: {peer_version}. Communication may not work properly."
+                version_warning = (f"WARNING: Protocol version mismatch. Local: {PROTOCOL_VERSION}, Peer: " +
+                                   f"{peer_version}. Communication may not work properly.")
             
             ciphertext = base64.b64decode(message["ciphertext"])
             # Store peer's public key for verification

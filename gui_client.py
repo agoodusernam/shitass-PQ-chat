@@ -3,7 +3,6 @@ import base64
 import json
 import os
 import re
-import sys
 import tempfile
 import threading
 import time
@@ -306,7 +305,17 @@ class FileTransferWindow:
         if self.window.state() == 'withdrawn':
             self.show_window()
     
-    def update_transfer_progress(self, transfer_id, filename, current, total, bytes_transferred=None, comp_text=None):
+    def update_transfer_progress(self, /, filename: str, current: int, total: int, bytes_transferred: int=None,
+                                 comp_text: str=None):
+        """
+        Update the progress of a file transfer.
+        :param filename: The name of the file being transferred.
+        :param current: The current progress in chunks.
+        :param total: The total number of chunks.
+        :param bytes_transferred: Total bytes transferred so far (for speed calculation).
+        :param comp_text: Optional compression status text. (e.g., "compressed", "uncompressed")
+        :return:
+        """
         """Update progress for a specific transfer."""
         progress = (current / total) * 100 if total > 0 else 0
         
@@ -319,7 +328,7 @@ class FileTransferWindow:
         message = f"{filename}: {progress:.1f}% ({current}/{total} chunks){compression_info}"
         self.add_transfer_message(message)
     
-    def update_speed(self, total_bytes_transferred):
+    def update_speed(self, total_bytes_transferred: int):
         """Update the transfer speed display."""
         current_time = time.time()
         time_diff = current_time - self.last_update_time
@@ -1494,7 +1503,6 @@ class ChatGUI:
             return "break"  # Prevent default paste behavior
         
         
-        
         except Exception as e:
             self._append_to_chat(f"Error handling paste: {e}")
             return "break"  # Prevent default paste behavior on error
@@ -1526,7 +1534,6 @@ class ChatGUI:
             if result:
                 self._append_to_chat(f"Sending clipboard image: {temp_filename}")
                 self.client.send_file(temp_path)
-            
             
             
             else:
@@ -1689,17 +1696,18 @@ class ChatGUI:
         """Handle emergency close (Control+Q) - send emergency message and close immediately."""
         try:
             if self.connected and self.client:
+                self.client.protocol.send_emergency_close()
                 # Force immediate disconnect without waiting
                 self.client.connected = False
                 if self.client.socket:
                     self.client.socket.close()
             # Close the application immediately
             self.on_tk_thread(self.root.quit)
-            sys.exit(1)
+            os._exit(1)
         except Exception as e:
             # Even if there's an error, still close the application
             print(f"Error during emergency close: {e}")
-            sys.exit(1)
+            os._exit(1)
     
     def on_closing(self):
         """Handle window closing."""
@@ -2270,7 +2278,7 @@ class GUISecureChatClient(SecureChatClient):
         """Handle emergency close message from the other client - override to display in GUI."""
         try:
             # Display emergency close message in GUI
-            self.gui.append_to_chat("🚨 EMERGENCY CLOSE RECEIVED")
+            self.gui.append_to_chat("EMERGENCY CLOSE RECEIVED")
             self.gui.append_to_chat("The other client has activated emergency close.")
             self.gui.append_to_chat("Connection will be terminated immediately.")
             
@@ -2295,7 +2303,7 @@ class GUISecureChatClient(SecureChatClient):
             
             # Display version warning in GUI if present
             if version_warning and self.gui:
-                self.gui.append_to_chat(f"⚠️ {version_warning}")
+                self.gui.append_to_chat(f"{version_warning}")
             elif version_warning:
                 print(f"\n{version_warning}")
             
@@ -2307,26 +2315,14 @@ class GUISecureChatClient(SecureChatClient):
         except Exception as e:
             self.gui.append_to_chat(f"Key exchange init error: {e}")
     
-    def handle_key_exchange_response(self, message_data: bytes):
+    def handle_key_exchange_response(self, message_data: bytes) -> bool:
         """Handle key exchange response - override to send to GUI. """
-        try:
-            if self.private_key is not None:
-                self.gui.update_status("Processing key exchange")
-                
-                _, version_warning = self.protocol.process_key_exchange_response(message_data, self.private_key)
-                
-                # Display version warning in GUI if present
-                if version_warning:
-                    self.gui.append_to_chat(f"{version_warning}")
-                elif version_warning:
-                    print(f"\n{version_warning}")
-                
-                self.gui.update_status("Key exchange completed")
-            else:
-                self.gui.append_to_chat("Received key exchange response but no private key found")
+        self.gui.update_status("Processing key exchange")
+        success = super().handle_key_exchange_response(message_data)
+        if success:
+            self.gui.update_status("Key exchange completed")
         
-        except Exception as e:
-            self.gui.append_to_chat(f"Key exchange response error: {e}")
+        return success
     
     def handle_key_exchange_complete(self):
         """Handle key exchange completion notification - override to use GUI."""
@@ -2495,18 +2491,17 @@ class GUISecureChatClient(SecureChatClient):
             # Update GUI with transfer progress every 10 chunks or for small transfers
             if received_chunks % 10 == 0 or received_chunks == 1 or metadata["total_chunks"] <= 10:
                 self.gui.on_tk_thread(self.gui.file_transfer_window.update_transfer_progress,
-                                      metadata['filename'], received_chunks, metadata['total_chunks'],
-                                      bytes_transferred
-                                      )
+                                      filename=metadata['filename'], current=received_chunks,
+                                      total=metadata['total_chunks'], bytes_transferred=bytes_transferred)
             
             if is_complete:
                 # Final progress update to ensure 100% is shown
                 # Use processed_size for final progress to match the transfer type
                 final_bytes_transferred = metadata.get("processed_size", metadata["file_size"])
                 self.gui.on_tk_thread(self.gui.file_transfer_window.update_transfer_progress,
-                                      transfer_id, metadata['filename'], metadata['total_chunks'],
-                                      metadata['total_chunks'],
-                                      final_bytes_transferred
+                                      filename=metadata['filename'], current=metadata['total_chunks'],
+                                      total=metadata['total_chunks'],
+                                      bytes_transferred=final_bytes_transferred
                                       )
                 
                 # Reassemble file
@@ -2602,14 +2597,15 @@ class GUISecureChatClient(SecureChatClient):
                     current_chunk = i + 1
                     compression_text = "compressed" if compress else "uncompressed"
                     self.gui.on_tk_thread(self.gui.file_transfer_window.update_transfer_progress,
-                                          filename, current_chunk, total_chunks, bytes_transferred, compression_text)
+                                          filename=filename, current=current_chunk, total=total_chunks, bytes_transferred=bytes_transferred,
+                                          comp_text=compression_text)
             
             # Final update to ensure 100% progress is shown
             filename = os.path.basename(file_path)
             compression_text = "compressed" if compress else "uncompressed"
-            self.gui.on_tk_thread(self.gui.file_transfer_window.update_transfer_progress, filename,
-                                  total_chunks,
-                                  total_chunks, bytes_transferred, compression_text)
+            self.gui.on_tk_thread(self.gui.file_transfer_window.update_transfer_progress, filename=filename,
+                                  current=total_chunks, total=total_chunks, bytes_transferred=bytes_transferred,
+                                  comp_text=compression_text)
             self.gui.on_tk_thread(self.gui.file_transfer_window.add_transfer_message,
                                   f"File chunks sent successfully ({compression_text}).")
             # Clear speed when transfer completes

@@ -9,6 +9,7 @@ import json
 import sys
 import os
 import time
+from typing import Any
 
 import shared
 from shared import (SecureChatProtocol, send_message, receive_message, MessageType,
@@ -152,8 +153,8 @@ class SecureChatClient:
             # First, try to parse as JSON (for control messages including keepalive)
             # This is more efficient for frequent messages like keepalives
             try:
-                message = json.loads(message_data.decode('utf-8'))
-                message_type = MessageType(message.get("type"))
+                message_json: dict[str, Any] = json.loads(message_data.decode('utf-8'))
+                message_type = MessageType(message_json.get("type"))
                 
                 match message_type:
                     case MessageType.KEY_EXCHANGE_INIT:
@@ -164,9 +165,9 @@ class SecureChatClient:
                         if self.key_exchange_complete:
                             self.handle_encrypted_message(message_data)
                         else:
-                            print("\nReceived encrypted message before key exchange complete")
+                            self.display_regular_message("\nReceived encrypted message before key exchange complete", error=True)
                     case MessageType.ERROR:
-                        print(f"\nServer error: {message.get('error', 'Unknown error')}")
+                        self.display_regular_message(f"{message_json.get('error', 'Unknown error')}", error=True)
                     case MessageType.KEY_VERIFICATION:
                         self.handle_key_verification_message(message_data)
                     case MessageType.KEY_EXCHANGE_RESET:
@@ -298,7 +299,7 @@ class SecureChatClient:
         except Exception as e:
             print(f"Key exchange init error: {e}")
     
-    def handle_key_exchange_response(self, message_data: bytes) -> None:
+    def handle_key_exchange_response(self, message_data: bytes) -> bool:
         """Handle key exchange response from another client."""
         try:
             if self.private_key:
@@ -306,14 +307,18 @@ class SecureChatClient:
                 
                 # Display version warning if present
                 if version_warning:
-                    print(f"\n{version_warning}")
-                
-                print("Key exchange completed successfully.")
+                    self.display_regular_message(f"{version_warning}")
+                    
+                self.display_regular_message("Key exchange completed successfully.", prefix="[SYSTEM]")
+                return True
             else:
-                print("Received key exchange response but no private key found")
+                self.display_regular_message("Received key exchange response but no private key found",
+                                             prefix="[SYSTEM]")
+                return False
         
         except Exception as e:
-            print(f"Key exchange response error: {e}")
+            self.display_regular_message(f"Key exchange response error: {e}", error=True)
+            return False
     
     def handle_key_exchange_complete(self) -> None:
         """Handle key exchange completion notification."""

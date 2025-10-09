@@ -116,19 +116,14 @@ class DebugProtocol(SecureChatProtocol):
         self._debug_event_id += 1
         event_id = self._debug_event_id
         # Determine plaintext type and sizes
-        plaintext_len = None
-        plaintext_type = None
+        plaintext_len: int = -1
+        plaintext_type: str = "TEXT"
         try:
             plaintext_len = len(plaintext.encode("utf-8"))
             obj = json.loads(plaintext)
             t = obj.get("type")
             plaintext_type = t
-            try:
-                plaintext_type_name = MessageType(t).name if isinstance(t, int) else str(t)
-            
-            except Exception:
-                plaintext_type_name = str(t)
-        
+            plaintext_type_name = MessageType(t).name if isinstance(t, int) else str(t)
         except Exception:
             plaintext_type_name = "TEXT"
             
