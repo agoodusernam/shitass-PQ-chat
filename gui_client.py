@@ -1311,7 +1311,7 @@ class ChatGUI:
         
         return None
     
-    def send_message(self, event=None):
+    def send_message(self, event: tk.Event | None = None) -> str | None:
         """
         Send a message.
         Must be run from the main Tkinter thread.
@@ -1490,13 +1490,13 @@ class ChatGUI:
         except Exception as e:
             self.append_to_chat(f"File send error: {e}")
     
-    def on_key_press(self, *_):
+    def on_key_press(self, event: tk.Event) -> str | None:
         """Handle key press events in message entry."""
         # Allow normal typing when connected
         # Note: Control+Q is handled at the window level, not here
         pass
     
-    def on_paste(self, event):
+    def on_paste(self, _: tk.Event) -> str | None:
         """Handle paste events in message entry - check for images."""
         if not self.connected or not self.client:
             return "break"  # Prevent default paste behavior
@@ -1562,7 +1562,7 @@ class ChatGUI:
         except Exception as e:
             self._append_to_chat(f"Error handling clipboard image: {e}")
     
-    def on_text_change(self, *_):
+    def on_text_change(self, _: tk.Event | None = None) -> None:
         """Handle text changes in message entry for spellcheck."""
         if not SPELLCHECKER_AVAILABLE:
             return
@@ -1628,7 +1628,7 @@ class ChatGUI:
             # Silently ignore spellcheck errors to avoid disrupting user experience
             pass
     
-    def show_spellcheck_menu(self, event):
+    def show_spellcheck_menu(self, event: tk.Event):
         """Show context menu with spelling suggestions on right-click."""
         if not SPELLCHECKER_AVAILABLE:
             return
