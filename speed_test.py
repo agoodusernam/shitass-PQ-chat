@@ -36,6 +36,8 @@ import time
 from dataclasses import dataclass
 from typing import Sequence, Any
 import json
+import os
+from datetime import datetime
 
 from shared import SecureChatProtocol
 
@@ -274,6 +276,78 @@ def run_benchmark(num_messages: int, size_mode: str, min_size: int, max_size: in
 
 # ---------------------------------- Reporting ---------------------------------- #
 
+RESULTS_FILE = "speed_test_last.json"
+
+def load_previous_results(path: str) -> dict[str, Any] | None:
+    try:
+        if not os.path.exists(path):
+            return None
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        # If file is corrupt or unreadable, ignore silently for benchmark continuity
+        return None
+
+
+def save_results(path: str, results: dict[str, Any]) -> None:
+    payload = dict(results)
+    payload["timestamp"] = datetime.now().isoformat(timespec='seconds')
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, indent=4, default=str)
+
+
+def compute_deltas(prev: dict[str, Any], curr: dict[str, Any]) -> dict[str, dict[str, float]]:
+    keys = [
+        "encryption_time_s",
+        "decryption_time_s",
+        "wall_clock_time_s",
+        "enc_msgs_per_sec",
+        "dec_msgs_per_sec",
+        "end_to_end_msgs_per_sec",
+        "enc_throughput_plain_MBps",
+        "dec_throughput_plain_MBps",
+        "combined_throughput_plain_MBps",
+    ]
+    out: dict[str, dict[str, float]] = {}
+    p_agg = prev.get("aggregate", {}) if prev else {}
+    c_agg = curr.get("aggregate", {})
+    for k in keys:
+        pv = float(p_agg.get(k, 0.0)) if p_agg else None
+        cv = float(c_agg.get(k, 0.0))
+        if pv is None:
+            continue
+        delta = cv - pv
+        pct = (delta / pv * 100.0) if pv not in (0, None) else float('inf')
+        out[k] = {"prev": pv, "curr": cv, "delta": delta, "pct": pct}
+    return out
+
+
+def print_comparison(prev: dict[str, Any] | None, curr: dict[str, Any]) -> None:
+    if not prev:
+        print("\nNo previous results found to compare against (this might be the first run).")
+        return
+    print("\nChange vs previous run:")
+    deltas = compute_deltas(prev, curr)
+    # Friendly labels
+    labels = {
+        "encryption_time_s": "Encryption time (s)",
+        "decryption_time_s": "Decryption time (s)",
+        "wall_clock_time_s": "Wall clock time (s)",
+        "enc_msgs_per_sec": "Enc msgs/sec",
+        "dec_msgs_per_sec": "Dec msgs/sec",
+        "end_to_end_msgs_per_sec": "End-to-end msgs/sec",
+        "enc_throughput_plain_MBps": "Enc throughput (MB/s)",
+        "dec_throughput_plain_MBps": "Dec throughput (MB/s)",
+        "combined_throughput_plain_MBps": "Combined throughput (MB/s)",
+    }
+    for k, stat in deltas.items():
+        prev_v = stat["prev"]
+        curr_v = stat["curr"]
+        delta = stat["delta"]
+        pct = stat["pct"]
+        pct_str = (f"{pct:+.2f}%" if pct != float('inf') else "n/a")
+        print(f"  {labels.get(k, k):28}: {curr_v:.4f} (Δ {delta:+.4f}, {pct_str} vs prev {prev_v:.4f})")
+
 def human_bytes(n: int) -> str:
     units = ["B", "KB", "MB", "GB"]
     size = float(n)
@@ -371,10 +445,22 @@ def main(argv: Sequence[str]) -> int:
         print(f"Unexpected error: {e}")
         return 3
     
+    # Load previous results before printing
+    prev = load_previous_results(RESULTS_FILE)
+
     if not args.json_only:
         print_report(results)
+        print_comparison(prev, results)
     if args.json_out or args.json_only:
         print(json.dumps(results, indent=2, default=str))
+
+    # Save current results for next run comparison
+    try:
+        save_results(RESULTS_FILE, results)
+    except Exception as e:
+        # Non-fatal: just report inability to save
+        if not args.json_only:
+            print(f"\nWarning: failed to save results to {RESULTS_FILE}: {e}")
     return 0
 
 

@@ -31,6 +31,28 @@ class ProtocolCryptoTests(unittest.TestCase):
         self.assertTrue(self.alice.send_chain_key)
         self.assertTrue(self.alice.receive_chain_key)
 
+    def test_bob_to_alice_decrypt_and_ratchet(self):
+        # Bob -> Alice first message after exchange
+        m1 = "Hello Alice"
+        c1 = self.bob.encrypt_message(m1)
+        p1 = self.alice.decrypt_message(c1)
+        self.assertEqual(p1, m1)
+        self.assertEqual(self.alice.peer_counter, 1)
+
+        # Bob sends again; Alice should decrypt and advance
+        m2 = "How are you?"
+        c2 = self.bob.encrypt_message(m2)
+        p2 = self.alice.decrypt_message(c2)
+        self.assertEqual(p2, m2)
+        self.assertEqual(self.alice.peer_counter, 2)
+
+        # Now Alice -> Bob also continues to work
+        m3 = "Doing fine!"
+        c3 = self.alice.encrypt_message(m3)
+        p3 = self.bob.decrypt_message(c3)
+        self.assertEqual(p3, m3)
+        self.assertEqual(self.bob.peer_counter, 1)
+
     def test_encrypt_decrypt_roundtrip_and_ratchet(self):
         # Alice -> Bob
         m1 = "Hello Bob"

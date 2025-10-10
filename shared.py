@@ -29,12 +29,13 @@ try:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     from cryptography.hazmat.primitives.kdf.hkdf import HKDF
     from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 except ImportError as exc_:
     print("Required cryptographic libraries not found.")
     raise ImportError("Please install the required libraries with pip install -r requirements.txt") from exc_
 
 # Protocol constants
-PROTOCOL_VERSION: Final[str] = "3.0.0"
+PROTOCOL_VERSION: Final[str] = "4.0.1"
 # Protocol compatibility is denoted by version number
 # Major.Minor.Patch - only Major are checked for compatibility.
 # Major version changes may introduce breaking changes and are not guaranteed to be compatible with previous major versions.
@@ -112,6 +113,17 @@ def bytes_to_human_readable(size: int) -> str:
         return f"{size / 1024 ** 2:.1f} MB"
     
     return f"{size / 1024 ** 3:.1f} GB"
+
+def xor_bytes(a: bytes, b: bytes) -> bytes:
+    """XOR two byte strings of equal length."""
+    if len(a) != len(b):
+        raise ValueError("Byte strings must be of equal length for XOR operation")
+    length = len(a)
+    int_a = int.from_bytes(a, byteorder="big")
+    int_b = int.from_bytes(b, byteorder="big")
+    
+    xor_result = int_a ^ int_b
+    return xor_result.to_bytes(length, byteorder="big")
 
 
 class StreamingGzipCompressor:
@@ -224,6 +236,15 @@ class SecureChatProtocol:
         self.pending_message_counter: int = 0
         self.pending_peer_counter: int = 0
         self.rekey_private_key: bytes = bytes()
+        
+        # X25519 ephemeral DH state (set during key exchange only)
+        self.dh_private_key = None  # type: ignore[var-annotated]
+        self.dh_public_key_bytes: bytes = bytes()
+        self.peer_dh_public_key_bytes: bytes = bytes()
+        
+        # Message-phase Double Ratchet state
+        self.msg_recv_private = None  # type: ignore[var-annotated]
+        self.msg_peer_base_public: bytes = bytes()
     
     @property
     def encryption_ready(self) -> bool:
@@ -243,6 +264,13 @@ class SecureChatProtocol:
         self.own_public_key = bytes()
         self.send_chain_key = bytes()
         self.receive_chain_key = bytes()
+        # Reset DH ephemeral keys
+        self.dh_private_key = None
+        self.dh_public_key_bytes = bytes()
+        self.peer_dh_public_key_bytes = bytes()
+        # Reset message-phase Double Ratchet state
+        self.msg_recv_private = None
+        self.msg_peer_base_public = bytes()
         # Clear file transfer state as well
         self.file_transfers = {}
         self.received_chunks = {}
@@ -545,6 +573,22 @@ class SecureChatProtocol:
         return hkdf.derive(chain_key)
     
     @staticmethod
+    def _mix_dh_with_chain(chain_key: bytes, dh_shared: bytes, counter: int, direction: str | bytes) -> bytes:
+        """Mix DH shared secret into the chain key using HKDF with the chain key as salt."""
+        if isinstance(direction, str):
+            dir_bytes = direction.encode('utf-8')
+        else:
+            dir_bytes = direction
+        info = b"dr_mix_" + dir_bytes + b"_" + str(counter).encode('utf-8')
+        hkdf = HKDF(
+                algorithm=hashes.SHA3_512(),
+                length=64,
+                salt=chain_key,
+                info=info
+        )
+        return hkdf.derive(dh_shared)
+    
+    @staticmethod
     def _derive_keys_and_chain(shared_secret: bytes) -> tuple[bytes, bytes]:
         """Derive encryption key, MAC key, and root chain key from a shared secret without mutating state."""
         # Derive encryption and MAC keys
@@ -620,23 +664,28 @@ class SecureChatProtocol:
         return self.generate_session_fingerprint()
     
     def generate_session_fingerprint(self) -> str:
-        """Generate a consistent fingerprint for the session that both users will see."""
+        """Generate a consistent fingerprint for the session that both users will see.
+        Includes both ML-KEM public keys and the ephemeral X25519 DH public keys from the key exchange.
+        """
+        # Ensure we have all required key materials
         if not self.own_public_key or not self.peer_public_key:
             raise ValueError("Both public keys must be available")
+        if not self.dh_public_key_bytes or not getattr(self, 'peer_dh_public_key_bytes', b""):
+            raise ValueError("Both DH public keys must be available")
         
-        # Create a deterministic combination of both keys
-        # Sort the keys to ensure consistent ordering regardless of who is "own" vs "peer"
-        key1 = self.own_public_key
-        key2 = self.peer_public_key
-        
-        # Sort keys lexicographically to ensure consistent ordering
-        if key1 > key2:
-            combined_keys = key2 + key1
-        else:
-            combined_keys = key1 + key2
+        # Build a deterministic, order-independent combination of all four keys
+        components = [
+            self.own_public_key,
+            self.peer_public_key,
+            self.dh_public_key_bytes,
+            self.peer_dh_public_key_bytes,
+        ]
+        # Sort lexicographically to make result independent of initiator/responder roles
+        components.sort()
+        combined = b"".join(components)
         
         # Generate fingerprint from combined keys
-        return self.generate_key_fingerprint(combined_keys)
+        return self.generate_key_fingerprint(combined)
     
     @staticmethod
     def create_key_verification_message(verified: bool) -> bytes:
@@ -668,31 +717,35 @@ class SecureChatProtocol:
         
         return True, "Secure communication established with verified peer"
     
-    @staticmethod
-    def create_key_exchange_init(public_key: bytes) -> bytes:
-        """Create initial key exchange message."""
+    def create_key_exchange_init(self, public_key: bytes) -> bytes:
+        """Create initial key exchange message with X25519 DH public key."""
+        # Generate ephemeral X25519 keypair for this session init
+        self.dh_private_key = X25519PrivateKey.generate()
+        self.dh_public_key_bytes = self.dh_private_key.public_key().public_bytes_raw()
         message = {
             "version":    PROTOCOL_VERSION,
             "type":       MessageType.KEY_EXCHANGE_INIT,
-            "public_key": base64.b64encode(public_key).decode('utf-8')
+            "public_key": base64.b64encode(public_key).decode('utf-8'),
+            "dh_public_key": base64.b64encode(self.dh_public_key_bytes).decode('utf-8'),
         }
         return json.dumps(message).encode('utf-8')
     
     def create_key_exchange_response(self, ciphertext: bytes) -> bytes:
-        """Create key exchange response message."""
+        """Create key exchange response message including our X25519 DH public key."""
         message = {
             "version":    PROTOCOL_VERSION,
             "type":       MessageType.KEY_EXCHANGE_RESPONSE,
             "ciphertext": base64.b64encode(ciphertext).decode('utf-8'),
-            "public_key": base64.b64encode(self.own_public_key).decode('utf-8') if self.own_public_key else ""
+            "public_key": base64.b64encode(self.own_public_key).decode('utf-8') if self.own_public_key else "",
+            "dh_public_key": base64.b64encode(self.dh_public_key_bytes).decode('utf-8') if self.dh_public_key_bytes else "",
         }
         return json.dumps(message).encode('utf-8')
     
     def process_key_exchange_init(self, data: bytes) -> tuple[bytes, bytes, str | None]:
-        """Process initial key exchange and return shared key, response ciphertext, and version warning if any.
+        """Process initial key exchange and return combined shared key, KEM ciphertext, and version warning if any.
         
         Returns:
-            tuple: (shared_secret, ciphertext, warning_message)
+            tuple: (combined_shared_secret, ciphertext, warning_message)
                   warning_message is None if protocol versions match
         """
         try:
@@ -707,22 +760,43 @@ class SecureChatProtocol:
                 version_warning = (
                     f"WARNING: Protocol version mismatch. Local: {PROTOCOL_VERSION}, Peer: {peer_version}. "
                     f"Communication may not work properly.")
-            public_key = base64.b64decode(message["public_key"])
-            # Store peer's public key for verification
-            self.peer_public_key = public_key
+            kem_public_key = base64.b64decode(message["public_key"])
+            peer_dh_pub_b64 = message.get("dh_public_key", "")
+            peer_dh_pub_bytes = base64.b64decode(peer_dh_pub_b64) if peer_dh_pub_b64 else b""
+            # Store peer's KEM public key for verification
+            self.peer_public_key = kem_public_key
+            # Store peer's DH public key for fingerprinting/verification context
+            self.peer_dh_public_key_bytes = peer_dh_pub_bytes
             
-            # Generate our own keypair if we don't have one yet
-            # This ensures the second client has its own public key for verification
+            # Generate our own KEM keypair if we don't have one yet (for verification purposes)
             if not self.own_public_key:
                 self.own_public_key, self.own_private_key = self.generate_keypair()
             
-            shared_secret, ciphertext = ML_KEM_1024.encaps(public_key)
+            # Generate our ephemeral X25519 keypair for DH and compute DH shared secret
+            self.dh_private_key = X25519PrivateKey.generate()
+            self.dh_public_key_bytes = self.dh_private_key.public_key().public_bytes_raw()
+            if not peer_dh_pub_bytes:
+                raise ValueError("Missing DH public key in key exchange init")
+            peer_dh_pub = X25519PublicKey.from_public_bytes(peer_dh_pub_bytes)
+            dh_shared_secret = self.dh_private_key.exchange(peer_dh_pub)
             
-            # Derive keys from shared secret
-            self.encryption_key = self.derive_keys(shared_secret)
-            self.shared_key = shared_secret
+            # Perform KEM encapsulation to obtain KEM shared secret and ciphertext to send back
+            kem_shared_secret, ciphertext = ML_KEM_1024.encaps(kem_public_key)
             
-            return shared_secret, ciphertext, version_warning
+            # Combine secrets using XOR
+            if len(kem_shared_secret) != len(dh_shared_secret):
+                raise ValueError("Shared secret length mismatch between KEM and DH")
+            combined_shared = xor_bytes(kem_shared_secret, dh_shared_secret)
+            
+            # Derive keys from combined shared secret
+            self.encryption_key = self.derive_keys(combined_shared)
+            self.shared_key = combined_shared
+            
+            # Initialize message-phase Double Ratchet baseline
+            self.msg_recv_private = self.dh_private_key
+            self.msg_peer_base_public = self.peer_dh_public_key_bytes
+            
+            return combined_shared, ciphertext, version_warning
         except (UnicodeDecodeError, json.JSONDecodeError) as e:
             raise ValueError(f"Key exchange init decode error: {e}") from e
         except KeyError as e:
@@ -733,10 +807,10 @@ class SecureChatProtocol:
             raise ValueError(f"Key exchange init failed (unexpected): {e}") from e
     
     def process_key_exchange_response(self, data: bytes, private_key: bytes) -> tuple[bytes, str | None]:
-        """Process key exchange response and derive shared key.
+        """Process key exchange response and derive combined shared key using KEM ⊕ X25519 DH.
         
         Returns:
-            tuple: (shared_secret, warning_message)
+            tuple: (combined_shared_secret, warning_message)
                   warning_message is None if protocol versions match
         """
         try:
@@ -750,17 +824,36 @@ class SecureChatProtocol:
                                    f"{peer_version}. Communication may not work properly.")
             
             ciphertext = base64.b64decode(message["ciphertext"])
-            # Store peer's public key for verification
+            # Store peer's KEM public key for verification
             if "public_key" in message and message["public_key"]:
                 self.peer_public_key = base64.b64decode(message["public_key"])
+            # Obtain peer's DH public key
+            peer_dh_pub_b64 = message.get("dh_public_key", "")
+            if not peer_dh_pub_b64:
+                raise ValueError("Missing DH public key in key exchange response")
+            peer_dh_pub_bytes = base64.b64decode(peer_dh_pub_b64)
+            # Store peer's DH public key for fingerprinting/verification context
+            self.peer_dh_public_key_bytes = peer_dh_pub_bytes
+            if not self.dh_private_key:
+                raise ValueError("Local DH private key not initialized for key exchange response")
+            peer_dh_pub = X25519PublicKey.from_public_bytes(peer_dh_pub_bytes)
+            dh_shared_secret = self.dh_private_key.exchange(peer_dh_pub)
             
-            shared_secret = ML_KEM_1024.decaps(private_key, ciphertext)
+            kem_shared_secret = ML_KEM_1024.decaps(private_key, ciphertext)
             
-            # Derive keys from shared secret
-            self.encryption_key = self.derive_keys(shared_secret)
-            self.shared_key = shared_secret
+            if len(kem_shared_secret) != len(dh_shared_secret):
+                raise ValueError("Shared secret length mismatch between KEM and DH")
+            combined_shared = xor_bytes(kem_shared_secret, dh_shared_secret)
             
-            return shared_secret, version_warning
+            # Derive keys from combined shared secret
+            self.encryption_key = self.derive_keys(combined_shared)
+            self.shared_key = combined_shared
+            
+            # Initialize message-phase Double Ratchet baseline
+            self.msg_recv_private = self.dh_private_key
+            self.msg_peer_base_public = self.peer_dh_public_key_bytes
+            
+            return combined_shared, version_warning
         except (UnicodeDecodeError, json.JSONDecodeError) as e:
             raise ValueError(f"Key exchange response decode error: {e}") from e
         except KeyError as e:
@@ -773,20 +866,32 @@ class SecureChatProtocol:
     def encrypt_message(self, plaintext: str) -> bytes:
         """
         Encrypt a message with authentication and replay protection using perfect forward secrecy.
+        Integrates a Double Ratchet step using X25519 by including a fresh sender public key per message
+        and mixing the DH shared secret into the chain key derivation.
         :param plaintext: The plaintext message to encrypt.
         :return: The encrypted message as bytes, ready to send.
         :raises: ValueError: If no shared key or send chain key is established.
-        
         """
         if not self.shared_key or not self.send_chain_key:
             raise ValueError("No shared key or send chain key established")
         
         self.message_counter += 1
         
-        # Derive unique message key for this message
-        message_key = self._derive_message_key(self.send_chain_key, self.message_counter)
+        # Generate ephemeral X25519 key for this message and compute DH with peer's static session public key
+        eph_priv = X25519PrivateKey.generate()
+        eph_pub_bytes = eph_priv.public_key().public_bytes_raw()
+        peer_pub_bytes = self.peer_dh_public_key_bytes
+        if not peer_pub_bytes:
+            raise ValueError("Missing peer DH public key for encryption")
+        dh_shared = eph_priv.exchange(X25519PublicKey.from_public_bytes(peer_pub_bytes))
         
-        # Ratchet the send chain key forward for the next message
+        # Mix DH into current send chain key to get a message-specific chain state
+        mixed_chain_key = self._mix_dh_with_chain(self.send_chain_key, dh_shared, self.message_counter, "m")
+        
+        # Derive unique message key for this message from the mixed chain
+        message_key = self._derive_message_key(mixed_chain_key, self.message_counter)
+        
+        # Ratchet the send chain key forward for the next message (symmetric ratchet only)
         self.send_chain_key = self._ratchet_chain_key(self.send_chain_key, self.message_counter)
         
         # Convert plaintext to bytes
@@ -816,31 +921,41 @@ class SecureChatProtocol:
         
         # Encrypt with AES-GCM using the unique message key and AAD
         aesgcm: AESGCM = AESGCM(message_key)
-        
         ciphertext: bytes = aesgcm.encrypt(nonce, padded_plaintext, aad)
         
         # delete the message key
         message_key = b'\x00' * len(message_key)
         del message_key
         
-        # Create authenticated message
+        # Create authenticated message including our per-message DH public key
         encrypted_message: dict[str, MessageType | int | str] = {
-            "type":       MessageType.ENCRYPTED_MESSAGE,
-            "counter":    self.message_counter,
-            "nonce":      base64.b64encode(nonce).decode('utf-8'),
-            "ciphertext": base64.b64encode(ciphertext).decode('utf-8')
+            "type":           MessageType.ENCRYPTED_MESSAGE,
+            "counter":        self.message_counter,
+            "nonce":          base64.b64encode(nonce).decode('utf-8'),
+            "ciphertext":     base64.b64encode(ciphertext).decode('utf-8'),
+            "dh_public_key":  base64.b64encode(eph_pub_bytes).decode('utf-8'),
         }
         
         verif_hasher = hashlib.sha3_512()
         verif_hasher.update(self.encryption_key)
-        verif_hasher.update(json.dumps(encrypted_message).encode('utf-8'))
+        # Include dh_public_key in verification to authenticate the ratchet key
+        verif_hasher.update(json.dumps({
+            "type":          encrypted_message["type"],
+            "counter":       encrypted_message["counter"],
+            "nonce":         encrypted_message["nonce"],
+            "ciphertext":    encrypted_message["ciphertext"],
+            "dh_public_key": encrypted_message["dh_public_key"],
+        }, sort_keys=True).encode('utf-8'))
         
         encrypted_message["verification"] = base64.b64encode(verif_hasher.digest()).decode('utf-8')
         
         return json.dumps(encrypted_message).encode('utf-8')
     
     def decrypt_message(self, data: bytes) -> str:
-        """Decrypt and authenticate a message using perfect forward secrecy with proper state management."""
+        """Decrypt and authenticate a message using perfect forward secrecy with proper state management.
+        Incorporates Double Ratchet: mixes DH shared secret (from peer's included X25519 public key and our
+        message-phase private key) into the chain before deriving the message key.
+        """
         if not self.shared_key or not self.receive_chain_key:
             raise ValueError("No shared key or receive chain key established")
         legitimate = False
@@ -849,16 +964,21 @@ class SecureChatProtocol:
             nonce: bytes = base64.b64decode(message["nonce"])
             ciphertext: bytes = base64.b64decode(message["ciphertext"])
             counter = message["counter"]
+            peer_dh_pub_b64 = message.get("dh_public_key", "")
+            if not peer_dh_pub_b64:
+                raise ValueError("Missing DH public key in message")
             
             expected_verification: bytes = base64.b64decode(message["verification"])
             verif_hasher = hashlib.sha3_512()
             verif_hasher.update(self.encryption_key)
+            # Include dh_public_key in verification to authenticate the ratchet key
             verif_hasher.update(json.dumps({
-                "type":       message["type"],
-                "counter":    counter,
-                "nonce":      message["nonce"],
-                "ciphertext": message["ciphertext"]
-            }).encode('utf-8'))
+                "type":          message["type"],
+                "counter":       counter,
+                "nonce":         message["nonce"],
+                "ciphertext":    message["ciphertext"],
+                "dh_public_key": peer_dh_pub_b64,
+            }, sort_keys=True).encode('utf-8'))
             actual_verification = verif_hasher.digest()
             if actual_verification != expected_verification:
                 raise ValueError("Message verification failed - possible tampering or corruption")
@@ -866,17 +986,23 @@ class SecureChatProtocol:
             legitimate = True
             # Check for replay attacks or old messages
             if counter <= self.peer_counter:
-                raise ValueError(f"Message legitimate but counter has unexpected value: higher than"
-                                 f" {self.peer_counter} got {counter}")
+                raise ValueError(f"Message legitimate but counter has unexpected value: higher than {self.peer_counter} got {counter}")
             
             temp_chain_key = self.receive_chain_key
             for i in range(self.peer_counter + 1, counter):
                 temp_chain_key = self._ratchet_chain_key(temp_chain_key, i)
             
-            # Derive the message key for the current message
-            message_key = self._derive_message_key(temp_chain_key, counter)
+            # Mix DH from peer's message into the temp chain key
+            if not self.msg_recv_private:
+                raise ValueError("Local DH private key not initialized for message ratchet")
+            peer_dh_pub_bytes = base64.b64decode(peer_dh_pub_b64)
+            dh_shared = self.msg_recv_private.exchange(X25519PublicKey.from_public_bytes(peer_dh_pub_bytes))
+            mixed_chain_key = self._mix_dh_with_chain(temp_chain_key, dh_shared, counter, "m")
             
-            # Calculate what the new chain key state WOULD be
+            # Derive the message key for the current message from the mixed chain
+            message_key = self._derive_message_key(mixed_chain_key, counter)
+            
+            # Calculate what the new chain key state WOULD be (symmetric ratchet only)
             new_chain_key = self._ratchet_chain_key(temp_chain_key, counter)
             
             # Create AAD from message metadata for authentication verification
@@ -897,8 +1023,11 @@ class SecureChatProtocol:
             if null_index != -1:
                 decrypted_data = decrypted_data[:null_index]
             
+            # Update ratchet state
             self.receive_chain_key = new_chain_key
             self.peer_counter = counter
+            # Store peer's latest public key for our next send
+            self.msg_peer_base_public = peer_dh_pub_bytes
             
             # delete the message key
             message_key = b'\x00' * len(message_key)
@@ -961,8 +1090,6 @@ class SecureChatProtocol:
         """Process a REKEY init payload; derive pending keys and return REKEY response payload.
         This must be called on the responder, and the response must be sent under the old key.
         """
-        if message.get("type") != MessageType.REKEY or message.get("action") != "init":
-            raise ValueError("Invalid REKEY init message")
         peer_ephemeral_pub = base64.b64decode(message.get("public_key", ""))
         if not peer_ephemeral_pub:
             raise ValueError("Missing public key in REKEY init")

@@ -93,9 +93,11 @@ class DebugProtocol(SecureChatProtocol):
             msg = json.loads(result.decode("utf-8"))
             nonce_b64 = msg.get("nonce", "")
             ciphertext_b64 = msg.get("ciphertext", "")
+            dh_pub_b64 = msg.get("dh_public_key", "")
         except Exception:
             nonce_b64 = ""
             ciphertext_b64 = ""
+            dh_pub_b64 = ""
             msg = {}
         
         # Determine if plaintext looked like control/dummy
@@ -149,6 +151,11 @@ class DebugProtocol(SecureChatProtocol):
                 encrypted_type_name = str(enc_type)
         except Exception:
             pass
+        # DH context for debug
+        try:
+            base_peer_dh_b64 = base64.b64encode(self.peer_dh_public_key_bytes).decode('utf-8') if getattr(self, 'peer_dh_public_key_bytes', b'') else ""
+        except Exception:
+            base_peer_dh_b64 = ""
         self.last_encrypt_info = {
             "event_id":             event_id,
             "ok":                   True,
@@ -169,6 +176,10 @@ class DebugProtocol(SecureChatProtocol):
             "ciphertext_len_b64":   ciphertext_len_b64,
             "ciphertext_len_bytes": ciphertext_len_bytes,
             "version":              version_in_envelope,
+            # DH (per-message) fields
+            "msg_dh_pub_b64":      dh_pub_b64,
+            "base_peer_dh_b64":    base_peer_dh_b64,
+            "dh_mixed":            True,
         }
         return result
     
@@ -176,6 +187,11 @@ class DebugProtocol(SecureChatProtocol):
         # Snapshot state before decrypt
         prev_rck = self.receive_chain_key
         prev_peer_ctr = self.peer_counter
+        # Capture current base peer DH public (for mixing) before state updates
+        try:
+            base_peer_dh_b64 = base64.b64encode(self.msg_peer_base_public).decode('utf-8') if getattr(self, 'msg_peer_base_public', b'') else ""
+        except Exception:
+            base_peer_dh_b64 = ""
         # Parse header for counter/nonce and envelope details
         counter = None
         nonce_b64 = ""
@@ -190,6 +206,7 @@ class DebugProtocol(SecureChatProtocol):
             nonce_b64 = msg.get("nonce", "")
             enc_type = msg.get("type")
             version_in_envelope = msg.get("version")
+            dh_pub_b64 = msg.get("dh_public_key", "")
             try:
                 encrypted_type_name = MessageType(enc_type).name if isinstance(enc_type, int) else str(enc_type)
             except Exception:
@@ -203,6 +220,7 @@ class DebugProtocol(SecureChatProtocol):
                 except Exception:
                     ciphertext_len_bytes = None
         except Exception:
+            dh_pub_b64 = ""
             pass
         
         # Try to compute the would-be message key (same as base)
@@ -265,6 +283,10 @@ class DebugProtocol(SecureChatProtocol):
             "plaintext_type":       plaintext_type,
             "plaintext_type_name":  plaintext_type_name,
             "plaintext_len":        plaintext_len,
+            # DH (per-message) fields
+            "msg_dh_pub_b64":      dh_pub_b64,
+            "base_peer_dh_b64":    base_peer_dh_b64,
+            "dh_mixed":            True,
         }
         if ok:
             return plaintext
@@ -933,6 +955,41 @@ class DebugChatGUI(ChatGUI):
             dummy_messages_enabled = self.client.protocol.send_dummy_messages
             status = "Enabled" if dummy_messages_enabled else "Disabled"
             debug_text += f"  Dummy Messages: {status}\n"
+            
+            # DH Handshake (X25519)
+            debug_text += "\nDH HANDSHAKE (X25519):\n"
+            if self.client.protocol:
+                # Own ephemeral/public DH key (from handshake phase)
+                if getattr(self.client.protocol, 'dh_public_key_bytes', b''):
+                    dh_own = self.client.protocol.dh_public_key_bytes
+                    debug_text += f"  Own DH Public: {dh_own[:16].hex()}...\n"
+                else:
+                    debug_text += "  Own DH Public: Not generated\n"
+                # Peer DH public key (from handshake)
+                if getattr(self.client.protocol, 'peer_dh_public_key_bytes', b''):
+                    dh_peer = self.client.protocol.peer_dh_public_key_bytes
+                    debug_text += f"  Peer DH Public: {dh_peer[:16].hex()}...\n"
+                else:
+                    debug_text += "  Peer DH Public: Not received\n"
+                # DH private presence indicator
+                has_dh_priv = getattr(self.client.protocol, 'dh_private_key', None) is not None
+                debug_text += f"  DH Private Key Present: {'Yes' if has_dh_priv else 'No'}\n"
+            else:
+                debug_text += "  Protocol not initialized\n"
+            
+            # Message-phase DH Ratchet state
+            debug_text += "\nMESSAGE RATCHET (DH):\n"
+            if self.client.protocol:
+                has_msg_recv_priv = getattr(self.client.protocol, 'msg_recv_private', None) is not None
+                debug_text += f"  Recv DH Private Present: {'Yes' if has_msg_recv_priv else 'No'}\n"
+                # Last seen peer per-message DH public key (used for next send base)
+                msg_base = getattr(self.client.protocol, 'msg_peer_base_public', b'')
+                if msg_base:
+                    debug_text += f"  Last Peer per‑msg DH: {msg_base[:16].hex()}...\n"
+                else:
+                    debug_text += "  Last Peer per‑msg DH: None\n"
+            else:
+                debug_text += "  Protocol not initialized\n"
             
             debug_text += "\n" + "=" * 44 + "\n"
             
@@ -1899,6 +1956,9 @@ class DebugGUISecureChatClient(GUISecureChatClient):
             ctr = info.get("counter")
             nonce = info.get("nonce_b64", "")
             msg_key = info.get("msg_key", "")
+            # DH details
+            dh_pub_b64 = info.get("msg_dh_pub_b64", "") or ""
+            base_peer_dh_b64 = info.get("base_peer_dh_b64", "") or ""
             if direction == "send":
                 before = info.get("send_ck_before", "")
                 after = info.get("send_ck_after", "")
@@ -1926,6 +1986,11 @@ class DebugGUISecureChatClient(GUISecureChatClient):
                     sizes_line += f"plaintext={pt_len} B"
                 if ct_len is not None:
                     sizes_line += (", " if pt_len is not None else "") + f"ciphertext={ct_len} B"
+            dh_lines = []
+            if dh_pub_b64:
+                dh_lines.append(f"   - dh_pub (per‑msg): {dh_pub_b64[:22]}...")
+            if base_peer_dh_b64:
+                dh_lines.append(f"   - dh_base_peer: {base_peer_dh_b64[:22]}...")
             parts = [
                 "--------------------------------",
                 f"   {header}",
@@ -1933,9 +1998,9 @@ class DebugGUISecureChatClient(GUISecureChatClient):
                 f"   - nonce: {nonce[:16]}..." if nonce else "",
                 types_line,
                 sizes_line if sizes_line else None,
-                f"   {chain[:16]}..." if chain else "",
+                f"   {chain}..." if chain else "",
                 f"   - message_key: {msg_key[:16]}..." if msg_key else "",
-            ]
+            ] + dh_lines
             # Filter out None/empty entries to keep it clean
             parts = [p for p in parts if p]
             return "\n".join(parts)

@@ -2264,9 +2264,9 @@ class GUISecureChatClient(SecureChatClient):
             if mode == "GLOBAL":
                 self.gui.root.after(0, set_global)
             elif mode == "OFF":
-                # Only honor OFF from the owner who enabled GLOBAL
+                # Only honour OFF from the owner who enabled GLOBAL
                 if self.gui.ephemeral_mode == "GLOBAL" and self.gui.ephemeral_global_owner_id == owner_id:
-                    self.gui.root.after(0, set_off_from_owner)
+                    self.gui.on_tk_thread(set_off_from_owner)
                 else:
                     self.gui.append_to_chat(
                             "Peer attempted to disable GLOBAL ephemeral mode but is not the owner; ignoring.")
