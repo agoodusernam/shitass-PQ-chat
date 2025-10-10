@@ -547,16 +547,15 @@ class SecureChatClient:
         except Exception as e:
             self.display_regular_message(f"Failed to initiate rekey: {e}", error=True)
     
-    def send_message(self, text: str) -> bool | None:
+    def send_message(self, text: str) -> bool:
         """Encrypt and queue a chat message for sending."""
         if not self.key_exchange_complete:
             print("Cannot send messages - key exchange not complete")
             return False
         
         # Check verification status and warn user
-        allowed, status_msg = self.protocol.should_allow_communication()
-        if not allowed:
-            print(f"Cannot send message: {status_msg}")
+        if not self.protocol.encryption_ready:
+            print(f"Cannot send message, encryption isn't ready")
             return False
         
         if not self.protocol.peer_key_verified:
@@ -569,7 +568,7 @@ class SecureChatClient:
         
         except Exception as e:
             print(f"Failed to send message: {e}")
-            return None
+            return False
     
     def send_file(self, file_path: str, compress: bool = True) -> None:
         """Send a file to the other client."""

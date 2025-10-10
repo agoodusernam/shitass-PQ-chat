@@ -238,12 +238,12 @@ class SecureChatProtocol:
         self.rekey_private_key: bytes = bytes()
         
         # X25519 ephemeral DH state (set during key exchange only)
-        self.dh_private_key = None  # type: ignore[var-annotated]
+        self.dh_private_key: X25519PrivateKey | None = None
         self.dh_public_key_bytes: bytes = bytes()
         self.peer_dh_public_key_bytes: bytes = bytes()
         
         # Message-phase Double Ratchet state
-        self.msg_recv_private = None  # type: ignore[var-annotated]
+        self.msg_recv_private: X25519PrivateKey | None = None
         self.msg_peer_base_public: bytes = bytes()
     
     @property
@@ -407,109 +407,97 @@ class SecureChatProtocol:
         return self.encrypt_message(json.dumps(dummy_message))
     
     def _sender_loop(self) -> None:
-        """Background thread loop that sends messages every 500ms.
+        """Background thread loop that sends messages every 250 ms.
         
         This loop is responsible for performing encryption for all queued
         non-control messages before sending them over the socket.
         Control messages (key exchange, explicit plaintext items) are sent as-is.
         """
         while self.sender_running:
-            try:
-                item = None
-                
-                # Check if there's a message in the queue
-                with self.sender_lock:
-                    if self.message_queue:
-                        item = self.message_queue.popleft()
-                
-                # If no real message, generate a dummy message
-                # Skip dummy messages during file transfers
-                if item is None and self.send_dummy_messages and not self.has_active_file_transfers():
-                    if self.encryption_ready and configs.SEND_DUMMY_PACKETS:
-                        item = self._generate_dummy_message()
-                
-                # Resolve the queue item into bytes to send
-                to_send: bytes | None = None
-                post_action: str | None = None
-                if item is not None:
-                    try:
-                        # Already bytes -> send as-is
-                        if isinstance(item, (bytes, bytearray)):
-                            to_send = bytes(item)
-                        # Plaintext string -> encrypt
-                        elif isinstance(item, (str, dict)):
-                            if isinstance(item, dict):
-                                item = json.dumps(item)
-                            if self.shared_key and self.send_chain_key:
-                                to_send = self.encrypt_message(item)
-                            else:
-                                raise ValueError("Encryption keys not ready for plaintext item")
-                        # Instruction tuple
-                        elif isinstance(item, tuple) and item:
-                            kind = item[0]
-                            if kind == "encrypt_text" and len(item) >= 2:
-                                text = item[1]
-                                if isinstance(text, str) and self.shared_key and self.send_chain_key:
-                                    to_send = self.encrypt_message(text)
-                                else:
-                                    raise ValueError("Invalid text encryption request or keys not ready")
-                            elif kind == "encrypt_json" and len(item) >= 2:
-                                obj = item[1]
-                                if isinstance(obj, dict) and self.shared_key and self.send_chain_key:
-                                    to_send = self.encrypt_message(json.dumps(obj))
-                                else:
-                                    raise ValueError("Invalid JSON encryption request or keys not ready")
-                            elif kind == "encrypt_json_then_switch" and len(item) >= 2:
-                                obj = item[1]
-                                if isinstance(obj, dict) and self.shared_key and self.send_chain_key:
-                                    to_send = self.encrypt_message(json.dumps(obj))
-                                    post_action = "switch_keys"
-                                else:
-                                    raise ValueError("Invalid JSON (switch) request or keys not ready")
-                            elif kind in ("plaintext", "encrypted") and len(item) >= 2:
-                                data = item[1]
-                                if isinstance(data, (SupportsIndex, SupportsBytes, Buffer)):
-                                    to_send = bytes(data)
-                                else:
-                                    raise TypeError("Provided data is not bytes-like for plaintext/encrypted send")
-                            else:
-                                raise ValueError(f"Unsupported instruction tuple: {kind}")
-                    except (ValueError, TypeError) as e:
-                        # If preparing this item fails, drop it and continue
-                        print(f"Message preparation error (dropped): {e}")
-                        to_send = None
-                    except Exception as e:  # keep broad for any unforeseen preparation issue
-                        print(f"Unexpected error preparing message (dropped): {e}")
-                        to_send = None
-                
-                # Send the message if we have one and a socket
-                if to_send is not None and self.socket is not None:
-                    try:
-                        send_message(self.socket, to_send)
-                        # Perform any post-send action (e.g., switching to pending keys after rekey commit)
-                        if post_action == "switch_keys":
-                            try:
-                                self.activate_pending_keys()
-                            except (ValueError, RuntimeError) as key_err:
-                                # Non-critical: failure to switch keys now just delays rekey activation
-                                print(f"Deferred key activation due to non-critical error: {key_err}")
-                            except Exception:
-                                # Ignored intentionally: unknown error during optional key switch shouldn't kill sender
-                                pass  # safe to ignore: key activation can be retried later
-                    except (OSError, ConnectionError) as send_err:
-                        # If sending fails, the connection is likely broken
-                        print(f"Send failed, likely broken connection: {send_err}")
-                        # Main thread expected to handle reconnection/cleanup
-                    except Exception as send_unknown:
-                        print(f"Unexpected send error: {send_unknown}")
-                
-                # Wait 250ms before next cycle
-                time.sleep(0.25)
+            item = None
             
-            except Exception as loop_err:
-                # Continue running even if there's an unexpected error; log for visibility
-                print(f"Sender loop unexpected error (continuing): {loop_err}")
-                time.sleep(0.25)
+            # Check if there's a message in the queue
+            with self.sender_lock:
+                if self.message_queue:
+                    item = self.message_queue.popleft()
+            
+            # If no real message, generate a dummy message
+            # Skip dummy messages during file transfers
+            if item is None and self.send_dummy_messages and not self.has_active_file_transfers():
+                if self.encryption_ready and configs.SEND_DUMMY_PACKETS:
+                    item = self._generate_dummy_message()
+            
+            # Resolve the queue item into bytes to send
+            to_send: bytes | None = None
+            post_action: str | None = None
+            if item is not None:
+                try:
+                    # Already bytes -> send as-is
+                    if isinstance(item, (bytes, bytearray)):
+                        to_send = bytes(item)
+                    # Plaintext string -> encrypt
+                    elif isinstance(item, (str, dict)):
+                        if isinstance(item, dict):
+                            item = json.dumps(item)
+                        if self.shared_key and self.send_chain_key:
+                            to_send = self.encrypt_message(item)
+                        else:
+                            raise ValueError("Encryption keys not ready for plaintext item")
+                    # Instruction tuple
+                    elif isinstance(item, tuple) and item:
+                        kind = item[0]
+                        if kind == "encrypt_text" and len(item) >= 2:
+                            text = item[1]
+                            if isinstance(text, str) and self.shared_key and self.send_chain_key:
+                                to_send = self.encrypt_message(text)
+                            else:
+                                raise ValueError("Invalid text encryption request or keys not ready")
+                        elif kind == "encrypt_json" and len(item) >= 2:
+                            obj = item[1]
+                            if isinstance(obj, dict) and self.shared_key and self.send_chain_key:
+                                to_send = self.encrypt_message(json.dumps(obj))
+                            else:
+                                raise ValueError("Invalid JSON encryption request or keys not ready")
+                        elif kind == "encrypt_json_then_switch" and len(item) >= 2:
+                            obj = item[1]
+                            if isinstance(obj, dict) and self.shared_key and self.send_chain_key:
+                                to_send = self.encrypt_message(json.dumps(obj))
+                                post_action = "switch_keys"
+                            else:
+                                raise ValueError("Invalid JSON (switch) request or keys not ready")
+                        elif kind in ("plaintext", "encrypted") and len(item) >= 2:
+                            data = item[1]
+                            if isinstance(data, (SupportsIndex, SupportsBytes, Buffer)):
+                                to_send = bytes(data)
+                            else:
+                                raise TypeError("Provided data is not bytes-like for plaintext/encrypted send")
+                        else:
+                            raise ValueError(f"Unsupported instruction tuple: {kind}")
+                except (ValueError, TypeError) as e:
+                    # If preparing this item fails, drop it and continue
+                    print(f"Message preparation error (dropped): {e}")
+                    to_send = None
+                except Exception as e:  # keep broad for any unforeseen preparation issue
+                    print(f"Unexpected error preparing message (dropped): {e}")
+                    to_send = None
+            
+            # Send the message if we have one and a socket
+            if to_send is not None and self.socket is not None:
+                try:
+                    send_message(self.socket, to_send)
+                    # Perform any post-send action (e.g., switching to pending keys after rekey commit)
+                    if post_action == "switch_keys":
+                        self.activate_pending_keys()
+                except (OSError, ConnectionError) as send_err:
+                    # If sending fails, the connection is likely broken
+                    print(f"Send failed, likely broken connection: {send_err}")
+                    # Main thread expected to handle reconnection/cleanup
+                except Exception as send_unknown:
+                    print(f"Unexpected send error: {send_unknown}")
+            
+            # Wait 250ms before next cycle
+            time.sleep(0.25)
+            
     
     def generate_keypair(self) -> tuple[bytes, bytes]:
         """Generate ML-KEM keypair for key exchange."""
@@ -706,16 +694,6 @@ class SecureChatProtocol:
             raise ValueError(f"Key verification message decoding failed: {e}") from e
         except Exception as e:  # fallback for any unforeseen error
             raise ValueError(f"Key verification message processing failed (unexpected): {e}") from e
-    
-    def should_allow_communication(self) -> tuple[bool, str]:
-        """Check if communication should be allowed based on verification status."""
-        if not self.shared_key:
-            return False, "No shared key established"
-        
-        if not self.peer_key_verified:
-            return True, "WARNING: Peer's key is not verified - communication may not be secure!"
-        
-        return True, "Secure communication established with verified peer"
     
     def create_key_exchange_init(self, public_key: bytes) -> bytes:
         """Create initial key exchange message with X25519 DH public key."""
@@ -1612,12 +1590,20 @@ def create_reset_message() -> bytes:
     return json.dumps(message).encode('utf-8')
 
 
-def send_message(sock: socket.socket | None, data: bytes):
+def send_message(sock: socket.socket | None, data: bytes) -> bool:
     """Send a length-prefixed message over a socket."""
-    if not sock:
-        raise ValueError("Socket is None")
-    length = struct.pack('!I', len(data))
-    sock.sendall(length + data)
+    try:
+        if not sock:
+            raise ValueError("Socket is None")
+        length = struct.pack('!I', len(data))
+        sock.sendall(length + data)
+        return True
+    except socket.timeout:
+        return False
+    except (OSError, IOError):
+        return False
+    except Exception:
+        return False
 
 
 def receive_message(sock) -> bytes:

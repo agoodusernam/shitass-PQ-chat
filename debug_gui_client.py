@@ -333,7 +333,7 @@ class DebugChatGUI(ChatGUI):
             self.debug_timer_id = self.root.after(
                     int(self.debug_update_interval * 1000),  # Convert to milliseconds
                     self._periodic_debug_update
-            )
+            ) # type: ignore
     
     # noinspection PyBroadException
     def _periodic_debug_update(self) -> None:
@@ -807,7 +807,7 @@ class DebugChatGUI(ChatGUI):
         if self.debug_visible:
             self.debug_frame.pack_forget()
             self.debug_actions_frame.pack_forget()
-            self.debug_toggle_btn.config(text="🔍 Show Debug Info")
+            self.debug_toggle_btn.config(text="Show Debug Info")
             self.debug_visible = False
             # Stop the debug timer when hiding
             self._stop_debug_timer()
@@ -859,15 +859,15 @@ class DebugChatGUI(ChatGUI):
             
             # Check overall key exchange completion
             if self.client.key_exchange_complete:
-                debug_text += "  ✅ KEY EXCHANGE COMPLETE\n"
+                debug_text += "  KEY EXCHANGE COMPLETE\n"
             else:
-                debug_text += "  ⏳ Key Exchange In Progress\n"
+                debug_text += "  Key Exchange In Progress\n"
             
             # Check verification status
             if self.client.verification_complete:
-                debug_text += "  ✅ VERIFICATION COMPLETE\n"
+                debug_text += "  VERIFICATION COMPLETE\n"
             else:
-                debug_text += "  ⏳ Verification Pending\n"
+                debug_text += "  Verification Pending\n"
             
             if self.client.protocol and self.client.protocol.shared_key:
                 debug_text += f"  ✓ Shared Key: {self.client.protocol.shared_key[:16].hex()}...\n"
@@ -917,11 +917,11 @@ class DebugChatGUI(ChatGUI):
             debug_text += "\nKEY VERIFICATION:\n"
             if self.client.protocol:
                 if self.client.protocol.peer_key_verified:
-                    debug_text += "  ✓ Peer Key Verified\n"
+                    debug_text += "  Peer Key Verified\n"
                 else:
-                    debug_text += "  ⚠ Peer Key Not Verified\n"
+                    debug_text += "  Peer Key Not Verified\n"
             else:
-                debug_text += "  ⚠ Verification Status Unknown\n"
+                debug_text += "  Verification Status Unknown\n"
             
             # Connection Status
             debug_text += "\nCONNECTION STATUS:\n"
@@ -933,19 +933,23 @@ class DebugChatGUI(ChatGUI):
             
             # Keepalive Status
             debug_text += "\nKEEPALIVE STATUS:\n"
-            if getattr(self.client, 'last_keepalive_received', None):
+            last_received = time.strftime('%H:%M:%S', time.localtime(self.client.last_keepalive_received)) if (
+                self.client) else None
+            if last_received:
                 last_received = time.strftime('%H:%M:%S', time.localtime(self.client.last_keepalive_received))
                 debug_text += f"  Last Keepalive Received: {last_received}\n"
             else:
                 debug_text += "  Last Keepalive Received: None\n"
             
-            if getattr(self.client, 'last_keepalive_sent', None):
+            last_sent = time.strftime('%H:%M:%S', time.localtime(self.client.last_keepalive_sent)) if self.client \
+                else None
+            if last_sent:
                 last_sent = time.strftime('%H:%M:%S', time.localtime(self.client.last_keepalive_sent))
                 debug_text += f"  Last Keepalive Sent: {last_sent}\n"
             else:
                 debug_text += "  Last Keepalive Sent: None\n"
             
-            respond_to_keepalive = getattr(self.client, 'respond_to_keepalive', None)
+            respond_to_keepalive = self.client.respond_to_keepalive if self.client else None
             if respond_to_keepalive is not None:
                 status = "Enabled" if respond_to_keepalive else "Disabled"
                 debug_text += f"  Keepalive Responses: {status}\n"
@@ -2152,22 +2156,15 @@ class DebugGUISecureChatClient(GUISecureChatClient):
                 time.sleep(self.simulated_latency)
             
             # Compute expected counter for this outgoing message (before queuing)
-            expected_counter = None
-            if hasattr(self, "protocol") and self.protocol:
-                try:
-                    expected_counter = self.protocol.message_counter + 1
-                except Exception:
-                    expected_counter = None
+            expected_counter = self.protocol.message_counter + 1
             
             # Call the parent method to send the message
             result = super().send_message(text)
             
             # Schedule appending crypto info once encryption completes
-            if result and expected_counter and self.attach_crypto_info_to_messages and self.gui:
-                try:
-                    self.gui.root.after(50, self._append_outgoing_crypto_info, expected_counter)
-                except Exception:
-                    pass
+            if result and self.attach_crypto_info_to_messages and self.gui:
+                self.gui.root.after(50, self._append_outgoing_crypto_info, expected_counter) # type: ignore
+
             
             return result
         

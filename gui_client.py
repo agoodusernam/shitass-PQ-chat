@@ -161,7 +161,7 @@ def display_image(image: Image.Image, root):
     # Convert the (possibly resized) PIL image to a PhotoImage
     photo = ImageTk.PhotoImage(to_display_image, master=root)
     
-    label = tk.Label(window, image=photo)  # type: ignore
+    label: tk.Label = tk.Label(window, image=photo) # type: ignore
     # Keep a reference to the image to prevent it from being garbage collected
     label.image = photo
     label.pack()
@@ -170,41 +170,43 @@ def display_image(image: Image.Image, root):
 class FileTransferWindow:
     """Separate window for file transfer progress and status updates."""
     
-    def __init__(self, parent_root, theme_colors=None, theme_colours=None):
+    def __init__(self, parent_root: tk.Tk, theme_colors=None, theme_colours=None):
         # noinspection PyUnresolvedReferences
-        """Initialize the file transfer window manager.
+        """
+        Initialise the file transfer window manager.
                 
-                Args:
-                    parent_root (tk.Tk): The parent root window that this transfer window
-                        will be associated with.
-                    theme_colors (dict): Dictionary of theme colours to use.
-                        
-                Attributes:
-                    parent_root (tk.Tk): Reference to the parent window.
-                    window (tk.Toplevel): The actual transfer window (created on demand).
-                    transfers (dict): Dictionary mapping transfer IDs to transfer information.
-                    speed_label (tk.Label): Label widget displaying current transfer speed.
-                    transfer_list (scrolledtext.ScrolledText): Text widget showing transfer messages.
-                    last_update_time (float): Timestamp of last speed calculation update.
-                    last_bytes_transferred (int): Bytes transferred at last speed update.
-                    current_speed (float): Current transfer speed in bytes per second.
-                    BG_COLOR (str): Background colour for dark theme.
-                    FG_COLOR (str): Foreground text colour for dark theme.
-                    ENTRY_BG_COLOR (str): Background colour for entry widgets.
-                    BUTTON_BG_COLOR (str): Background colour for button widgets.
-                """
+        Args:
+            parent_root (tk.Tk): The parent root window that this transfer window
+                will be associated with.
+            theme_colors (dict): Dictionary of theme colours to use.
+            
+        Attributes:
+            parent_root (tk.Tk): Reference to the parent window.
+            window (tk.Toplevel): The actual transfer window (created on demand).
+            transfers (dict): Dictionary mapping transfers IDs to transfer information.
+            speed_label (tk.Label): Label widget displaying the current transfer speed.
+            transfer_list (scrolledtext.ScrolledText): Text widget showing transfer messages.
+            last_update_time (float): Timestamp of the last speed calculation update.
+            last_bytes_transferred (int): Bytes transferred at last speed update.
+            current_speed (float): Current transfer speed in bytes per second.
+            BG_COLOR (str): Background colour for dark theme.
+            FG_COLOR (str): Foreground text colour for dark theme.
+            ENTRY_BG_COLOR (str): Background colour for entry widgets.
+            BUTTON_BG_COLOR (str): Background colour for button widgets.
+        """
         if theme_colours is not None:
             theme_colors = theme_colours
+        if not isinstance(theme_colors, dict):
+            theme_colors: dict[str, str] = {}
         self.parent_root = parent_root
-        self.window = None
-        self.transfers = {}
-        self.speed_label = None
-        self.transfer_list = None
+        self.window: tk.Toplevel | None = None
+        self.speed_label: tk.Label | None = None
+        self.transfer_list: scrolledtext.ScrolledText | None = None
         
         # Speed calculation variables
-        self.last_update_time = time.time()
-        self.last_bytes_transferred = 0
-        self.current_speed = 0.0
+        self.last_update_time: float = time.time()
+        self.last_bytes_transferred: int = 0
+        self.current_speed: float = 0.0
         
         # Theme colors (use provided theme or defaults)
         if theme_colors:
@@ -305,8 +307,8 @@ class FileTransferWindow:
         if self.window.state() == 'withdrawn':
             self.show_window()
     
-    def update_transfer_progress(self, /, filename: str, current: int, total: int, bytes_transferred: int=None,
-                                 comp_text: str=None):
+    def update_transfer_progress(self, /, filename: str, current: int, total: int, bytes_transferred: int = -1,
+                                 comp_text: str = ""):
         """
         Update the progress of a file transfer.
         :param filename: The name of the file being transferred.
@@ -320,11 +322,11 @@ class FileTransferWindow:
         progress = (current / total) * 100 if total > 0 else 0
         
         # Calculate speed if bytes_transferred is provided
-        if bytes_transferred is not None:
+        if bytes_transferred != -1:
             self.update_speed(bytes_transferred)
         
         # Include compression status if provided
-        compression_info = f" ({comp_text})" if comp_text else ""
+        compression_info = f" ({comp_text})" if comp_text != "" else ""
         message = f"{filename}: {progress:.1f}% ({current}/{total} chunks){compression_info}"
         self.add_transfer_message(message)
     
@@ -357,7 +359,18 @@ class FileTransferWindow:
 
 # noinspection PyBroadException
 class ChatGUI:
-    def __init__(self, root):
+    """
+    Graphical User Interface for a secure chat client.
+
+    This class defines a Tkinter-based GUI for a secure chat client, offering
+    functionality for managing chat connections, configuring settings, sending
+    notifications, and interacting with various components such as spellchecking
+    and file transfers. It provides features like ephemeral messages, theme-based
+    design, voice calling (if supported), and system notifications, enhancing the
+    user experience.
+    
+    """
+    def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Secure Chat Client")
         self.root.geometry("950x600")
@@ -382,11 +395,11 @@ class ChatGUI:
         
         # Ephemeral mode state
         # Modes: "OFF", "LOCAL", "GLOBAL"
-        self.ephemeral_mode = "OFF"
-        self.ephemeral_global_owner_id = None
-        self.local_client_id = str(uuid.uuid4())
-        self.ephemeral_messages = {}  # Track messages with timestamps for removal
-        self.message_counter = 0
+        self.ephemeral_mode: str = "OFF"
+        self.ephemeral_global_owner_id: str = ""
+        self.local_client_id: str = str(uuid.uuid4())
+        self.ephemeral_messages: dict[str, float] = {}  # Track messages with timestamps for removal
+        self.message_counter: int = 0
         
         # Delivery confirmation tracking
         self.sent_messages = {}  # Track sent messages: {message_counter: tag_id}
@@ -407,10 +420,10 @@ class ChatGUI:
         self.file_transfer_window = FileTransferWindow(self.root, self.theme_colors)
         
         # Spellcheck functionality
-        self.spell_checker = SpellChecker()
-        self.spellcheck_timer = None
-        self.spellcheck_enabled = True
-        self.misspelled_tags = set()
+        self.spell_checker: SpellChecker | None = SpellChecker() if SpellChecker is not None else None
+        self.spellcheck_timer: str = ""
+        self.spellcheck_enabled: bool = SPELLCHECKER_AVAILABLE
+        self.misspelled_tags: set[str] = set()
         
         # Create GUI elements
         self.create_widgets()
@@ -421,14 +434,14 @@ class ChatGUI:
         # Handle window closing
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
     
-    def on_tk_thread(self, func: Callable[[P], Any], /, *args: P.args, **kwargs: P.kwargs) -> None:
+    def on_tk_thread(self, func: Callable[P, Any], /, *args: P.args, **kwargs: P.kwargs) -> None:
         """Run a function on the Tkinter main thread."""
-        self.root.after(0, lambda: func(*args, **kwargs))
+        self.root.after(0, lambda: func(*args, **kwargs)) # type: ignore
         return None
     
     def no_types_tk_thread(self, func: Callable, /, *args, **kwargs) -> None:
         """Run a function on the Tkinter main thread (no type checking)."""
-        self.root.after(0, lambda: func(*args, **kwargs))
+        self.root.after(0, lambda: func(*args, **kwargs)) # type: ignore
         return None
     
     def setup_focus_tracking(self):
@@ -719,7 +732,10 @@ class ChatGUI:
         self.on_tk_thread(self._append_to_chat, text, is_message, show_time)
     
     def _append_to_chat(self, text, is_message=False, show_time=True):
-        """Append text to the chat display."""
+        """
+        Append text to the chat display.
+        Must be run on the Tkinter thread.
+        """
         text = str(text)
         self.chat_display.config(state=ltk.NORMAL)
         formatted_time = time.strftime("%H:%M:%S")
@@ -753,7 +769,7 @@ class ChatGUI:
         self.chat_display.see(tk.END)
         self.chat_display.config(state=ltk.DISABLED)
     
-    def append_to_chat_with_delivery_status(self, text, message_counter=None, is_message=False):
+    def append_to_chat_with_delivery_status(self, text: str, message_counter: int):
         """Append text to chat display with delivery status tracking for sent messages."""
         self.chat_display.config(state=ltk.NORMAL)
         formatted_time = time.strftime("%H:%M:%S")
@@ -787,11 +803,11 @@ class ChatGUI:
             self.chat_display.tag_add(tag_id, start_index, end_index)
             
             # Handle ephemeral mode for sent messages
-            if (self.ephemeral_mode in ("LOCAL", "GLOBAL")) and is_message:
+            if (self.ephemeral_mode in ("LOCAL", "GLOBAL")):
                 self.ephemeral_messages[tag_id] = time.time()
         
         # Play notification sound and show Windows notification if this is a message from another user
-        if is_message and text.startswith("Other user:"):
+        if text.startswith("Other user:"):
             self.play_notification_sound()
             self.show_windows_notification(text)
         
@@ -1303,9 +1319,7 @@ class ChatGUI:
         # Prevent the default newline insertion on Return key press
         if event and event.keysym == "Return":
             # Allow Shift+Return to insert a newline for multi-line messages in the future
-            if not event.state & 0x0001:  # Check if Shift key is not pressed
-                pass
-            else:
+            if event.state & 0x0001:  # Check if Shift key is not pressed
                 return None  # Do not send, allow newline
         
         if not self.connected or not self.client:
@@ -1340,8 +1354,7 @@ class ChatGUI:
             self.append_to_chat("/verify - Show the key verification instructions")
             self.append_to_chat("/y or /yes - Confirm key verification or accept file transfer")
             self.append_to_chat("/n or /no - Deny key verification or reject file transfer")
-            self.append_to_chat(
-                    "/rekey - Generate a new key pair and restart key exchange (requires prior verification)")
+            self.append_to_chat("/rekey - Generate a new key pair and restart key exchange (requires prior verification)")
             self.append_to_chat("/quit - Disconnect and exit the application")
             self.message_entry.delete("1.0", tk.END)
             return "break"
@@ -1402,7 +1415,7 @@ class ChatGUI:
             self.message_entry.delete("1.0", tk.END)
             return "break"
         
-        if message.lower().strip().startswith('/nick ') or message.lower().strip().startswith('/nickname '):
+        if message.lower().strip().startswith('/nick '):
             new_nick = message[6:].strip()
             if new_nick:
                 self.client.protocol.queue_message(("encrypt_json", {
@@ -1423,7 +1436,7 @@ class ChatGUI:
         # Send the message
         try:
             # Get the message counter before sending (it will be incremented during send)
-            if self.client.protocol:
+            if self.client:
                 next_message_counter = self.client.protocol.message_counter + 1
             else:
                 next_message_counter = None
@@ -1436,7 +1449,7 @@ class ChatGUI:
                     display_text = f"You (unverified): {message}"
                 
                 # Add the message with delivery tracking
-                self.append_to_chat_with_delivery_status(display_text, next_message_counter, is_message=True)
+                self.append_to_chat_with_delivery_status(display_text, next_message_counter)
             else:
                 self.append_to_chat("Failed to send message")
         
@@ -1477,7 +1490,7 @@ class ChatGUI:
         except Exception as e:
             self.append_to_chat(f"File send error: {e}")
     
-    def on_key_press(self, event):
+    def on_key_press(self, *_):
         """Handle key press events in message entry."""
         # Allow normal typing when connected
         # Note: Control+Q is handled at the window level, not here
@@ -1507,11 +1520,13 @@ class ChatGUI:
             self._append_to_chat(f"Error handling paste: {e}")
             return "break"  # Prevent default paste behavior on error
     
-    def handle_clipboard_image(self, image: Image.Image):
+    def handle_clipboard_image(self, image: Image.Image) -> None:
         """
         Handle pasted clipboard image by saving to temp file and sending.
         Must be run from the main Tkinter thread.
         """
+        if self.client is None:
+            return
         try:
             
             # Create a temporary file with a unique name
@@ -1542,26 +1557,26 @@ class ChatGUI:
                     if os.path.exists(temp_path):
                         os.remove(temp_path)
                 except Exception:
-                    pass  # Ignore cleanup errors
+                    pass  # Ignore cleanup errors, it's only a temp file anyway
         
         except Exception as e:
             self._append_to_chat(f"Error handling clipboard image: {e}")
     
-    def on_text_change(self, event=None):
+    def on_text_change(self, *_):
         """Handle text changes in message entry for spellcheck."""
-        if not self.spellcheck_enabled:
+        if not SPELLCHECKER_AVAILABLE:
             return
         
         # Cancel existing timer if any
         if self.spellcheck_timer:
             self.root.after_cancel(self.spellcheck_timer)
         
-        # Start new timer for 500ms delay
-        self.spellcheck_timer = self.root.after(400, self.perform_spellcheck)
+        # Start new timer for 400 ms delay
+        self.spellcheck_timer = self.root.after(400, self.perform_spellcheck) # type: ignore
     
     def perform_spellcheck(self):
         """Perform spellcheck on the message entry text."""
-        if not self.spellcheck_enabled:
+        if not SPELLCHECKER_AVAILABLE:
             return
         
         try:
@@ -1615,7 +1630,7 @@ class ChatGUI:
     
     def show_spellcheck_menu(self, event):
         """Show context menu with spelling suggestions on right-click."""
-        if not self.spellcheck_enabled:
+        if not SPELLCHECKER_AVAILABLE:
             return
         
         try:
@@ -1623,13 +1638,13 @@ class ChatGUI:
             click_pos = self.message_entry.index(f"@{event.x},{event.y}")
             
             # Get the entire line of text
-            line_start = self.message_entry.index(f"{click_pos} linestart")
-            line_end = self.message_entry.index(f"{click_pos} lineend")
-            line_text = self.message_entry.get(line_start, line_end)
+            line_start: str = self.message_entry.index(f"{click_pos} linestart")
+            line_end: str = self.message_entry.index(f"{click_pos} lineend")
+            line_text: str = self.message_entry.get(line_start, line_end)
             
             # Find the word at the click position using regex
-            click_col = int(click_pos.split('.')[1])
-            word_match = None
+            click_col: int = int(click_pos.split('.')[1])
+            word_match: re.Match[str] | None = None
             for match in re.finditer(r'\b[a-zA-Z]+\b', line_text):
                 if match.start() <= click_col < match.end():
                     word_match = match
@@ -1638,21 +1653,23 @@ class ChatGUI:
             if not word_match:
                 return
             
-            word = word_match.group(0)
-            word_start = f"{line_start}+{word_match.start()}c"
-            word_end = f"{line_start}+{word_match.end()}c"
+            word: str = word_match.group(0)
+            word_start: str = f"{line_start}+{word_match.start()}c"
+            word_end: str = f"{line_start}+{word_match.end()}c"
             
             if not word or word not in self.spell_checker.unknown([word]):
                 return  # Word is correctly spelled or empty
             
             # Create context menu
-            context_menu = tk.Menu(self.root, tearoff=0)
+            context_menu: tk.Menu = tk.Menu(self.root, tearoff=0)
             
             # Get suggestions
-            suggestions = list(self.spell_checker.candidates(word))[:5]  # Limit to 5 suggestions
+            suggestions: list[str | None] = list(self.spell_checker.candidates(word))[:5]  # Limit to 5 suggestions
             
             if suggestions:
                 for suggestion in suggestions:
+                    if suggestion is None:
+                        continue
                     context_menu.add_command(
                             label=suggestion,
                             command=lambda s=suggestion, start=word_start, end=word_end: self.replace_word(start, end,
@@ -1673,7 +1690,7 @@ class ChatGUI:
             # Silently ignore menu errors
             pass
     
-    def replace_word(self, start_pos, end_pos, replacement):
+    def replace_word(self, start_pos: str, end_pos: str, replacement: str):
         """Replace a word with the selected suggestion."""
         try:
             self.message_entry.delete(start_pos, end_pos)
@@ -1712,7 +1729,7 @@ class ChatGUI:
     def on_closing(self):
         """Handle window closing."""
         if self.connected:
-            self.disconnect_from_server()
+            self.client.disconnect()
         self.root.destroy()
     
     def start_ephemeral_cleanup(self):
@@ -2252,7 +2269,7 @@ class GUISecureChatClient(SecureChatClient):
             def set_off_from_owner():
                 # Switch OFF only when performed by the recorded owner
                 self.gui.ephemeral_mode = "OFF"
-                self.gui.ephemeral_global_owner_id = None
+                self.gui.ephemeral_global_owner_id = ""
                 self.gui.ephemeral_mode_var.set("OFF")
                 self.gui.append_to_chat("Peer disabled GLOBAL ephemeral mode.")
                 # Remove existing ephemeral messages locally
@@ -2262,7 +2279,7 @@ class GUISecureChatClient(SecureChatClient):
                 self.gui.update_ephemeral_ui()
             
             if mode == "GLOBAL":
-                self.gui.root.after(0, set_global)
+                self.gui.on_tk_thread(set_global)
             elif mode == "OFF":
                 # Only honour OFF from the owner who enabled GLOBAL
                 if self.gui.ephemeral_mode == "GLOBAL" and self.gui.ephemeral_global_owner_id == owner_id:
@@ -2283,7 +2300,7 @@ class GUISecureChatClient(SecureChatClient):
             self.gui.append_to_chat("Connection will be terminated immediately.")
             
             # Show popup notification
-            self.gui.root.after(0, messagebox.showwarning,
+            self.gui.on_tk_thread(messagebox.showwarning,
                                 "Emergency Close Activated",
                                 "The other client has activated emergency close.\nThe connection will be terminated immediately."
                                 )
@@ -2738,7 +2755,6 @@ def main():
     
     # Create GUI
     gui: ChatGUI = ChatGUI(root)
-    assert gui  # Remove the unused variable warning
     
     # Start the GUI
     root.mainloop()
