@@ -61,7 +61,7 @@ WORDLIST_FILE: Final[str] = "wordlist.txt"
 VOICE_RATE: Final[int] = 44100  # Sampling rate in Hz
 VOICE_CHANNELS: Final[int] = 1
 VOICE_CHUNK: Final[int] = int(VOICE_RATE * (1 / VOICE_SEND_FREQUENCY))
-VOICE_FORMAT: Final[int] = 2
+VOICE_FORMAT: Final[int] = 8
 """
 unsigned 8-bit integer: 32
 8-bit integer: 16
@@ -69,7 +69,7 @@ unsigned 8-bit integer: 32
 24-bit integer: 4
 32-bit integer: 2
 32-bit float: 1
-Default: 2 (32-bit integer)
+Default: 8 (16-bit integer)
 See pyaudio documentation for more details.
 """
 

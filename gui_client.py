@@ -1101,11 +1101,8 @@ class ChatGUI:
             return
         
         self.voice_call_btn.config(state=ltk.DISABLED)
-        
-        VOICE_SAMPLE_RATE = 44100
-        CHUNK = int(VOICE_SAMPLE_RATE * 0.01)
-        FORMAT = pyaudio.paInt32
-        self.client.request_voice_call(rate=44100, chunk_size=CHUNK, audio_format=FORMAT)
+        self.client.request_voice_call(rate=configs.VOICE_RATE, chunk_size=configs.VOICE_CHUNK,
+                                       audio_format=configs.VOICE_FORMAT)
     
     def connect_to_server(self):
         if self.connected:
@@ -1982,6 +1979,8 @@ class GUISecureChatClient(SecureChatClient):
         self.verification_pending: bool = False
         # Initialize file transfer state
         self.pending_file_requests: dict[Any, Any] = {}
+        # Voice call negotiation state
+        self._pending_voice_init: dict[str, int] | None = None
     
     def connect(self) -> bool:
         # Call base connect (starts receive thread)
@@ -2040,16 +2039,25 @@ class GUISecureChatClient(SecureChatClient):
     def handle_voice_call_init(self, message_data: str) -> None:
         """
         Handle incoming voice call request.
-        Prompt the user to accept or reject the call (unless disabled in settings).
+        Store peer params and prompt the user to accept or reject the call (unless disabled).
         GUI exclusive feature
         """
         try:
+            # Parse and store initiator's params for negotiation
+            try:
+                init_msg = json.loads(message_data)
+                self._pending_voice_init = {
+                    "rate": int(init_msg.get("rate", 44100)),
+                    "chunk_size": int(init_msg.get("chunk_size", int(init_msg.get("rate", 44100) * 0.01))),
+                    "audio_format": int(init_msg.get("audio_format", configs.VOICE_FORMAT)),
+                }
+            except Exception:
+                # If parsing fails, clear any previous state
+                self._pending_voice_init = None
+            
             # Auto-reject if voice calls are disabled in settings
             if not self.gui.allow_voice_calls:
-                try:
-                    self.protocol.queue_message(("encrypt_json", {"type": MessageType.VOICE_CALL_REJECT}))
-                except Exception:
-                    pass
+                self.protocol.queue_message(("encrypt_json", {"type": MessageType.VOICE_CALL_REJECT}))
                 self.gui.append_to_chat("Auto-rejected incoming voice call (disabled in settings).")
                 return
             
@@ -2074,6 +2082,39 @@ class GUISecureChatClient(SecureChatClient):
             }))
             self.gui.append_to_chat("Rejected voice call")
     
+    @staticmethod
+    def _format_rank_map() -> dict[int, int]:
+        """Return a map from PyAudio format constant to a rank (higher is better)."""
+        try:
+            return {
+                pyaudio.paUInt8: 0,
+                pyaudio.paInt8 : 1,
+                pyaudio.paInt16: 2,
+                pyaudio.paInt24: 3,
+                pyaudio.paInt32: 4,
+            }
+        except Exception:
+            # Fallback to documented numeric constants if pyaudio symbols are not available
+            return {32: 0, 16: 1, 8: 2, 4: 3, 2: 4, 1: 5}
+    
+    @classmethod
+    def _negotiate_audio_format(cls, self_max: int, other_max: int) -> int:
+        """
+        Given this client's MAX format and the other's MAX format, return the highest
+        format both support. This is the lower of the two maxima in rank order.
+        """
+        rank = cls._format_rank_map()
+        # Default to int16 if unknown
+        default_fmt = pyaudio.paInt16
+        self_rank = rank.get(int(self_max), rank.get(default_fmt, 2))
+        other_rank = rank.get(int(other_max), rank.get(default_fmt, 2))
+        agreed_rank = min(self_rank, other_rank)
+        # Find the format constant with this rank
+        for fmt, r in rank.items():
+            if r == agreed_rank:
+                return int(fmt)
+        return default_fmt
+    
     def handle_voice_call_accept(self, message_data: str):
         """
         Handle acceptance of a voice call request.
@@ -2083,31 +2124,46 @@ class GUISecureChatClient(SecureChatClient):
         try:
             message = json.loads(message_data)
             
-            rate = int(message.get("rate", 44100))
-            chunk_size = int(message.get("chunk_size", rate * 0.01))
-            audio_format = int(message.get("audio_format", pyaudio.paInt32))
+            # Determine peer params and compute agreed format
+            local_rate = int(configs.VOICE_RATE)
+            local_chunk = int(configs.VOICE_CHUNK)
+            local_max_fmt = int(configs.VOICE_FORMAT)
+            
+            # If we have a pending init stored, we're the callee starting locally;
+            # otherwise, this is the initiator receiving the peer's accept.
+            if self._pending_voice_init:
+                peer_rate = int(self._pending_voice_init.get("rate", 44100))
+                peer_max_fmt = int(self._pending_voice_init.get("audio_format", local_max_fmt))
+            else:
+                peer_rate = int(message.get("rate", 44100))
+                peer_max_fmt = int(message.get("audio_format", local_max_fmt))
+            
+            agreed_format = self._negotiate_audio_format(local_max_fmt, peer_max_fmt)
+            
             self.protocol.send_dummy_messages = False
             self.voice_call_active = True
             
+            # Input stream uses local hardware params + agreed format
             in_p = pyaudio.PyAudio()
-            in_stream = in_p.open(rate=rate, channels=1, format=audio_format, input=True)
+            in_stream = in_p.open(rate=local_rate, channels=1, format=agreed_format, input=True)
             
+            # Output stream uses peer's params + agreed format
             out_p = pyaudio.PyAudio()
-            out_stream = out_p.open(rate=rate, channels=1, format=audio_format, output=True)
+            out_stream = out_p.open(rate=peer_rate, channels=1, format=agreed_format, output=True)
             
-            threading.Thread(target=self.send_voice_thread, args=(in_p, in_stream, chunk_size), daemon=True).start()
+            threading.Thread(target=self.send_voice_thread, args=(in_p, in_stream, local_chunk), daemon=True).start()
             threading.Thread(target=self.receive_voice_thread, args=(out_p, out_stream), daemon=True).start()
             
+            # Clear pending init after starting
+            self._pending_voice_init = None
+            
             # Switch the GUI button to 'End Call'
-            try:
-                self.gui.no_types_tk_thread(
-                        self.gui.voice_call_btn.config,
-                        text="End Call",
-                        state=ltk.NORMAL,
-                        command=self.end_call
-                )
-            except Exception:
-                pass
+            self.gui.no_types_tk_thread(
+                    self.gui.voice_call_btn.config,
+                    text="End Call",
+                    state=ltk.NORMAL,
+                    command=self.end_call
+            )
         
         except Exception as e:
             self.gui.append_to_chat(f"Error handling voice call accept: {e}")
@@ -2182,8 +2238,8 @@ class GUISecureChatClient(SecureChatClient):
             # Stop local sending/receiving
             self.voice_call_active = False
             self.protocol.send_dummy_messages = True
-            # Clear any buffered audio
-            
+            # Clear any buffered audio and pending state
+            self._pending_voice_init = None
             self.voice_data_queue.clear()
             # Notify peer
             try:
@@ -2218,6 +2274,8 @@ class GUISecureChatClient(SecureChatClient):
                 self.voice_data_queue.clear()
             except Exception:
                 pass
+            # Clear pending negotiation state
+            self._pending_voice_init = None
             # Update UI
             try:
                 self.gui.no_types_tk_thread(
@@ -2755,6 +2813,7 @@ def main():
     
     # Create GUI
     gui: ChatGUI = ChatGUI(root)
+    assert gui
     
     # Start the GUI
     root.mainloop()
