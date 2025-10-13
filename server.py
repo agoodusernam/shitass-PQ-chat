@@ -9,6 +9,7 @@ import threading
 import json
 import time
 from typing import Final, Self
+import datetime
 
 from shared import send_message, receive_message, create_error_message, \
     create_reset_message, MessageType, PROTOCOL_VERSION
@@ -59,7 +60,7 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
             client_handler.client_id = client_id
             self.clients[client_id] = client_handler
             
-            print(f"Client {client_id} connected from {client_handler.client_address}")
+            print(f"[{datetime.datetime.now().strftime(format="%d.%m.%Y, %H:%S")}] Client {client_id} connected from {client_handler.client_address}")
         
         # If we now have exactly 2 clients, start key exchange
         if len(self.clients) == 2:
@@ -262,7 +263,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                     self.server.route_message(self.client_id, message_data)
                 
                 except ConnectionError as e:
-                    print(f"Client {self.client_id} disconnected unexpectedly: {e}")
+                    print(f"[{datetime.datetime.now().strftime(format="%d.%m.%Y, %H:%S")}] Client {self.client_id} disconnected unexpectedly: {e}")
                     break
                 except (UnicodeDecodeError, json.JSONDecodeError) as e:
                     print(f"Client {self.client_id} sent undecodable message: {e}")
@@ -431,7 +432,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         control message with the reason before closing the connection.
         """
         if self.connected:
-            print("Disconnecting client", self.client_id, "Reason:", reason if reason else "No reason provided")
+            print(f"[{datetime.datetime.now().strftime(format="%d.%m.%Y, %H:%S")}] Disconnecting client", self.client_id, "Reason:", reason if reason else "No reason provided")
             self.connected = False
             
             # Attempt to notify client about server-initiated disconnect
