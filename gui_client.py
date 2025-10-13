@@ -21,14 +21,6 @@ import configs
 import shared
 
 try:
-    import winsound
-    
-    WINSOUND_AVAILABLE = True
-except ImportError:
-    WINSOUND_AVAILABLE = False
-    winsound = None
-
-try:
     from PIL import Image, ImageTk, ImageGrab
     
     PIL_AVAILABLE = True
@@ -465,18 +457,28 @@ class ChatGUI:
         if not self.notification_enabled or self.window_focused:
             return
         
+        def play_notif():
+            with wave.open(configs.MESSAGE_NOTIF_SOUND_FILE, "rb") as w:
+                p = pyaudio.PyAudio()
+                stream = p.open(format=p.get_format_from_width(w.getsampwidth()),
+                                channels=w.getnchannels(),
+                                rate=w.getframerate(),
+                                output=True)
+                
+                while len(data := w.readframes(1024)):
+                    stream.write(data)
+                
+                stream.close()
+                p.terminate()
+                
         try:
-            if os.path.exists(configs.MESSAGE_NOTIF_SOUND_FILE) and WINSOUND_AVAILABLE and winsound:
-                threading.Thread(
-                        target=winsound.PlaySound,
-                        args=(configs.MESSAGE_NOTIF_SOUND_FILE, winsound.SND_FILENAME),
-                        daemon=True
-                ).start()
+            if os.path.exists(configs.MESSAGE_NOTIF_SOUND_FILE) and PYAUDIO_AVAILABLE:
+                threading.Thread(target=play_notif, daemon=True).start()
         except (FileNotFoundError, OSError) as e:
             # Non-critical: sound file missing or device error
             pass
         except Exception:
-            # Unexpected winsound failure is ignored to avoid disrupting UX
+            # Unexpected PyAudio failure is ignored to avoid disrupting UX
             pass
     
     def show_windows_notification(self, message_text: str):
