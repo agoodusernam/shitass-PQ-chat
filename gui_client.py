@@ -67,7 +67,7 @@ except ImportError:
     pyaudio = None
 
 from client import SecureChatClient
-from shared import bytes_to_human_readable, send_message, MessageType
+from shared import bytes_to_human_readable, MessageType
 
 P = ParamSpec('P')
 
@@ -300,7 +300,7 @@ class FileTransferWindow:
             self.show_window()
     
     def update_transfer_progress(self, /, filename: str, current: int, total: int, bytes_transferred: int = -1,
-                                 comp_text: str = ""):
+                                 comp_text: str = "") -> None:
         """
         Update the progress of a file transfer.
         :param filename: The name of the file being transferred.
@@ -308,9 +308,8 @@ class FileTransferWindow:
         :param total: The total number of chunks.
         :param bytes_transferred: Total bytes transferred so far (for speed calculation).
         :param comp_text: Optional compression status text. (e.g., "compressed", "uncompressed")
-        :return:
+        :returns: None
         """
-        """Update progress for a specific transfer."""
         progress = (current / total) * 100 if total > 0 else 0
         
         # Calculate speed if bytes_transferred is provided
@@ -567,6 +566,16 @@ class ChatGUI:
             )
             
             self.voice_call_btn.pack(side=ltk.LEFT, padx=(10, 0))
+
+            # Mute button (only visible during active calls)
+            self.mute_btn = tk.Button(
+                    conn_frame, text="Mute", command=self.toggle_mute,
+                    bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT,
+                    activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
+                    font=("Consolas", 10)
+            )
+            # Initially hidden; will be packed when a call is active
+            # Do not pack here
         
         # Status indicator (top right)
         self.status_label = tk.Label(
@@ -681,19 +690,19 @@ class ChatGUI:
     def handle_drop(self, event):
         """Handle file drop events."""
         if not TKINTERDND2_AVAILABLE:
-            self.append_to_chat("Drag-and-drop support is not available.")
+            self.client.display_system_message("Drag-and-drop support is not available.")
             return
         if not self.connected or not self.client:
             return
         
         if not self.client.verification_complete:
-            self.append_to_chat("Cannot send files - verification not complete")
+            self.client.display_system_message("Cannot send files - verification not complete")
             return
         
         # The event.data attribute contains a string of file paths
         # It can be a single path or multiple paths separated by spaces
         # File paths with spaces are enclosed in curly braces {}
-        file_paths_str = event.data
+        file_paths_str = str(event.data)
         
         # Simple parsing for now, assuming single file drop
         # A more robust parser would be needed for multiple files with spaces
@@ -704,7 +713,7 @@ class ChatGUI:
         if os.path.exists(file_path):
             self.confirm_and_send_file(file_path, compress=True)  # Default to compressed for drag-and-drop
     
-    def confirm_and_send_file(self, file_path, compress=True):
+    def confirm_and_send_file(self, file_path: str, compress=True):
         """Ask for confirmation and then send the file."""
         try:
             file_size = os.path.getsize(file_path)
@@ -717,23 +726,23 @@ class ChatGUI:
             )
             
             if result:
-                self.append_to_chat(f"Sending file: {file_name} ({compression_text})")
+                self.client.display_system_message(f"Sending file: {file_name} ({compression_text})")
                 self.client.send_file(file_path, compress=compress)
         except (FileNotFoundError, PermissionError) as e:
-            self.append_to_chat(f"File send error (file access): {e}")
+            self.client.display_error_message(f"File send error (file access): {e}")
         except (OSError, ValueError) as e:
-            self.append_to_chat(f"File send error (I/O): {e}")
+            self.client.display_error_message(f"File send error (I/O): {e}")
         except Exception as e:
-            self.append_to_chat(f"File send error (unexpected): {e}")
+            self.client.display_error_message(f"File send error (unexpected): {e}")
     
-    def append_to_chat(self, text, is_message=False, show_time=True):
+    def append_to_chat(self, text: str, is_message: bool = False, show_time: bool = True):
         """
         Append text to the chat display.
         Automatically runs on the Tkinter thread.
         """
         self.on_tk_thread(self._append_to_chat, text, is_message, show_time)
     
-    def _append_to_chat(self, text, is_message=False, show_time=True):
+    def _append_to_chat(self, text: str, is_message: bool = False, show_time: bool = True):
         """
         Append text to the chat display.
         Must be run on the Tkinter thread.
@@ -763,7 +772,7 @@ class ChatGUI:
             else:
                 self.chat_display.insert(tk.END, f"{text}\n")
         
-        # Play notification sound and show Windows notification if this is a message from another user
+        # Play notification sound and show notification if this is a message from another user
         if is_message and text.startswith("Other user:"):
             self.play_notification_sound()
             self.show_windows_notification(text)
@@ -1060,7 +1069,7 @@ class ChatGUI:
                 if self.client:
                     self.client.peer_nickname = new_nick
                 
-                self.append_to_chat(f"[SYSTEM] Peer nickname set to: {new_nick}", is_message=False, show_time=False)
+                self.client.display_system_message(f"Peer nickname set to: {new_nick}")
             except Exception:
                 try:
                     messagebox.showerror("Error", "Failed to set peer nickname")
@@ -1105,6 +1114,29 @@ class ChatGUI:
         self.voice_call_btn.config(state=ltk.DISABLED)
         self.client.request_voice_call(rate=configs.VOICE_RATE, chunk_size=configs.VOICE_CHUNK,
                                        audio_format=configs.VOICE_FORMAT)
+    
+    def toggle_mute(self):
+        """Toggle local microphone mute during an active voice call."""
+        if not self.client or not self.client.voice_call_active:
+            return
+        self.client.voice_muted = not self.client.voice_muted
+        new_text = "Unmute" if self.client.voice_muted else "Mute"
+        self.mute_btn.config(text=new_text)
+    
+    def show_mute_button(self):
+        """Show the mute button (used when a voice call becomes active)."""
+        if not hasattr(self, "mute_btn"):
+            return
+        btn_text = "Unmute" if (self.client and self.client.voice_muted) else "Mute"
+        self.mute_btn.config(text=btn_text, state=ltk.NORMAL)
+        self.mute_btn.pack(side=ltk.LEFT, padx=(10, 0))
+        
+    def hide_mute_button(self):
+        """Hide the mute button and reset its label to default (used when a voice call ends)."""
+        if not hasattr(self, "mute_btn"):
+            return
+        self.mute_btn.pack_forget()
+        self.mute_btn.config(text="Mute")
     
     def connect_to_server(self):
         if self.connected:
@@ -1157,6 +1189,8 @@ class ChatGUI:
         except Exception:
             pass
         self.file_transfer_btn.config(state=ltk.DISABLED)
+        # Ensure mute button is hidden on disconnect
+        self.hide_mute_button()
         self.append_to_chat("Disconnected from server.")
         self.update_status("Not Connected")
     
@@ -1983,6 +2017,7 @@ class GUISecureChatClient(SecureChatClient):
         self.pending_file_requests: dict[Any, Any] = {}
         # Voice call negotiation state
         self._pending_voice_init: dict[str, int] | None = None
+        self.voice_muted: bool = False
     
     def connect(self) -> bool:
         # Call base connect (starts receive thread)
@@ -2007,9 +2042,9 @@ class GUISecureChatClient(SecureChatClient):
                 image = Image.open(file_path)
                 self.gui.root.after(0, display_image, image, self.gui.root)
         except Exception as e:
-            self.gui.append_to_chat(f"Error displaying received image: {e}")
+            self.display_error_message(f"Error displaying received image: {e}")
     
-    def display_regular_message(self, message: str, error=False, prefix: str = "") -> None:
+    def display_regular_message(self, message: str, error=False, prefix: str = "", system=False) -> None:
         """Display a regular chat message."""
         if error:
             self.gui.append_to_chat(f"Error: {message}")
@@ -2018,11 +2053,17 @@ class GUISecureChatClient(SecureChatClient):
         else:
             self.gui.append_to_chat(f"{self.peer_nickname}: {message}", is_message=True)
     
+    def display_error_message(self, message: str) -> None:
+        self.gui.append_to_chat(f"Error: {message}")
+    
+    def display_system_message(self, message: str) -> None:
+        self.gui.append_to_chat(f"[SYSTEM]: {message}", is_message=True, show_time=False)
+    
     def on_server_disconnect(self, reason: str) -> None:
         """Show server disconnect reason in the GUI as a system message and disconnect."""
         
         # Append as system message in chat
-        self.gui.append_to_chat(f"[SYSTEM] Server disconnected: {reason}", is_message=False, show_time=False)
+        self.display_system_message(f"Server disconnected: {reason}")
         self.gui.disconnect_from_server()
     
     def request_voice_call(self, rate: int, chunk_size: int, audio_format: int):
@@ -2144,6 +2185,7 @@ class GUISecureChatClient(SecureChatClient):
             
             self.protocol.send_dummy_messages = False
             self.voice_call_active = True
+            self.voice_muted = False
             
             # Input stream uses local hardware params + agreed format
             in_p = pyaudio.PyAudio()
@@ -2166,29 +2208,31 @@ class GUISecureChatClient(SecureChatClient):
                     state=ltk.NORMAL,
                     command=self.end_call
             )
+            # Show mute button when call becomes active
+            self.gui.on_tk_thread(self.gui.show_mute_button)
         
         except Exception as e:
-            self.gui.append_to_chat(f"Error handling voice call accept: {e}")
+            self.display_error_message(f"Error handling voice call accept: {e}")
     
     def send_voice_thread(self, p: pyaudio.PyAudio, stream: pyaudio.Stream, chunk_size: int):
         try:
             while self.voice_call_active and self.connected:
                 chunk = stream.read(chunk_size, exception_on_overflow=False)
-                self.send_voice_data(chunk)
+                if not self.voice_muted:
+                    self.send_voice_data(chunk)
             else:
                 # Clean up on exit
                 stream.close()
                 p.terminate()
         
-        
         except Exception as e:
-            self.gui.append_to_chat(f"Voice send error: {e}")
+            self.display_error_message(f"Voice send error: {e}")
         
         finally:
             try:
-                if not stream.is_stopped():
+                if not stream.is_active():
                     stream.close()
-                    p.terminate()
+                p.terminate()
             
             except Exception:
                 # Stream already closed
@@ -2207,14 +2251,15 @@ class GUISecureChatClient(SecureChatClient):
                 stream.close()
                 p.terminate()
         except Exception as e:
-            self.gui.append_to_chat(f"Voice receive error: {e}")
+            self.display_error_message(f"Voice receive error: {e}")
         
         finally:
             try:
                 if not stream.is_stopped():
                     stream.close()
-                    p.terminate()
+                p.terminate()
             except Exception:
+                # Already closed/terminated
                 pass
     
     def handle_voice_call_reject(self):
@@ -2230,7 +2275,7 @@ class GUISecureChatClient(SecureChatClient):
             # Directly enqueue the raw audio data for playback
             self.voice_data_queue.append(base64.b64decode(json.loads(decrypted_text)["audio_data"]))
         except Exception as e:
-            self.gui.append_to_chat(f"Error handling voice call data: {e}")
+            self.display_error_message(f"Error handling voice call data: {e}")
     
     def end_call(self, notify_peer: bool = True) -> None:
         """End the current voice call from this side and notify the peer."""
@@ -2244,53 +2289,45 @@ class GUISecureChatClient(SecureChatClient):
             self._pending_voice_init = None
             self.voice_data_queue.clear()
             # Notify peer
-            try:
-                if notify_peer:
-                    self.protocol.queue_message(("encrypt_json", {"type": MessageType.VOICE_CALL_END}))
-            except Exception as e:
-                self.gui.append_to_chat(f"Error notifying peer of call end: {e}")
+            if notify_peer:
+                self.protocol.queue_message(("encrypt_json", {"type": MessageType.VOICE_CALL_END}))
             # Reset UI button back to 'Voice Call'
-            try:
-                self.gui.no_types_tk_thread(
-                        self.gui.voice_call_btn.config,
-                        text="Voice Call",
-                        state=ltk.NORMAL,
-                        command=self.gui.start_call
-                )
-            except Exception:
-                pass
-            self.gui.append_to_chat("Voice call ended")
+            self.gui.no_types_tk_thread(
+                    self.gui.voice_call_btn.config,
+                    text="Voice Call",
+                    state=ltk.NORMAL,
+                    command=self.gui.start_call
+            )
+            # Hide mute button and reset mute state
+            self.voice_muted = False
+            self.gui.on_tk_thread(self.gui.hide_mute_button)
+            self.display_system_message("Voice call ended")
         except Exception as e:
-            self.gui.append_to_chat(f"Error ending call: {e}")
+            self.display_error_message(f"Error ending call: {e}")
     
     def handle_voice_call_end(self) -> None:
         """Handle incoming end-call message from the peer."""
         try:
             if self.voice_call_active:
                 self.voice_call_active = False
-            try:
-                self.protocol.send_dummy_messages = True
-            except Exception:
-                pass
-            try:
-                self.voice_data_queue.clear()
-            except Exception:
-                pass
+                
+            self.protocol.send_dummy_messages = True
+            self.voice_data_queue.clear()
             # Clear pending negotiation state
             self._pending_voice_init = None
             # Update UI
-            try:
-                self.gui.no_types_tk_thread(
-                        self.gui.voice_call_btn.config,
-                        text="Voice Call",
-                        state=ltk.NORMAL,
-                        command=self.gui.start_call
-                )
-            except Exception:
-                pass
-            self.gui.append_to_chat("Peer ended the voice call")
+            self.gui.no_types_tk_thread(
+                    self.gui.voice_call_btn.config,
+                    text="Voice Call",
+                    state=ltk.NORMAL,
+                    command=self.gui.start_call
+            )
+            # Hide mute button and reset mute state
+            self.voice_muted = False
+            self.gui.on_tk_thread(self.gui.hide_mute_button)
+            self.display_system_message("Peer ended the voice call")
         except Exception as e:
-            self.gui.append_to_chat(f"Error handling call end: {e}")
+            self.display_error_message(f"Error handling call end: {e}")
     
     def handle_delivery_confirmation(self, message_data: str) -> None:
         """Handle delivery confirmation messages from the peer - override to update GUI."""
@@ -2304,7 +2341,7 @@ class GUISecureChatClient(SecureChatClient):
                 print(f"\n✓ Message {confirmed_counter} delivered")
         
         except Exception as e:
-            self.gui.append_to_chat(f"Error handling delivery confirmation: {e}")
+            self.display_error_message(f"Error handling delivery confirmation: {e}")
     
     def handle_ephemeral_mode_change(self, decrypted_message: str) -> None:
         """Override: apply peer's ephemeral mode changes to GUI state."""
@@ -2349,15 +2386,15 @@ class GUISecureChatClient(SecureChatClient):
                             "Peer attempted to disable GLOBAL ephemeral mode but is not the owner; ignoring.")
         
         except Exception as e:
-            self.gui.append_to_chat(f"Error handling ephemeral mode change: {e}")
+            self.display_error_message(f"Error handling ephemeral mode change: {e}")
     
     def handle_emergency_close(self) -> None:
         """Handle emergency close message from the other client - override to display in GUI."""
         try:
             # Display emergency close message in GUI
-            self.gui.append_to_chat("EMERGENCY CLOSE RECEIVED")
-            self.gui.append_to_chat("The other client has activated emergency close.")
-            self.gui.append_to_chat("Connection will be terminated immediately.")
+            self.display_system_message("EMERGENCY CLOSE RECEIVED")
+            self.display_system_message("The other client has activated emergency close.")
+            self.display_system_message("Connection will be terminated immediately.")
             
             # Show popup notification
             self.gui.on_tk_thread(messagebox.showwarning,
@@ -2369,28 +2406,9 @@ class GUISecureChatClient(SecureChatClient):
             self.gui.emergency_close()
         
         except Exception as e:
-            self.gui.append_to_chat(f"Error handling emergency close: {e}")
+            self.display_error_message(f"Error handling emergency close: {e}")
             # Force disconnect
             self.gui.emergency_close()
-    
-    def handle_key_exchange_init(self, message_data: bytes):
-        """Handle key exchange initiation - override to display warnings in GUI."""
-        try:
-            _, ciphertext, version_warning = self.protocol.process_key_exchange_init(message_data)
-            
-            # Display version warning in GUI if present
-            if version_warning and self.gui:
-                self.gui.append_to_chat(f"{version_warning}")
-            elif version_warning:
-                print(f"\n{version_warning}")
-            
-            response = self.protocol.create_key_exchange_response(ciphertext)
-            
-            # Send response back through server
-            send_message(self.socket, response)
-        
-        except Exception as e:
-            self.gui.append_to_chat(f"Key exchange init error: {e}")
     
     def handle_key_exchange_response(self, message_data: bytes) -> bool:
         """Handle key exchange response - override to send to GUI. """
@@ -2433,15 +2451,15 @@ class GUISecureChatClient(SecureChatClient):
             self.active_file_metadata.clear()
             
             # Update GUI
-            self.gui.update_status("Key exchange reset - waiting for new client")
-            self.gui.append_to_chat("KEY EXCHANGE RESET")
-            self.gui.append_to_chat(f"Reason: {reset_message}")
-            self.gui.append_to_chat("The secure session has been terminated.")
-            self.gui.append_to_chat("Waiting for a new client to connect...")
-            self.gui.append_to_chat("A new key exchange will start automatically.")
+            self.display_system_message("Key exchange reset - waiting for new client")
+            self.display_system_message("KEY EXCHANGE RESET")
+            self.display_system_message(f"Reason: {reset_message}")
+            self.display_system_message("The secure session has been terminated.")
+            self.display_system_message("Waiting for a new client to connect...")
+            self.display_system_message("A new key exchange will start automatically.")
         
         except Exception as e:
-            self.gui.append_to_chat(f"Error handling key exchange reset: {e}")
+            self.display_error_message(f"Error handling key exchange reset: {e}")
     
     def handle_file_metadata(self, decrypted_message: str):
         """Handle incoming file metadata with GUI dialog."""
@@ -2450,8 +2468,7 @@ class GUISecureChatClient(SecureChatClient):
             transfer_id = metadata["transfer_id"]
             
             if not self.allow_file_transfers:
-                self.display_regular_message("Auto-rejected incoming file transfer (disabled in settings).",
-                                             prefix="[SYSTEM]")
+                self.display_system_message("Auto-rejected incoming file transfer (disabled in settings).")
                 self.protocol.queue_message(("encrypt_json", {
                     "type":        MessageType.FILE_REJECT,
                     "transfer_id": transfer_id,
@@ -2470,14 +2487,14 @@ class GUISecureChatClient(SecureChatClient):
                 self.gui.show_windows_notification(f"Incoming file transfer: {metadata['filename']}")
                 
                 # Display file transfer information in chat
-                self.gui.append_to_chat("INCOMING FILE TRANSFER")
-                self.gui.append_to_chat(f"Filename: {metadata['filename']}")
-                self.gui.append_to_chat(f"Size: {bytes_to_human_readable(metadata['file_size'])}")
-                self.gui.append_to_chat(f"Chunks: {metadata['total_chunks']}")
-                self.gui.append_to_chat("")
-                self.gui.append_to_chat("Type '/accept' or '/y' to accept the file transfer")
-                self.gui.append_to_chat("Type '/reject' or '/n' to reject the file transfer")
-                self.gui.append_to_chat("")
+                self.display_system_message("INCOMING FILE TRANSFER")
+                self.display_system_message(f"Filename: {metadata['filename']}")
+                self.display_system_message(f"Size: {bytes_to_human_readable(metadata['file_size'])}")
+                self.display_system_message(f"Chunks: {metadata['total_chunks']}")
+                self.display_regular_message("", prefix=" ")
+                self.display_system_message("Type '/accept' or '/y' to accept the file transfer")
+                self.display_system_message("Type '/reject' or '/n' to reject the file transfer")
+                self.display_regular_message("", prefix=" ")
                 
                 # Store the transfer ID for command processing
                 self.pending_file_requests[transfer_id] = metadata
@@ -2514,10 +2531,12 @@ class GUISecureChatClient(SecureChatClient):
             chunk_thread.start()
         
         except Exception as e:
-            self.gui.append_to_chat(f"Error handling file acceptance: {e}")
+            self.display_error_message(f"Error handling file acceptance: {e}")
     
     def handle_file_reject(self, decrypted_message: str):
-        """Handle file rejection from peer with GUI updates."""
+        """
+        Handle file rejection from peer with GUI updates.
+        """
         try:
             message = json.loads(decrypted_message)
             transfer_id = message["transfer_id"]
@@ -2527,11 +2546,11 @@ class GUISecureChatClient(SecureChatClient):
                 filename = self.pending_file_transfers[transfer_id]["metadata"]["filename"]
                 self.gui.on_tk_thread(self.gui.file_transfer_window.add_transfer_message,
                                       f"File transfer rejected: {filename} - {reason}")
-                self.gui.append_to_chat(f"File transfer rejected: {filename} - {reason}")
+                self.display_system_message(f"File transfer rejected: {filename} - {reason}")
                 del self.pending_file_transfers[transfer_id]
         
         except Exception as e:
-            self.gui.append_to_chat(f"Error handling file rejection: {e}")
+            self.display_error_message(f"Error handling file rejection: {e}")
     
     def handle_file_chunk_binary(self, chunk_info: dict):
         """Handle incoming file chunk (optimized binary format) with GUI progress updates."""
@@ -2704,22 +2723,22 @@ class GUISecureChatClient(SecureChatClient):
             })
             shared.send_message(self.socket, self.protocol.encrypt_message(message))
         except Exception as e:
-            self.gui.append_to_chat(f"Error sending voice data: {e}")
+            self.display_error_message(f"Error sending voice data: {e}")
     
     def handle_server_full(self) -> None:
         """Handle server full notification - override to display in GUI."""
-        self.gui.append_to_chat("Server is full. Please try again later.")
+        self.display_error_message("Server is full. Please try again later.")
         
         self.disconnect()
 
 
 def load_theme_colors() -> dict[str, str]:
     """
-    Load theme colors from theme.json file.
-    If the file doesn't exist, ask the user if they want to create it with default colors.
-    Returns a dictionary of color values.
+    Load theme colours from the theme.json file.
+    If the file doesn't exist, ask the user if they want to create it with default colours.
+    Returns a dictionary of colour values.
     """
-    # Default dark theme colors
+    # Default dark theme colours
     default_colors = {
         "BG_COLOR":                       "#2b2b2b",
         "FG_COLOR":                       "#d4d4d4",

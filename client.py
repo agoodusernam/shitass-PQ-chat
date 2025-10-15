@@ -165,9 +165,9 @@ class SecureChatClient:
                         if self.key_exchange_complete:
                             self.handle_encrypted_message(message_data)
                         else:
-                            self.display_regular_message("\nReceived encrypted message before key exchange complete", error=True)
+                            self.display_error_message("\nReceived encrypted message before key exchange complete")
                     case MessageType.ERROR:
-                        self.display_regular_message(f"{message_json.get('error', 'Unknown error')}", error=True)
+                        self.display_error_message(f"{message_json.get('error', 'Unknown error')}")
                     case MessageType.KEY_VERIFICATION:
                         self.handle_key_verification_message(message_data)
                     case MessageType.KEY_EXCHANGE_RESET:
@@ -289,7 +289,7 @@ class SecureChatClient:
             
             # Display version warning if present
             if version_warning:
-                print(f"\n{version_warning}")
+                self.display_system_message(f"{version_warning}")
             
             response = self.protocol.create_key_exchange_response(ciphertext)
             
@@ -297,7 +297,7 @@ class SecureChatClient:
             send_message(self.socket, response)
         
         except Exception as e:
-            print(f"Key exchange init error: {e}")
+            self.display_regular_message(f"Key exchange init error: {e}", error=True)
     
     def handle_key_exchange_response(self, message_data: bytes) -> bool:
         """Handle key exchange response from another client."""
@@ -309,15 +309,14 @@ class SecureChatClient:
                 if version_warning:
                     self.display_regular_message(f"{version_warning}")
                     
-                self.display_regular_message("Key exchange completed successfully.", prefix="[SYSTEM]")
+                self.display_system_message("Key exchange completed successfully.")
                 return True
             else:
-                self.display_regular_message("Received key exchange response but no private key found",
-                                             prefix="[SYSTEM]")
+                self.display_system_message("Received key exchange response but no private key found")
                 return False
         
         except Exception as e:
-            self.display_regular_message(f"Key exchange response error: {e}", error=True)
+            self.display_error_message(f"Key exchange response error: {e}")
             return False
     
     def handle_key_exchange_complete(self) -> None:
@@ -340,7 +339,7 @@ class SecureChatClient:
             print("   secure channel (phone call, in-person, secure messaging)")
             print("2. Both users should see the SAME fingerprint")
             print("3. Only confirm if you both see identical fingerprints!")
-            print("4. If the fingerprints don't match, there may be a security issue")
+            print("4. If the fingerprints don't match, there may be a Man-in-the-Middle attack.")
             
             # Prompt for verification
             while True:
@@ -407,14 +406,24 @@ class SecureChatClient:
         except Exception as e:
             display_regular_message(f"Error handling verification message: {e}", error=True)
     
-    def display_regular_message(self, message: str, error=False, prefix: str = "") -> None:
+    def display_regular_message(self, message: str, error=False, prefix: str = "", system=False) -> None:
         """Display a regular chat message."""
         if error:
             print(f"\nError: {message}")
         elif prefix != "":
             print(f"\n{prefix}: {message}")
+        elif system:
+            print(f"\n[SYSTEM]: {message}")
         else:
             print(f"\n{self.peer_nickname}: {message}")
+    
+    def display_error_message(self, message: str) -> None:
+        print(f"\nError: {message}")
+        
+    def display_system_message(self, message: str) -> None:
+        """Display a system message."""
+        print(f"\n[SYSTEM]: {message}")
+    
     
     def handle_encrypted_message(self, message_data: bytes) -> None:
         """Handle encrypted chat messages."""
@@ -724,7 +733,7 @@ class SecureChatClient:
             inner = json.loads(decrypted_text)
             action = inner.get("action")
             if action == "init":
-                self.display_regular_message("Rekey initiated by peer.", prefix="[SYSTEM]")
+                self.display_system_message("Rekey initiated by peer.")
                 response = self.protocol.process_rekey_init(inner)
                 # Send response under old key
                 self.protocol.queue_message(("encrypt_json", response))
@@ -733,22 +742,16 @@ class SecureChatClient:
                 # Send commit under old key; do not switch yet (wait for ack)
                 self.protocol.queue_message(("encrypt_json", commit))
             elif action == "commit":
-                print("Processing rekey commit...")
                 ack = self.protocol.process_rekey_commit(inner)
                 # Send ack under old key, then switch to new keys
                 self.protocol.queue_message(("encrypt_json_then_switch", ack))
-                self.display_regular_message("Rekey completed successfully.", prefix="[SYSTEM]")
-                self.display_regular_message("You are now using fresh encryption keys.",
-                                             prefix="[SYSTEM]")
+                self.display_system_message("Rekey completed successfully.")
+                self.display_system_message("You are now using fresh encryption keys.")
             elif action == "commit_ack":
                 # Initiator: switch to new keys upon receiving ack
-                try:
-                    self.protocol.activate_pending_keys()
-                    self.display_regular_message("Rekey completed successfully.", prefix="[SYSTEM]")
-                    self.display_regular_message("You are now using fresh encryption keys.",
-                                                 prefix="[SYSTEM]")
-                except Exception as _:
-                    pass
+                self.protocol.activate_pending_keys()
+                self.display_system_message("Rekey completed successfully.")
+                self.display_system_message("You are now using fresh encryption keys.")                          
             else:
                 self.display_regular_message("Received unknown rekey action", error=True)
         except Exception as rekey_err:
@@ -778,14 +781,14 @@ class SecureChatClient:
         """Handle incoming nickname change from peer."""
         try:
             if not self.nickname_change_allowed:
-                self.display_regular_message("Peer attempted to change nickname", prefix="[SYSTEM]")
+                self.display_system_message("Peer attempted to change nickname")
                 return
             message = json.loads(decrypted_text)
             self.peer_nickname = message.get("nickname", "Other User")
-            self.display_regular_message(f"Peer changed nickname to: {self.peer_nickname}", prefix="[SYSTEM]")
+            self.display_system_message(f"Peer changed nickname to: {self.peer_nickname}")
         
         except Exception as e:
-            print(f"Error handling nickname change: {e}")
+            self.display_error_message(f"Error handling nickname change: {e}")
     
     def handle_file_chunk_binary(self, chunk_info: dict) -> None:
         """Handle incoming file chunk (optimized binary format)."""

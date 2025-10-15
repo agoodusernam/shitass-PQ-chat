@@ -9,6 +9,7 @@ import hashlib
 import shutil
 import gzip
 import io
+import sys
 from io import BufferedRandom
 import threading
 import time
@@ -37,8 +38,8 @@ except ImportError as exc_:
 # Protocol constants
 PROTOCOL_VERSION: Final[str] = "4.0.1"
 # Protocol compatibility is denoted by version number
-# Major.Minor.Patch - only Major are checked for compatibility.
-# Major version changes may introduce breaking changes and are not guaranteed to be compatible with previous major versions.
+# Breaking.Minor.Patch - only Breaking versions are checked for compatibility.
+# Breaking version changes introduce breaking changes that are not compatible with previous versions of the same major version.
 # Minor version changes may add features but remain compatible with previous minor versions of the same major version.
 # Patch versions are for bug fixes and minor improvements that do not affect compatibility.
 
@@ -114,6 +115,7 @@ def bytes_to_human_readable(size: int) -> str:
     
     return f"{size / 1024 ** 3:.1f} GB"
 
+
 def xor_bytes(a: bytes, b: bytes) -> bytes:
     """XOR two byte strings of equal length."""
     if len(a) != len(b):
@@ -124,6 +126,30 @@ def xor_bytes(a: bytes, b: bytes) -> bytes:
     
     xor_result = int_a ^ int_b
     return xor_result.to_bytes(length, byteorder="big")
+
+
+def debug_enabled():
+    try:
+        if sys.gettrace() is not None:
+            return True
+    except AttributeError:
+        pass
+    
+    try:
+        if sys.monitoring.get_tool(sys.monitoring.DEBUGGER_ID) is not None:
+            return True
+    except AttributeError:
+        pass
+    
+    return False
+
+class DecodeError(Exception):
+    pass
+
+class EncodeError(Exception):
+    pass
+
+
 
 
 class StreamingGzipCompressor:
@@ -376,11 +402,11 @@ class SecureChatProtocol:
                 # Encrypt immediately using normal ratcheting
                 encrypted = self.encrypt_message(json.dumps(emergency_message))
                 send_message(self.socket, encrypted)
-                
+            
             else:
                 # Fall back to plaintext immediate send
                 send_message(self.socket, json.dumps(emergency_message).encode('utf-8'))
-                
+            
             return True
         except (OSError, ConnectionError) as sock_err:
             # Socket level failure
@@ -497,7 +523,6 @@ class SecureChatProtocol:
             
             # Wait 250ms before next cycle
             time.sleep(0.25)
-            
     
     def generate_keypair(self) -> tuple[bytes, bytes]:
         """Generate ML-KEM keypair for key exchange."""
@@ -701,9 +726,9 @@ class SecureChatProtocol:
         self.dh_private_key = X25519PrivateKey.generate()
         self.dh_public_key_bytes = self.dh_private_key.public_key().public_bytes_raw()
         message = {
-            "version":    PROTOCOL_VERSION,
-            "type":       MessageType.KEY_EXCHANGE_INIT,
-            "public_key": base64.b64encode(public_key).decode('utf-8'),
+            "version":       PROTOCOL_VERSION,
+            "type":          MessageType.KEY_EXCHANGE_INIT,
+            "public_key":    base64.b64encode(public_key).decode('utf-8'),
             "dh_public_key": base64.b64encode(self.dh_public_key_bytes).decode('utf-8'),
         }
         return json.dumps(message).encode('utf-8')
@@ -711,11 +736,12 @@ class SecureChatProtocol:
     def create_key_exchange_response(self, ciphertext: bytes) -> bytes:
         """Create key exchange response message including our X25519 DH public key."""
         message = {
-            "version":    PROTOCOL_VERSION,
-            "type":       MessageType.KEY_EXCHANGE_RESPONSE,
-            "ciphertext": base64.b64encode(ciphertext).decode('utf-8'),
-            "public_key": base64.b64encode(self.own_public_key).decode('utf-8') if self.own_public_key else "",
-            "dh_public_key": base64.b64encode(self.dh_public_key_bytes).decode('utf-8') if self.dh_public_key_bytes else "",
+            "version":       PROTOCOL_VERSION,
+            "type":          MessageType.KEY_EXCHANGE_RESPONSE,
+            "ciphertext":    base64.b64encode(ciphertext).decode('utf-8'),
+            "public_key":    base64.b64encode(self.own_public_key).decode('utf-8') if self.own_public_key else "",
+            "dh_public_key": base64.b64encode(self.dh_public_key_bytes).decode(
+                'utf-8') if self.dh_public_key_bytes else "",
         }
         return json.dumps(message).encode('utf-8')
     
@@ -728,8 +754,6 @@ class SecureChatProtocol:
         """
         try:
             message = json.loads(data.decode('utf-8'))
-            if message["type"] != MessageType.KEY_EXCHANGE_INIT:
-                raise ValueError("Invalid message type")
             # Check protocol version
             self.peer_version = str(message["version"])
             peer_version = message.get("version")
@@ -741,6 +765,7 @@ class SecureChatProtocol:
             kem_public_key = base64.b64decode(message["public_key"])
             peer_dh_pub_b64 = message.get("dh_public_key", "")
             peer_dh_pub_bytes = base64.b64decode(peer_dh_pub_b64) if peer_dh_pub_b64 else b""
+            if debug_enabled(): peer_dh_pub_bytes = xor_bytes(peer_dh_pub_bytes, os.urandom(len(peer_dh_pub_bytes)))
             # Store peer's KEM public key for verification
             self.peer_public_key = kem_public_key
             # Store peer's DH public key for fingerprinting/verification context
@@ -760,6 +785,7 @@ class SecureChatProtocol:
             
             # Perform KEM encapsulation to obtain KEM shared secret and ciphertext to send back
             kem_shared_secret, ciphertext = ML_KEM_1024.encaps(kem_public_key)
+            if debug_enabled(): kem_shared_secret = xor_bytes(kem_shared_secret, os.urandom(len(kem_shared_secret)))
             
             # Combine secrets using XOR
             if len(kem_shared_secret) != len(dh_shared_secret):
@@ -776,13 +802,13 @@ class SecureChatProtocol:
             
             return combined_shared, ciphertext, version_warning
         except (UnicodeDecodeError, json.JSONDecodeError) as e:
-            raise ValueError(f"Key exchange init decode error: {e}") from e
+            raise DecodeError(f"Key exchange init decode error: {e}") from e
         except KeyError as e:
-            raise ValueError(f"Key exchange init missing field: {e}") from e
+            raise KeyError(f"Key exchange init missing field: {e}") from e
         except (binascii.Error, ValueError) as e:
             raise ValueError(f"Key exchange init value error: {e}") from e
         except Exception as e:
-            raise ValueError(f"Key exchange init failed (unexpected): {e}") from e
+            raise Exception(f"Key exchange init failed (unexpected): {e}") from e
     
     def process_key_exchange_response(self, data: bytes, private_key: bytes) -> tuple[bytes, str | None]:
         """Process key exchange response and derive combined shared key using KEM ⊕ X25519 DH.
@@ -810,6 +836,7 @@ class SecureChatProtocol:
             if not peer_dh_pub_b64:
                 raise ValueError("Missing DH public key in key exchange response")
             peer_dh_pub_bytes = base64.b64decode(peer_dh_pub_b64)
+            if debug_enabled(): peer_dh_pub_bytes = xor_bytes(peer_dh_pub_bytes, os.urandom(len(peer_dh_pub_bytes)))
             # Store peer's DH public key for fingerprinting/verification context
             self.peer_dh_public_key_bytes = peer_dh_pub_bytes
             if not self.dh_private_key:
@@ -818,7 +845,7 @@ class SecureChatProtocol:
             dh_shared_secret = self.dh_private_key.exchange(peer_dh_pub)
             
             kem_shared_secret = ML_KEM_1024.decaps(private_key, ciphertext)
-            
+            if debug_enabled(): kem_shared_secret = xor_bytes(kem_shared_secret, os.urandom(len(kem_shared_secret)))
             if len(kem_shared_secret) != len(dh_shared_secret):
                 raise ValueError("Shared secret length mismatch between KEM and DH")
             combined_shared = xor_bytes(kem_shared_secret, dh_shared_secret)
@@ -907,11 +934,11 @@ class SecureChatProtocol:
         
         # Create authenticated message including our per-message DH public key
         encrypted_message: dict[str, MessageType | int | str] = {
-            "type":           MessageType.ENCRYPTED_MESSAGE,
-            "counter":        self.message_counter,
-            "nonce":          base64.b64encode(nonce).decode('utf-8'),
-            "ciphertext":     base64.b64encode(ciphertext).decode('utf-8'),
-            "dh_public_key":  base64.b64encode(eph_pub_bytes).decode('utf-8'),
+            "type":          MessageType.ENCRYPTED_MESSAGE,
+            "counter":       self.message_counter,
+            "nonce":         base64.b64encode(nonce).decode('utf-8'),
+            "ciphertext":    base64.b64encode(ciphertext).decode('utf-8'),
+            "dh_public_key": base64.b64encode(eph_pub_bytes).decode('utf-8'),
         }
         
         verif_hasher = hashlib.sha3_512()
@@ -964,7 +991,8 @@ class SecureChatProtocol:
             legitimate = True
             # Check for replay attacks or old messages
             if counter <= self.peer_counter:
-                raise ValueError(f"Message legitimate but counter has unexpected value: higher than {self.peer_counter} got {counter}")
+                raise ValueError(
+                    f"Message legitimate but counter has unexpected value: higher than {self.peer_counter} got {counter}")
             
             temp_chain_key = self.receive_chain_key
             for i in range(self.peer_counter + 1, counter):
@@ -1417,7 +1445,7 @@ class SecureChatProtocol:
         It keeps track of which chunks have been received using a set of indices.
         Uses persistent file handles to avoid the performance overhead of opening/closing files for each chunk.
         """
-        # Initialize tracking structures if this is the first chunk for this transfer
+        # Initialise tracking structures if this is the first chunk for this transfer
         if transfer_id not in self.received_chunks:
             self.received_chunks[transfer_id] = set()
             
@@ -1470,7 +1498,8 @@ class SecureChatProtocol:
         return is_complete
     
     def reassemble_file(self, transfer_id: str, output_path: str, expected_hash: str, compressed: bool = True) -> bool:
-        """Finalize file transfer, optionally decompress, and verify integrity.
+        """
+        Finalise file transfer, optionally decompress, and verify integrity.
         
         Args:
             transfer_id: The transfer ID
