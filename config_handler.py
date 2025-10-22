@@ -8,6 +8,7 @@ from typing import Any, TypedDict, Literal, overload
 
 __all__ = ['ConfigHandler']
 
+
 class ConfigDict(TypedDict):
     notification_sound: bool
     system_notifications: bool
@@ -17,6 +18,7 @@ class ConfigDict(TypedDict):
     delivery_receipts: bool
     peer_nickname_change: bool
     own_nickname: str
+
 
 BoolKeys = Literal[
     'notification_sound',
@@ -29,6 +31,7 @@ BoolKeys = Literal[
 ]
 StrKeys = Literal['own_nickname']
 ConfigKey = BoolKeys | StrKeys
+
 
 def create_default_config() -> ConfigDict:
     """
@@ -80,21 +83,29 @@ class ConfigHandler:
                 if not key in self.config.keys():
                     raise ValueError(f"Unknown config key '{key}'")
                 
-                self.config[key] = value # type: ignore
+                self.config[key] = value  # type: ignore
     
     @overload
-    def __getitem__(self, key: BoolKeys) -> bool: ...
+    def __getitem__(self, key: BoolKeys) -> bool:
+        ...
+    
     @overload
-    def __getitem__(self, key: StrKeys) -> str: ...
+    def __getitem__(self, key: StrKeys) -> str:
+        ...
+    
     def __getitem__(self, key: ConfigKey) -> bool | str:
         if not isinstance(key, str):
             raise TypeError("Config keys must be strings")
         return self.config[key]
-
+    
     @overload
-    def __setitem__(self, key: BoolKeys, value: bool) -> None: ...
+    def __setitem__(self, key: BoolKeys, value: bool) -> None:
+        ...
+    
     @overload
-    def __setitem__(self, key: StrKeys, value: str) -> None: ...
+    def __setitem__(self, key: StrKeys, value: str) -> None:
+        ...
+    
     def __setitem__(self, key: ConfigKey, value: bool | str) -> None:
         if key not in self.config:
             raise KeyError(f"Unknown config key '{key}'")
@@ -117,7 +128,7 @@ class ConfigHandler:
         if not os.path.exists(self.config_file):
             return self.save()
         return True, ""
-        
+    
     def reload(self) -> tuple[bool, str]:
         if not os.path.exists(self.config_file):
             return False, "Config file does not exist"

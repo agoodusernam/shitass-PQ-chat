@@ -15,7 +15,7 @@ import threading
 import time
 from collections import deque
 from enum import IntEnum
-from typing import Final, Any, SupportsIndex, SupportsBytes
+from typing import Final, Any, SupportsIndex, SupportsBytes, TypedDict, NotRequired
 from collections.abc import Generator, Buffer
 import binascii  # for base64 decode error differentiation
 
@@ -93,6 +93,23 @@ class MessageType(IntEnum):
 
 # File transfer constants
 SEND_CHUNK_SIZE: Final[int] = 1024 * 1024  # 1 MiB chunks for sending
+
+
+class FileMetadata(TypedDict):
+    """Typed dict describing metadata about a file transfer.
+    This is used to track incoming/outgoing file transfers and is shared across
+    client and GUI code. It intentionally excludes the "type" field which is
+    part of the on-the-wire message envelope.
+    """
+    transfer_id: str
+    filename: str
+    file_size: int
+    file_hash: str
+    total_chunks: int
+    compressed: bool
+    processed_size: int
+    # Optional fields used by UI layers
+    save_path: NotRequired[str]
 
 
 def bytes_to_human_readable(size: int) -> str:
@@ -242,7 +259,7 @@ class SecureChatProtocol:
         self.received_chunks: dict[str, set[int]] = {}
         self.temp_file_paths: dict[str, str] = {}
         self.open_file_handles: dict[str, BufferedRandom] = {}
-        self.sending_transfers: dict[str, dict] = {}
+        self.sending_transfers: dict[str, FileMetadata] = {}
         
         # Message queuing system for traffic analysis prevention
         self.message_queue: deque = deque()
@@ -325,7 +342,7 @@ class SecureChatProtocol:
         self.temp_file_paths = {}
         self.sending_transfers = {}
     
-    def start_sending_transfer(self, transfer_id: str, metadata: dict) -> None:
+    def start_sending_transfer(self, transfer_id: str, metadata: FileMetadata) -> None:
         """Start tracking a sending file transfer."""
         self.sending_transfers[transfer_id] = metadata
     
@@ -1154,7 +1171,7 @@ class SecureChatProtocol:
     
     # File transfer methods
     def create_file_metadata_message(self, file_path: str,
-                                     compress: bool = True) -> dict[str, MessageType | str | int | bool]:
+                                     compress: bool = True) -> FileMetadata:
         """Create a file metadata message for file transfer initiation."""
         
         if not os.path.exists(file_path):
@@ -1192,8 +1209,7 @@ class SecureChatProtocol:
         # Generate unique transfer ID
         transfer_id: str = hashlib.sha3_512(f"{file_name}{file_size}{file_hash.hexdigest()}".encode()).hexdigest()[:16]
         
-        metadata = {
-            "type":           MessageType.FILE_METADATA,
+        metadata: FileMetadata = {
             "transfer_id":    transfer_id,
             "filename":       file_name,
             "file_size":      file_size,
@@ -1339,7 +1355,7 @@ class SecureChatProtocol:
                     yield file_chunk
     
     @staticmethod
-    def process_file_metadata(decrypted_data: str) -> dict:
+    def process_file_metadata(decrypted_data: str) -> FileMetadata:
         """Process a file metadata message."""
         try:
             message = json.loads(decrypted_data)

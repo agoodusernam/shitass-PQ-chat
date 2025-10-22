@@ -1,22 +1,24 @@
 """
 Secure Chat Client with End-to-End Encryption
-It uses KRYSTALS KYBER protocol for secure key exchange and message encryption.
+It uses KRYSTALS KYBER protocol + X25519 for secure key exchange and message encryption.
 """
 # pylint: disable=trailing-whitespace, broad-exception-caught
 import socket
+import string
 import threading
 import json
 import sys
 import os
 import time
+from copy import deepcopy
 from typing import Any
 
 import shared
 from shared import (SecureChatProtocol, send_message, receive_message, MessageType,
-                    PROTOCOL_VERSION)
+                    PROTOCOL_VERSION, FileMetadata)
 
 
-# noinspection PyUnresolvedReferences,PyBroadException
+# noinspection PyBroadException
 class SecureChatClient:
     """
     A secure chat client that connects to a server and communicates with another client
@@ -33,18 +35,37 @@ class SecureChatClient:
             port (int, optional): The server port number to connect to. 
                 Defaults to 16384.
         
-        Attributes:
-            host (str): Server hostname or IP address.
-            port (int): Server port number.
-            socket (socket.socket): The client socket connection.
-            protocol (SecureChatProtocol): The encryption protocol handler.
+        A guaranteed attribute is an attribute that is guaranteed to exist and have a valid value.
+        This means that the value of the attribute is always correct and can be safely used.
+        
+        Guaranteed Attributes:
+            host (str): The hostname or IP address of the server.
+            port (int): The port number of the server.
+            protocol (SecureChatProtocol): The secure chat protocol instance.
             connected (bool): Whether the client is connected to the server.
-            key_exchange_complete (bool): Whether key exchange has been completed.
-            verification_complete (bool): Whether key verification has been completed.
-            username (str): The client's username (currently unused).
-            receive_thread (threading.Thread): Thread for receiving messages.
-            pending_file_transfers (dict): Tracks outgoing file transfers by transfer ID.
-            active_file_metadata (dict): Tracks incoming file metadata by transfer ID.
+            key_exchange_complete (bool): Whether the key exchange is complete.
+            verification_complete (bool): Whether the key verification is complete.
+            peer_nickname (str): The nickname of the peer.
+            nickname_change_allowed (bool): Whether the peer nickname can be changed.
+            allow_file_transfers (bool): Whether file transfers are allowed.
+            send_delivery_receipts (bool): Whether delivery receipts are sent.
+            voice_call_active (bool): Whether a voice call is active.
+        
+        Unsafe attributes are attributes that may not have a valid value.
+        These may be None, empty, or have invalid values.
+        They will default to whatever an "empty" value would be.
+        
+        Unsafe Attributes:
+            socket (socket.socket): The socket instance.
+            receive_thread (threading.Thread): The receiving thread.
+            pending_file_transfers (dict[str, dict[str, FileMetadata | bool | str]]): A dictionary of pending file
+            transfers and their metadata.
+            active_file_metadata (dict[str, FileMetadata]): A dictionary of active file transfers and their metadata.
+            _last_progress_shown (dict[str, float | int]): A dictionary of file transfers and their last progress shown.
+            private_key (bytes): The private key used for key exchange. Defaults to an empty byte string.
+            server_protocol_version (str): The protocol version of the server. Defaults to "0.0.0".
+            _rl_window_start (float): The timestamp at the start of the rate-limiting window.
+            _rl_count (int): The number of messages received in the rate-limiting window.
         """
         self.host: str = host
         self.port: int = port
@@ -58,18 +79,114 @@ class SecureChatClient:
         self.nickname_change_allowed: bool = self.protocol.config["peer_nickname_change"]
         self.allow_file_transfers: bool = True
         self.send_delivery_receipts: bool = True
+        self.voice_call_active: bool = False
         
         # File transfer state
-        self.pending_file_transfers: dict = {}
-        self.active_file_metadata = {}
-        self._last_progress_shown = {}
+        self.pending_file_transfers: dict[str, dict[str, FileMetadata | bool | str]] = {}
+        self.active_file_metadata: dict[str, FileMetadata] = {}
+        self._last_progress_shown: dict[str, float | int] = {}
         
         # Key exchange state
         self.private_key: bytes = bytes()
         
         # Server version information
-        self.server_protocol_version = None
+        self.server_protocol_version: str = "0.0.0"
+        
+        # Rate limiting for unverified peers
+        self._rl_window_start: float = 0.0
+        self._rl_count: int = 0
     
+    @property
+    def file_transfer_active(self) -> bool:
+        """Whether any file transfers are currently in progress."""
+        return bool(self.pending_file_transfers or self.active_file_metadata)
+    
+    @property
+    def bypass_unverified_limits(self) -> bool:
+        """Whether to bypass the rate-limiting and file size restrictions for unverified peers.
+        Bypass during file transfer, voice call, or an in-progress rekey handshake to avoid
+        dropping legitimate control bursts from unverified peers.
+        """
+        return bool(self.file_transfer_active or self.voice_call_active or self.protocol.rekey_in_progress)
+    
+        
+    @staticmethod
+    def _sanitize_field_name(field: str) -> str:
+        """Return ASCII-only field name truncated to 32 chars; fallback to '?' if empty."""
+        try:
+            s = str(field)
+        except Exception:
+            s = repr(field)
+        try:
+            s_ascii = s.encode('ascii', errors='ignore').decode('ascii', errors='ignore')
+        except Exception:
+            s_ascii = s
+        if len(s_ascii) > 32:
+            s_ascii = s_ascii[:32]
+        return s_ascii or "?"
+        
+    def _first_unexpected_field(self, obj: dict[str, Any], allowed: set[str]) -> str | None:
+        """Return the first key not in allowed or None if all keys allowed."""
+        try:
+            for k in obj.keys():
+                if k not in allowed:
+                    return self._sanitize_field_name(k)
+        except Exception:
+            return None
+        return None
+    
+    @staticmethod
+    def _allowed_unverified_outer_fields(msg_type: Any) -> set[str]:
+        """Whitelist of allowed top-level fields for pre-verification JSON messages."""
+        base = {"type", "protocol_version", "version"}
+        try:
+            mt = MessageType(msg_type)
+        except Exception:
+            # Unknown type: only allow 'type'
+            return base
+        if mt == MessageType.KEY_EXCHANGE_INIT:
+            return base | {"public_key", "dh_public_key"}
+        if mt == MessageType.KEY_EXCHANGE_RESPONSE:
+            return base | {"ciphertext", "public_key", "dh_public_key"}
+        if mt == MessageType.ENCRYPTED_MESSAGE:
+            return base | {"counter", "nonce", "ciphertext", "dh_public_key", "verification"}
+        if mt == MessageType.KEY_VERIFICATION:
+            return base | {"verified"}
+        if mt == MessageType.KEY_EXCHANGE_RESET:
+            return base | {"message"}
+        if mt in (
+            MessageType.KEEP_ALIVE,
+            MessageType.KEY_EXCHANGE_COMPLETE,
+            MessageType.INITIATE_KEY_EXCHANGE,
+            MessageType.SERVER_FULL,
+            MessageType.SERVER_VERSION_INFO,
+            MessageType.SERVER_DISCONNECT,
+            MessageType.ERROR,
+        ):
+            # Allow common server control fields
+            return base | {"reason", "message", "timestamp"}
+        return base
+        
+    @staticmethod
+    def _allowed_unverified_inner_fields() -> set[str]:
+        """Whitelist superset of allowed decrypted JSON fields before verification."""
+        return {
+            # common
+            "type", "message", "reason",
+            # delivery
+            "confirmed_counter",
+            # file transfer
+            "transfer_id", "filename", "file_size", "file_hash", "total_chunks", "processed_size", "compressed",
+            # rekey
+            "action", "public_key", "ciphertext",
+            # dummy
+            "data",
+            # ephemeral mode / nickname
+            "mode", "owner_id", "nickname",
+            # voice call (GUI/client variants may use these)
+            "rate", "chunk_size", "audio_format", "audio_data"
+        }
+        
     def connect(self) -> bool:
         """Connect to the chat server and start the message receiving thread.
         
@@ -150,11 +267,37 @@ class SecureChatClient:
             All exceptions are caught and logged to prevent crashes.
         """
         try:
+            # Rate-limit unverified peers to 5 messages/sec, unless in file transfer or voice call
+            if not self.protocol.peer_key_verified:
+                if not self.bypass_unverified_limits:
+                    now = time.time()
+                    if now - self._rl_window_start >= 1.0:
+                        self._rl_window_start = now
+                        self._rl_count = 0
+                    if self._rl_count >= 5:
+                        # Drop excess messages
+                        self.display_error_message("Rate-limited unverified peer: drop message")
+                        return
+                    self._rl_count += 1
+            
             # First, try to parse as JSON (for control messages including keepalive)
-            # This is more efficient for frequent messages like keepalives
             try:
+                if (not self.protocol.peer_key_verified and len(message_data) > 8192 and not
+                self.bypass_unverified_limits):
+                    # Prevent potential DoS with large messages before key verification
+                    self.display_error_message("Received overly large message without key verification. Dropping.")
+                    return
+                
                 message_json: dict[str, Any] = json.loads(message_data.decode('utf-8'))
                 message_type = MessageType(message_json.get("type"))
+                
+                # Validate unexpected fields when peer is unverified (outer JSON)
+                if not self.protocol.peer_key_verified:
+                    allowed = self._allowed_unverified_outer_fields(message_type)
+                    unexpected = self._first_unexpected_field(message_json, allowed)
+                    if unexpected:
+                        self.display_error_message(f"Dropped message from unverified peer due to unexpected field '{unexpected}'.")
+                        return
                 
                 match message_type:
                     case MessageType.KEY_EXCHANGE_INIT:
@@ -183,10 +326,10 @@ class SecureChatClient:
                     case MessageType.SERVER_VERSION_INFO:
                         self.handle_server_version_info(message_data)
                     case MessageType.SERVER_DISCONNECT:
-                        reason = message.get('reason', 'Server initiated disconnect')
+                        reason = message_json.get('reason', 'Server initiated disconnect')
                         self.on_server_disconnect(reason)
                     case _:
-                        print(f"\nUnknown message type: {message_type}")
+                        self.display_error_message(f"Unknown message type: {message_type}")
                 return  # Successfully processed as JSON message
             
             except (json.JSONDecodeError, UnicodeDecodeError):
@@ -206,10 +349,10 @@ class SecureChatClient:
                     pass
             
             # If we reach here, the message could not be processed
-            print("\nReceived a message that could not be decoded.")
+            self.display_error_message("Received a message that could not be decoded.")
         
         except Exception as e:
-            print(f"\nError handling message: {e}")
+            self.display_error_message(f"Error handling message: {e}")
     
     def handle_keepalive(self) -> None:
         """Handle keepalive messages from the server."""
@@ -224,7 +367,7 @@ class SecureChatClient:
             send_message(self.socket, response_data)
         
         except Exception as e:
-            print(f"\nError handling keepalive: {e}")
+            self.display_error_message(f"Error handling keepalive: {e}")
     
     def handle_delivery_confirmation(self, message: str) -> None:
         """Handle delivery confirmation messages from the peer.
@@ -237,7 +380,7 @@ class SecureChatClient:
             print(f"\n✓ Message {confirmed_counter} delivered")
         
         except Exception as e:
-            print(f"\nError handling delivery confirmation: {e}")
+            self.display_error_message(f"Error handling delivery confirmation: {e}")
     
     def initiate_key_exchange(self) -> None:
         """Initiate the key exchange process as the first client.
@@ -399,12 +542,12 @@ class SecureChatClient:
             peer_verified = self.protocol.process_key_verification_message(message_data)
             
             if peer_verified:
-                display_regular_message("Peer has verified your key successfully.", prefix="[SYSTEM]")
+                self.display_system_message("Peer has verified your key successfully.")
             else:
-                display_regular_message("Peer has NOT verified your key.", prefix="[SYSTEM]")
+                self.display_system_message("Peer has NOT verified your key.")
         
         except Exception as e:
-            display_regular_message(f"Error handling verification message: {e}", error=True)
+            self.display_error_message(f"Error handling verification message: {e}")
     
     def display_regular_message(self, message: str, error=False, prefix: str = "", system=False) -> None:
         """Display a regular chat message."""
@@ -424,6 +567,27 @@ class SecureChatClient:
         """Display a system message."""
         print(f"\n[SYSTEM]: {message}")
     
+    def prompt_rekey_from_unverified(self) -> bool:
+        """Prompt the user whether to proceed with a rekey from an unverified peer.
+        Returns True to proceed with rekey, False to disconnect.
+        """
+        try:
+            print("\nWARNING: Rekey requested by an UNVERIFIED peer.")
+            print("Proceeding may expose you to Man-in-the-Middle attacks if this peer is not who you expect.")
+            while True:
+                try:
+                    resp = input("Do you want to commence the rekey? (yes = proceed, no = disconnect): ").strip().lower()
+                    if resp in ("yes", "y"):  # proceed with rekey
+                        return True
+                    if resp in ("no", "n"):   # disconnect
+                        return False
+                    print("Please answer 'yes'/'y' or 'no'/'n'.")
+                except (EOFError, KeyboardInterrupt):
+                    print("\nNo response provided. Defaulting to disconnect.")
+                    return False
+        except Exception:
+            # On any unexpected error, be conservative and disconnect
+            return False
     
     def handle_encrypted_message(self, message_data: bytes) -> None:
         """Handle encrypted chat messages."""
@@ -435,7 +599,17 @@ class SecureChatClient:
             
             # Attempt to parse the decrypted text as a JSON message
             try:
-                message_type: int = json.loads(decrypted_text).get("type")
+                message_obj: dict[str, Any] = json.loads(decrypted_text)
+                
+                # Validate unexpected fields when peer is unverified (inner JSON)
+                if not self.protocol.peer_key_verified:
+                    allowed_inner = self._allowed_unverified_inner_fields()
+                    unexpected_inner = self._first_unexpected_field(message_obj, allowed_inner)
+                    if unexpected_inner:
+                        self.display_error_message(f"Dropped decrypted message from unverified peer due to unexpected field '{unexpected_inner}'.")
+                        return
+                
+                message_type: int = message_obj.get("type")
                 
                 match message_type:
                     case MessageType.EMERGENCY_CLOSE:
@@ -471,17 +645,21 @@ class SecureChatClient:
                         self.handle_nickname_change(decrypted_text)
                     case _:
                         # It's a regular chat message if it's not a file-related type
+                        if not self.protocol.peer_key_verified:
+                            decrypted_text = [char for char in decrypted_text if char in string.printable]
                         self.display_regular_message(decrypted_text)
                         self._send_delivery_confirmation(received_message_counter)
             
             except (json.JSONDecodeError, TypeError):
                 # If it's not JSON, it's a regular chat message
+                if not self.protocol.peer_key_verified:
+                    decrypted_text = [char for char in decrypted_text if char in string.printable]
                 self.display_regular_message(decrypted_text)
                 # Send delivery confirmation for text messages only
                 self._send_delivery_confirmation(received_message_counter)
         
         except Exception as e:
-            self.display_regular_message(str(e), error=True)
+            self.display_error_message(str(e))
     
     def _send_delivery_confirmation(self, confirmed_counter: int) -> None:
         """Send a delivery confirmation for a received text message."""
@@ -546,15 +724,15 @@ class SecureChatClient:
     def initiate_rekey(self) -> None:
         """Initiate a rekey to establish fresh session keys using the existing secure channel."""
         if not self.key_exchange_complete:
-            self.display_regular_message("Cannot rekey - key exchange not complete", error=True)
+            self.display_error_message("Cannot rekey - key exchange not complete")
             return
         try:
             payload = self.protocol.create_rekey_init()
             # Send REKEY init under old key
             self.protocol.queue_message(("encrypt_json", payload))
-            self.display_regular_message("Rekey initiated.", prefix="[SYSTEM]")
+            self.display_system_message("Rekey initiated.")
         except Exception as e:
-            self.display_regular_message(f"Failed to initiate rekey: {e}", error=True)
+            self.display_error_message(f"Failed to initiate rekey: {e}")
     
     def send_message(self, text: str) -> bool:
         """Encrypt and queue a chat message for sending."""
@@ -586,6 +764,10 @@ class SecureChatClient:
                 print("Cannot send file: Key verification not complete")
                 return
             
+            # Warn if keys are unverified (potential MitM vulnerability)
+            if not self.protocol.peer_key_verified:
+                self.display_system_message("Warning: Sending file over an unverified connection. This is vulnerable to MitM attacks.")
+            
             # Create file metadata message
             metadata = self.protocol.create_file_metadata_message(file_path, compress=compress)
             
@@ -596,9 +778,10 @@ class SecureChatClient:
                 "metadata":  metadata,
                 "compress":  compress
             }
-            
+            metadata_message = deepcopy(dict(metadata))
+            metadata_message["type"] = MessageType.FILE_METADATA
             # Send metadata to peer via queue (loop will encrypt)
-            self.protocol.queue_message(("encrypt_json", metadata))
+            self.protocol.queue_message(("encrypt_json", metadata_message))
             compression_text = "compressed" if compress else "uncompressed"
             print(
                     f"File transfer request sent: {metadata['filename']} ({metadata['file_size']} bytes, {compression_text})")
@@ -634,6 +817,10 @@ class SecureChatClient:
                     "reason":      "User disabled file transfers",
                 }))
                 return
+            
+            # Warn if keys are unverified (potential MitM vulnerability)
+            if not self.protocol.peer_key_verified:
+                self.display_system_message("Warning: Incoming file request over an unverified connection. This is vulnerable to MitM attacks.")
             
             # Store metadata for potential acceptance
             self.active_file_metadata[transfer_id] = metadata
@@ -733,6 +920,13 @@ class SecureChatClient:
             inner = json.loads(decrypted_text)
             action = inner.get("action")
             if action == "init":
+                # If the peer is unverified, ask the user whether to proceed or disconnect
+                if not self.protocol.peer_key_verified:
+                    proceed = self.prompt_rekey_from_unverified()
+                    if not proceed:
+                        self.display_system_message("Disconnecting as requested: rekey received from an unverified peer.")
+                        self.disconnect()
+                        return
                 self.display_system_message("Rekey initiated by peer.")
                 response = self.protocol.process_rekey_init(inner)
                 # Send response under old key
@@ -780,6 +974,10 @@ class SecureChatClient:
     def handle_nickname_change(self, decrypted_text: str) -> None:
         """Handle incoming nickname change from peer."""
         try:
+            # Disable nickname changes when keys are unverified
+            if not self.protocol.peer_key_verified:
+                self.display_system_message("Ignored nickname change from peer: connection is unverified")
+                return
             if not self.nickname_change_allowed:
                 self.display_system_message("Peer attempted to change nickname")
                 return

@@ -78,6 +78,7 @@ class Ltk:
     """
     
     def __init__(self):
+        self.END: Literal["end"] = "end"
         self.W: Literal["w"] = "w"
         self.X: Literal["x"] = "x"
         self.Y: Literal["y"] = "y"
@@ -200,7 +201,7 @@ class FileTransferWindow:
         self.last_bytes_transferred: int = 0
         self.current_speed: float = 0.0
         
-        # Theme colors (use provided theme or defaults)
+        # Theme colours (use provided theme or defaults)
         if theme_colors:
             self.BG_COLOR = theme_colors["BG_COLOR"]
             self.FG_COLOR = theme_colors["FG_COLOR"]
@@ -209,7 +210,7 @@ class FileTransferWindow:
             self.TEXT_BG_COLOR = theme_colors["TEXT_BG_COLOR"]
             self.SPEED_LABEL_COLOR = theme_colors["SPEED_LABEL_COLOR"]
         else:
-            # Default dark theme colors
+            # Default dark theme colours
             self.BG_COLOR = "#2b2b2b"
             self.FG_COLOR = "#d4d4d4"
             self.ENTRY_BG_COLOR = "#3c3c3c"
@@ -307,7 +308,7 @@ class FileTransferWindow:
         :param current: The current progress in chunks.
         :param total: The total number of chunks.
         :param bytes_transferred: Total bytes transferred so far (for speed calculation).
-        :param comp_text: Optional compression status text. (e.g., "compressed", "uncompressed")
+        :param comp_text: Optional compression status text. (e.g. "compressed", "uncompressed")
         :returns: None
         """
         progress = (current / total) * 100 if total > 0 else 0
@@ -362,26 +363,26 @@ class ChatGUI:
     
     """
     def __init__(self, root: tk.Tk):
-        self.root = root
+        self.root: tk.Tk = root
         self.root.title("Secure Chat Client")
         self.root.geometry("950x600")
         
-        # Store the theme colors dictionary
+        # Store the theme colours dictionary
         self.theme_colors = load_theme_colors()
         
-        self.BG_COLOR = self.theme_colors["BG_COLOR"]
-        self.FG_COLOR = self.theme_colors["FG_COLOR"]
-        self.ENTRY_BG_COLOR = self.theme_colors["ENTRY_BG_COLOR"]
-        self.BUTTON_BG_COLOR = self.theme_colors["BUTTON_BG_COLOR"]
-        self.BUTTON_ACTIVE_BG = self.theme_colors["BUTTON_ACTIVE_BG"]
-        self.TEXT_BG_COLOR = self.theme_colors["TEXT_BG_COLOR"]
+        self.BG_COLOR: str = self.theme_colors["BG_COLOR"]
+        self.FG_COLOR: str = self.theme_colors["FG_COLOR"]
+        self.ENTRY_BG_COLOR: str = self.theme_colors["ENTRY_BG_COLOR"]
+        self.BUTTON_BG_COLOR: str = self.theme_colors["BUTTON_BG_COLOR"]
+        self.BUTTON_ACTIVE_BG: str = self.theme_colors["BUTTON_ACTIVE_BG"]
+        self.TEXT_BG_COLOR: str = self.theme_colors["TEXT_BG_COLOR"]
         
         self.root.configure(bg=self.BG_COLOR)
         
         # Chat client instance
         self.client: GUISecureChatClient | None = None
-        self.connected = False
-        self.peer_nickname = "Other user"
+        self.connected: bool = False
+        self.peer_nickname: str = "Other user"
         self.config: config_handler.ConfigHandler = config_handler.ConfigHandler()
         
         # Ephemeral mode state
@@ -393,22 +394,21 @@ class ChatGUI:
         self.message_counter: int = 0
         
         # Delivery confirmation tracking
-        self.sent_messages = {}  # Track sent messages: {message_counter: tag_id}
-        self.sent_message_tags = {}  # Track tag IDs for sent messages: {tag_id: message_counter}
+        self.sent_messages: dict[int, str] = {}  # Track sent messages: {message_counter: tag_id}
         
         # Notification sound settings
-        self.notification_enabled = self.config["notification_sound"]
-        self.window_focused = True
+        self.notification_enabled: bool = self.config["notification_sound"]
+        self.window_focused: bool = True
         
         # Windows system notification settings
-        self.windows_notifications_enabled = self.config["system_notifications"] and PLYER_AVAILABLE
+        self.system_notifications_enabled: bool = self.config["system_notifications"] and PLYER_AVAILABLE
         
         # Additional settings
-        self.allow_voice_calls = self.config["allow_voice_calls"] and PYAUDIO_AVAILABLE
-        self.auto_display_images = self.config["auto_display_images"] and PIL_AVAILABLE
+        self.allow_voice_calls: bool = self.config["allow_voice_calls"] and PYAUDIO_AVAILABLE
+        self.auto_display_images: bool = self.config["auto_display_images"] and PIL_AVAILABLE
         
-        # File transfer window with theme colors
-        self.file_transfer_window = FileTransferWindow(self.root, self.theme_colors)
+        # File transfer window with theme colours
+        self.file_transfer_window: FileTransferWindow = FileTransferWindow(self.root, self.theme_colors)
         
         # Spellcheck functionality
         self.spell_checker: SpellChecker | None = SpellChecker() if SpellChecker is not None else None
@@ -473,7 +473,7 @@ class ChatGUI:
         try:
             if os.path.exists(configs.MESSAGE_NOTIF_SOUND_FILE) and PYAUDIO_AVAILABLE:
                 threading.Thread(target=play_notif, daemon=True).start()
-        except (FileNotFoundError, OSError) as e:
+        except (FileNotFoundError, OSError):
             # Non-critical: sound file missing or device error
             pass
         except Exception:
@@ -482,7 +482,7 @@ class ChatGUI:
     
     def show_windows_notification(self, message_text: str):
         """Show a Windows system notification if the window is not focused."""
-        if not self.windows_notifications_enabled or self.window_focused or not PLYER_AVAILABLE or not notification:
+        if not self.system_notifications_enabled or self.window_focused or not PLYER_AVAILABLE or not notification:
             return
         
         try:
@@ -575,7 +575,6 @@ class ChatGUI:
                     font=("Consolas", 10)
             )
             # Initially hidden; will be packed when a call is active
-            # Do not pack here
         
         # Status indicator (top right)
         self.status_label = tk.Label(
@@ -633,7 +632,7 @@ class ChatGUI:
                 "OFF", "LOCAL", "GLOBAL",
                 command=self.on_ephemeral_change
         )
-        # Basic styling to match theme (not all OptionMenu elements honor bg/fg across platforms)
+        # Basic styling to match theme (not all OptionMenu elements honour bg/fg across platforms)
         try:
             self.ephemeral_menu.config(bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR,
                                        activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
@@ -786,14 +785,13 @@ class ChatGUI:
         formatted_time = time.strftime("%H:%M:%S")
         
         # Create unique tag for this message if we have a message counter
-        tag_id = None
+        tag_id = ""
         if message_counter is not None:
             self.message_counter += 1
             tag_id = f"sent_msg_{self.message_counter}"
             
             # Track this sent message
             self.sent_messages[message_counter] = tag_id
-            self.sent_message_tags[tag_id] = message_counter
         
         # Get the starting position for the message
         start_index = self.chat_display.index("end-1c")
@@ -809,12 +807,12 @@ class ChatGUI:
         self.chat_display.insert(tk.END, message_text)
         
         # Apply tag if we have one
-        if tag_id:
+        if tag_id != "":
             end_index = self.chat_display.index("end-1c")
             self.chat_display.tag_add(tag_id, start_index, end_index)
             
             # Handle ephemeral mode for sent messages
-            if (self.ephemeral_mode in ("LOCAL", "GLOBAL")):
+            if self.ephemeral_mode in ("LOCAL", "GLOBAL"):
                 self.ephemeral_messages[tag_id] = time.time()
         
         # Play notification sound and show Windows notification if this is a message from another user
@@ -858,18 +856,18 @@ class ChatGUI:
     
     def update_status(self, status_text, color=None):
         """
-        Update the status indicator with new text and color.
+        Update the status indicator with new text and coloir.
         Automatically runs on the Tkinter thread.
         """
         self.on_tk_thread(self._update_status, status_text, color)
     
     def _update_status(self, status_text, color=None):
-        """Update the status indicator with new text and color.
+        """Update the status indicator with new text and coloir.
         
-        If color is provided, it will be used directly.
-        Otherwise, the color will be determined based on the status text.
+        If colour is provided, it will be used directly.
+        Otherwise, the colour will be determined based on the status text.
         """
-        # Map status text to theme color variables
+        # Map status text to theme colour variables
         status_map = {
             "Not Connected":                               "STATUS_NOT_CONNECTED",
             "Connecting...":                               "STATUS_CONNECTING",
@@ -881,13 +879,13 @@ class ChatGUI:
             "Key exchange reset - waiting for new client": "STATUS_KEY_EXCHANGE_RESET"
         }
         
-        # If color is not provided, look up in theme colors
+        # If colour is not provided, look up in theme colours
         if color is None:
             status_key = status_map.get(status_text)
             if status_key and status_key in self.theme_colors:
                 color = self.theme_colors[status_key]
             else:
-                # Default color if status not recognized
+                # Default colour if status not recognised
                 color = self.theme_colors["STATUS_NOT_CONNECTED"]
         
         self.status_label.config(text=status_text, fg=color)
@@ -914,7 +912,7 @@ class ChatGUI:
     
     def toggle_windows_notifications(self):
         """Toggle Windows system notifications on/off."""
-        self.windows_notifications_enabled = not self.windows_notifications_enabled
+        self.system_notifications_enabled = not self.system_notifications_enabled
     
     def save_and_destroy_config_window(self):
         """Save settings from the config window and close it."""
@@ -929,7 +927,7 @@ class ChatGUI:
     def config_from_vars(self):
         """Update config settings from internal variables"""
         self.config["notification_sound"] = self.notification_enabled
-        self.config["system_notifications"] = self.windows_notifications_enabled
+        self.config["system_notifications"] = self.system_notifications_enabled
         self.config["auto_display_images"] = self.auto_display_images
         self.config["allow_voice_calls"] = self.allow_voice_calls
         if self.client:
@@ -965,7 +963,7 @@ class ChatGUI:
         
         # Tk variables reflecting current settings
         self.var_sound_notif: tk.BooleanVar = tk.BooleanVar(value=self.notification_enabled)
-        self.var_system_notif: tk.BooleanVar = tk.BooleanVar(value=self.windows_notifications_enabled)
+        self.var_system_notif: tk.BooleanVar = tk.BooleanVar(value=self.system_notifications_enabled)
         self.var_auto_images: tk.BooleanVar = tk.BooleanVar(value=self.client.display_images if self.client else True)
         self.var_allow_calls: tk.BooleanVar = tk.BooleanVar(value=self.allow_voice_calls)
         self.var_allow_file_transfers: tk.BooleanVar = tk.BooleanVar(
@@ -1542,7 +1540,7 @@ class ChatGUI:
             # Check if there's an image in the clipboard
             clipboard_image = get_image_from_clipboard()
             if clipboard_image is None:
-                return None  # Allow default paste behavior
+                return None  # Allow default paste behaviour
             
             # There's an image in the clipboard, handle it
             self.handle_clipboard_image(clipboard_image)
@@ -1742,7 +1740,7 @@ class ChatGUI:
         except Exception:
             pass
     
-    def emergency_close(self, *args):
+    def emergency_close(self, *_):
         """Handle emergency close (Control+Q) - send emergency message and close immediately."""
         try:
             if self.connected and self.client:
@@ -1866,9 +1864,9 @@ class ChatGUI:
             self.append_to_chat(f"Error sending ephemeral mode change: {e}")
     
     def update_ephemeral_ui(self):
-        """Update dropdown UI state and color based on current ephemeral mode and ownership."""
+        """Update dropdown UI state and colour based on current ephemeral mode and ownership."""
         try:
-            # Color feedback
+            # Colour feedback
             if self.ephemeral_mode == "GLOBAL":
                 bg = self.theme_colors["EPHEMERAL_GLOBAL_BG"]
                 fg = self.theme_colors["EPHEMERAL_GLOBAL_FG"]
@@ -1921,7 +1919,7 @@ class ChatGUI:
         """
         keep_ringing = True
         
-        # Create a modal dialog to prompt the user to accept or reject
+        # Create a modal dialogue to prompt the user to accept or reject
         def on_accept():
             self.client.on_user_response(True, configs.VOICE_RATE, configs.VOICE_CHUNK,
                                          configs.VOICE_FORMAT)
@@ -2007,13 +2005,12 @@ class GUISecureChatClient(SecureChatClient):
         super().__init__(host, port)
         self.display_images: bool = self.protocol.config["auto_display_images"]
         self.voice_data_queue: deque[bytes] = deque()
-        self.voice_call_active: bool = False
         self.gui: "ChatGUI" = gui
-        # Initialize verification flags and state properly
+        # Initialise verification flags and state properly
         self.verification_complete: bool = False
         self.verification_started: bool = False
         self.verification_pending: bool = False
-        # Initialize file transfer state
+        # Initialise file transfer state
         self.pending_file_requests: dict[Any, Any] = {}
         # Voice call negotiation state
         self._pending_voice_init: dict[str, int] | None = None
@@ -2059,6 +2056,31 @@ class GUISecureChatClient(SecureChatClient):
     def display_system_message(self, message: str) -> None:
         self.gui.append_to_chat(f"[SYSTEM]: {message}", is_message=True, show_time=False)
     
+    def prompt_rekey_from_unverified(self) -> bool:
+        """GUI prompt for rekey from an unverified peer. Returns True to proceed, False to disconnect."""
+        decision: bool = False
+        evt = threading.Event()
+        
+        def ask():
+            try:
+                msg = (
+                    "Rekey requested by an UNVERIFIED peer.\n\n"
+                    "Proceeding may expose you to Man-in-the-Middle attacks if this peer is not who you expect.\n\n"
+                    "Do you want to commence the rekey?\n"
+                    "Yes = proceed with rekey, No = disconnect."
+                )
+                nonlocal decision
+                decision = messagebox.askyesno("Unverified Rekey Request", msg, icon='warning')
+            finally:
+                evt.set()
+        
+        self.gui.on_tk_thread(ask)
+        evt.wait()
+        # If user chose to disconnect, update GUI state proactively
+        if not decision:
+            self.gui.disconnect_from_server()
+        return decision
+    
     def on_server_disconnect(self, reason: str) -> None:
         """Show server disconnect reason in the GUI as a system message and disconnect."""
         
@@ -2071,6 +2093,9 @@ class GUISecureChatClient(SecureChatClient):
         Start a voice call session with the specified audio parameters.
         GUI exclusive feature
         """
+        if not self.protocol.peer_key_verified:
+            self.display_system_message("Warning: Requesting a voice call over an unverified connection. This is " +
+                                        "vulnerable to MitM attacks.")
         to_send = {
             "type":         MessageType.VOICE_CALL_INIT,
             "rate":         rate,
@@ -2103,6 +2128,10 @@ class GUISecureChatClient(SecureChatClient):
                 self.protocol.queue_message(("encrypt_json", {"type": MessageType.VOICE_CALL_REJECT}))
                 self.gui.append_to_chat("Auto-rejected incoming voice call (disabled in settings).")
                 return
+            
+            # Warn if keys are unverified (potential MitM vulnerability)
+            if not self.protocol.peer_key_verified:
+                self.display_system_message("Warning: Incoming voice call over an unverified connection. This is vulnerable to MitM attacks.")
             
             # Prompt user in the GUI thread
             self.gui.on_tk_thread(self.gui.prompt_voice_call)
@@ -2334,11 +2363,7 @@ class GUISecureChatClient(SecureChatClient):
         try:
             confirmed_counter = json.loads(message_data).get("confirmed_counter")
             # Update the GUI to show the message was delivered
-            if confirmed_counter:
-                self.gui.on_tk_thread(self.gui.update_message_delivery_status, confirmed_counter)
-            else:
-                # Fallback to console output if no GUI
-                print(f"\n✓ Message {confirmed_counter} delivered")
+            self.gui.on_tk_thread(self.gui.update_message_delivery_status, confirmed_counter)
         
         except Exception as e:
             self.display_error_message(f"Error handling delivery confirmation: {e}")
@@ -2462,7 +2487,7 @@ class GUISecureChatClient(SecureChatClient):
             self.display_error_message(f"Error handling key exchange reset: {e}")
     
     def handle_file_metadata(self, decrypted_message: str):
-        """Handle incoming file metadata with GUI dialog."""
+        """Handle incoming file metadata with GUI dialogue."""
         try:
             metadata = self.protocol.process_file_metadata(decrypted_message)
             transfer_id = metadata["transfer_id"]
@@ -2488,13 +2513,14 @@ class GUISecureChatClient(SecureChatClient):
                 
                 # Display file transfer information in chat
                 self.display_system_message("INCOMING FILE TRANSFER")
+                # Warn if keys are unverified
+                if not self.protocol.peer_key_verified:
+                    self.display_system_message("Warning: Incoming file request over an unverified connection. This is vulnerable to MitM attacks.")
                 self.display_system_message(f"Filename: {metadata['filename']}")
                 self.display_system_message(f"Size: {bytes_to_human_readable(metadata['file_size'])}")
-                self.display_system_message(f"Chunks: {metadata['total_chunks']}")
-                self.display_regular_message("", prefix=" ")
+                self.display_system_message(f"Chunks: {metadata['total_chunks']}\n")
                 self.display_system_message("Type '/accept' or '/y' to accept the file transfer")
-                self.display_system_message("Type '/reject' or '/n' to reject the file transfer")
-                self.display_regular_message("", prefix=" ")
+                self.display_system_message("Type '/reject' or '/n' to reject the file transfer\n")
                 
                 # Store the transfer ID for command processing
                 self.pending_file_requests[transfer_id] = metadata
@@ -2553,7 +2579,7 @@ class GUISecureChatClient(SecureChatClient):
             self.display_error_message(f"Error handling file rejection: {e}")
     
     def handle_file_chunk_binary(self, chunk_info: dict):
-        """Handle incoming file chunk (optimized binary format) with GUI progress updates."""
+        """Handle incoming file chunk (optimised binary format) with GUI progress updates."""
         try:
             transfer_id = chunk_info["transfer_id"]
             
@@ -2779,7 +2805,7 @@ def load_theme_colors() -> dict[str, str]:
                 messagebox.showerror("Error", f"Failed to create theme.json: {e}")
         return default_colors
     
-    # Load colors from theme.json
+    # Load coloirs from theme.json
     try:
         with open("theme.json", "r", encoding="utf-8") as f:
             theme_colors = json.load(f)

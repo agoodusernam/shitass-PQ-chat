@@ -151,6 +151,15 @@ class DebugProtocol(SecureChatProtocol):
                 encrypted_type_name = str(enc_type)
         except Exception:
             pass
+        # Prepare raw representations
+        try:
+            raw_envelope = result.decode("utf-8")
+        except Exception:
+            raw_envelope = ""
+        try:
+            ciphertext_hex = base64.b64decode(ciphertext_b64).hex() if isinstance(ciphertext_b64, str) else ""
+        except Exception:
+            ciphertext_hex = ""
         # DH context for debug
         try:
             base_peer_dh_b64 = base64.b64encode(self.peer_dh_public_key_bytes).decode('utf-8') if getattr(self, 'peer_dh_public_key_bytes', b'') else ""
@@ -176,6 +185,11 @@ class DebugProtocol(SecureChatProtocol):
             "ciphertext_len_b64":   ciphertext_len_b64,
             "ciphertext_len_bytes": ciphertext_len_bytes,
             "version":              version_in_envelope,
+            # Raw displays
+            "raw_envelope":         raw_envelope,
+            "ciphertext_b64":       ciphertext_b64,
+            "ciphertext_hex":       ciphertext_hex,
+            "plaintext":            plaintext,
             # DH (per-message) fields
             "msg_dh_pub_b64":      dh_pub_b64,
             "base_peer_dh_b64":    base_peer_dh_b64,
@@ -221,6 +235,25 @@ class DebugProtocol(SecureChatProtocol):
                     ciphertext_len_bytes = None
         except Exception:
             dh_pub_b64 = ""
+            pass
+        
+        # Prepare raw representations
+        try:
+            raw_envelope = data.decode("utf-8")
+        except Exception:
+            raw_envelope = ""
+        ciphertext_b64_val = ""
+        ciphertext_hex_val = ""
+        try:
+            msg2 = json.loads(raw_envelope) if raw_envelope else {}
+            b64 = msg2.get("ciphertext", "")
+            if isinstance(b64, str):
+                ciphertext_b64_val = b64
+                try:
+                    ciphertext_hex_val = base64.b64decode(b64).hex()
+                except Exception:
+                    ciphertext_hex_val = ""
+        except Exception:
             pass
         
         # Try to compute the would-be message key (same as base)
@@ -283,6 +316,11 @@ class DebugProtocol(SecureChatProtocol):
             "plaintext_type":       plaintext_type,
             "plaintext_type_name":  plaintext_type_name,
             "plaintext_len":        plaintext_len,
+            # Raw displays
+            "raw_envelope":         raw_envelope,
+            "ciphertext_b64":       ciphertext_b64_val,
+            "ciphertext_hex":       ciphertext_hex_val,
+            "plaintext":            plaintext if ok else "",
             # DH (per-message) fields
             "msg_dh_pub_b64":      dh_pub_b64,
             "base_peer_dh_b64":    base_peer_dh_b64,
@@ -800,6 +838,19 @@ class DebugChatGUI(ChatGUI):
                 font=("Consolas", 9)
         )
         self.crypto_info_toggle_btn.pack(fill=ltk.X, padx=5, pady=6)
+        
+        self.view_raw_crypto_btn = tk.Button(
+                self.debug_actions_frame,
+                text="View Raw Crypto Data",
+                command=self.view_raw_crypto_data,
+                bg=self.BUTTON_BG_COLOR,
+                fg=self.FG_COLOR,
+                relief=ltk.FLAT,
+                activebackground=self.BUTTON_ACTIVE_BG,
+                activeforeground=self.FG_COLOR,
+                font=("Consolas", 9)
+        )
+        self.view_raw_crypto_btn.pack(fill=ltk.X, padx=5, pady=6)
     
     # Debug-specific methods
     def toggle_debug_box(self):
@@ -1330,6 +1381,61 @@ class DebugChatGUI(ChatGUI):
                 self.append_to_chat(f"Debug log exported to {filename}")
         except Exception as e:
             self.append_to_chat(f"Error exporting debug log: {e}")
+    
+    def view_raw_crypto_data(self):
+        """Open a window showing the raw encrypted and decrypted data for the last messages."""
+        try:
+            proto = self.client.protocol if self.client else None
+            send_info = getattr(proto, "last_encrypt_info", None)
+            recv_info = getattr(proto, "last_decrypt_info", None)
+            dialog = tk.Toplevel(self.root)
+            dialog.title("Raw Crypto Data")
+            dialog.geometry("900x650")
+            dialog.configure(bg=self.BG_COLOR)
+            dialog.transient(self.root)
+            dialog.grab_set()
+            text = scrolledtext.ScrolledText(
+                dialog,
+                state=ltk.NORMAL,
+                wrap=ltk.WORD,
+                font=("Consolas", 9),
+                bg="#1e1e1e",
+                fg="#d0d0d0",
+                insertbackground="#d0d0d0",
+                relief=ltk.FLAT
+            )
+            text.pack(fill=ltk.BOTH, expand=True, padx=10, pady=10)
+            def write_section(title: str, info: dict | None):
+                text.insert(tk.END, title + "\n")
+                text.insert(tk.END, ("-" * len(title)) + "\n")
+                if not info:
+                    text.insert(tk.END, "  (no data yet)\n\n")
+                    return
+                def w(label: str, key: str):
+                    val = info.get(key)
+                    if val is None or val == "":
+                        return
+                    if isinstance(val, (dict, list)):
+                        try:
+                            val_str = json.dumps(val, indent=2)
+                        except Exception:
+                            val_str = str(val)
+                    else:
+                        val_str = str(val)
+                    text.insert(tk.END, f"{label}: {val_str}\n")
+                # Core fields
+                w("counter", "counter")
+                w("nonce_b64", "nonce_b64")
+                w("ciphertext_b64", "ciphertext_b64")
+                w("ciphertext_hex", "ciphertext_hex")
+                w("raw_envelope", "raw_envelope")
+                w("plaintext", "plaintext")
+                text.insert(tk.END, "\n")
+            write_section("→ Last Sent (outgoing)", send_info)
+            write_section("← Last Received (incoming)", recv_info)
+            text.config(state=ltk.DISABLED)
+        except Exception as e:
+            self.append_to_chat(f"Error opening raw crypto view: {e}")
     
     def send_stale_message(self):
         """Send a stale message (with an old counter value) to test replay protection."""
