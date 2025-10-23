@@ -10,9 +10,10 @@ import shutil
 import gzip
 import io
 import sys
-from io import BufferedRandom
+import tempfile
 import threading
 import time
+import typing
 from collections import deque
 from enum import IntEnum
 from typing import Final, Any, SupportsIndex, SupportsBytes, TypedDict, NotRequired
@@ -93,6 +94,36 @@ class MessageType(IntEnum):
 
 # File transfer constants
 SEND_CHUNK_SIZE: Final[int] = 1024 * 1024  # 1 MiB chunks for sending
+
+# Incompressible file types where compression is wasteful or harmful
+INCOMPRESSIBLE_EXTENSIONS: Final[set[str]] = {
+    ".zip", ".gz", ".tgz", ".bz2", ".xz", ".zst", ".lz4", ".7z", ".rar",
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".svgz",
+    ".mp3", ".ogg", ".flac", ".aac", ".wav",  # audio (most already compressed; wav often doesn't compress well over gzip)
+    ".mp4", ".mov", ".avi", ".mkv", ".webm", ".mpeg", ".mpg",  # video
+    ".pdf", ".iso", ".dmg", ".apk", ".jar"
+}
+
+
+def is_likely_incompressible(file_path: str) -> bool:
+    """Return True if the file extension suggests gzip won't help.
+    This is a heuristic based on common already-compressed formats.
+    """
+    try:
+        _, ext = os.path.splitext(file_path)
+        return ext.lower() in INCOMPRESSIBLE_EXTENSIONS
+    except Exception:
+        return False
+
+
+def decide_compression(file_path: str, user_pref: bool = True) -> bool:
+    """Decide whether to compress a file before sending.
+    Compression is enabled only if the user prefers it AND the file is not of a
+    type that's typically incompressible.
+    """
+    if not user_pref:
+        return False
+    return not is_likely_incompressible(file_path)
 
 
 class FileMetadata(TypedDict):
@@ -258,7 +289,7 @@ class SecureChatProtocol:
         self.file_transfers: dict[str, dict] = {}
         self.received_chunks: dict[str, set[int]] = {}
         self.temp_file_paths: dict[str, str] = {}
-        self.open_file_handles: dict[str, BufferedRandom] = {}
+        self.open_file_handles: dict[str, typing.IO] = {}
         self.sending_transfers: dict[str, FileMetadata] = {}
         
         # Message queuing system for traffic analysis prevention
@@ -937,9 +968,10 @@ class SecureChatProtocol:
         aad_data: dict[str, MessageType | int | str] = {
             "type":    MessageType.ENCRYPTED_MESSAGE,
             "counter": self.message_counter,
-            "nonce":   base64.b64encode(nonce).decode('utf-8')
+            "nonce":   base64.b64encode(nonce).decode('utf-8'),
+            "dh_public_key": base64.b64encode(eph_pub_bytes).decode('utf-8')
         }
-        aad: bytes = json.dumps(aad_data, sort_keys=True).encode('utf-8')
+        aad: bytes = json.dumps(aad_data).encode('utf-8')
         
         # Encrypt with AES-GCM using the unique message key and AAD
         aesgcm: AESGCM = AESGCM(message_key)
@@ -955,7 +987,7 @@ class SecureChatProtocol:
             "counter":       self.message_counter,
             "nonce":         base64.b64encode(nonce).decode('utf-8'),
             "ciphertext":    base64.b64encode(ciphertext).decode('utf-8'),
-            "dh_public_key": base64.b64encode(eph_pub_bytes).decode('utf-8'),
+            "dh_public_key": base64.b64encode(eph_pub_bytes).decode('utf-8')
         }
         
         verif_hasher = hashlib.sha3_512()
@@ -967,7 +999,7 @@ class SecureChatProtocol:
             "nonce":         encrypted_message["nonce"],
             "ciphertext":    encrypted_message["ciphertext"],
             "dh_public_key": encrypted_message["dh_public_key"],
-        }, sort_keys=True).encode('utf-8'))
+        }).encode('utf-8'))
         
         encrypted_message["verification"] = base64.b64encode(verif_hasher.digest()).decode('utf-8')
         
@@ -977,6 +1009,8 @@ class SecureChatProtocol:
         """Decrypt and authenticate a message using perfect forward secrecy with proper state management.
         Incorporates Double Ratchet: mixes DH shared secret (from peer's included X25519 public key and our
         message-phase private key) into the chain before deriving the message key.
+        
+        Raises value error if message is invalid or verification fails.
         """
         if not self.shared_key or not self.receive_chain_key:
             raise ValueError("No shared key or receive chain key established")
@@ -1000,7 +1034,7 @@ class SecureChatProtocol:
                 "nonce":         message["nonce"],
                 "ciphertext":    message["ciphertext"],
                 "dh_public_key": peer_dh_pub_b64,
-            }, sort_keys=True).encode('utf-8'))
+            }).encode('utf-8'))
             actual_verification = verif_hasher.digest()
             if actual_verification != expected_verification:
                 raise ValueError("Message verification failed - possible tampering or corruption")
@@ -1032,9 +1066,10 @@ class SecureChatProtocol:
             aad_data = {
                 "type":    MessageType.ENCRYPTED_MESSAGE,
                 "counter": counter,
-                "nonce":   base64.b64encode(nonce).decode('utf-8')
+                "nonce":   base64.b64encode(nonce).decode('utf-8'),
+                "dh_public_key": base64.b64encode(peer_dh_pub_bytes).decode('utf-8')
             }
-            aad = json.dumps(aad_data, sort_keys=True).encode('utf-8')
+            aad = json.dumps(aad_data).encode('utf-8')
             
             # Decrypt with the derived message key and verify AAD
             aesgcm = AESGCM(message_key)
@@ -1172,10 +1207,15 @@ class SecureChatProtocol:
     # File transfer methods
     def create_file_metadata_message(self, file_path: str,
                                      compress: bool = True) -> FileMetadata:
-        """Create a file metadata message for file transfer initiation."""
+        """Create a file metadata message for file transfer initiation.
+        Automatically disables compression for known incompressible types.
+        """
         
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
+        
+        # Decide final compression setting based on user preference and file type
+        effective_compress = decide_compression(file_path, user_pref=compress)
         
         file_size: int = os.path.getsize(file_path)
         file_name: str = os.path.basename(file_path)
@@ -1190,21 +1230,21 @@ class SecureChatProtocol:
         total_processed_size: int = 0
         
         try:
-            for chunk in self.chunk_file(file_path, compress=compress):
+            for chunk in self.chunk_file(file_path, compress=effective_compress):
                 total_chunks += 1
                 total_processed_size += len(chunk)
         except (OSError, IOError) as e:
             print(f"Warning: I/O error during pre-chunking, using estimation: {e}")
             total_chunks = (file_size + SEND_CHUNK_SIZE - 1) // SEND_CHUNK_SIZE
-            total_processed_size = file_size if not compress else int(file_size * 0.85)
+            total_processed_size = file_size if not effective_compress else int(file_size * 0.85)
         except ValueError as e:
             print(f"Warning: Value error during pre-chunking, using estimation: {e}")
             total_chunks = (file_size + SEND_CHUNK_SIZE - 1) // SEND_CHUNK_SIZE
-            total_processed_size = file_size if not compress else int(file_size * 0.85)
+            total_processed_size = file_size if not effective_compress else int(file_size * 0.85)
         except Exception as e:
             print(f"Warning: Unexpected error during pre-chunking, using estimation: {e}")
             total_chunks = (file_size + SEND_CHUNK_SIZE - 1) // SEND_CHUNK_SIZE
-            total_processed_size = file_size if not compress else int(file_size * 0.85)
+            total_processed_size = file_size if not effective_compress else int(file_size * 0.85)
         
         # Generate unique transfer ID
         transfer_id: str = hashlib.sha3_512(f"{file_name}{file_size}{file_hash.hexdigest()}".encode()).hexdigest()[:16]
@@ -1215,7 +1255,7 @@ class SecureChatProtocol:
             "file_size":      file_size,
             "file_hash":      file_hash.hexdigest(),
             "total_chunks":   total_chunks,
-            "compressed":     compress,
+            "compressed":     effective_compress,
             "processed_size": total_processed_size
         }
         
@@ -1270,7 +1310,7 @@ class SecureChatProtocol:
             "counter": self.message_counter,
             "nonce":   base64.b64encode(nonce).decode('utf-8')
         }
-        aad = json.dumps(aad_data, sort_keys=True).encode('utf-8')
+        aad = json.dumps(aad_data).encode('utf-8')
         
         # Combine header length + header + chunk data for encryption
         header_len = struct.pack('!H', len(header_json))  # 2 bytes for header length
@@ -1409,7 +1449,7 @@ class SecureChatProtocol:
                 "counter": counter,
                 "nonce":   base64.b64encode(nonce).decode('utf-8')
             }
-            aad = json.dumps(aad_data, sort_keys=True).encode('utf-8')
+            aad = json.dumps(aad_data).encode('utf-8')
             
             # Decrypt the chunk payload with AAD verification
             aesgcm = AESGCM(message_key)
@@ -1461,16 +1501,39 @@ class SecureChatProtocol:
         It keeps track of which chunks have been received using a set of indices.
         Uses persistent file handles to avoid the performance overhead of opening/closing files for each chunk.
         """
+        
+        if chunk_index < 0 or chunk_index >= total_chunks:
+            raise ValueError(f"Invalid chunk index {chunk_index} for transfer with {total_chunks} chunks")
+        
+        if not transfer_id.isalnum():
+            raise ValueError(f"Invalid transfer_id format: {transfer_id}")
+        
+        if len(transfer_id) > 64:
+            raise ValueError(f"transfer_id too long: {len(transfer_id)} characters")
+        
         # Initialise tracking structures if this is the first chunk for this transfer
         if transfer_id not in self.received_chunks:
             self.received_chunks[transfer_id] = set()
             
-            # Create a temporary file for this transfer
-            temp_file_path = os.path.join(os.getcwd(), f".tmp_transfer_{transfer_id}")
-            self.temp_file_paths[transfer_id] = temp_file_path
             
-            # Create and open the file for writing, keep the handle open
-            self.open_file_handles[transfer_id] = open(temp_file_path, 'w+b')
+            # Create temp file with secure permissions (cross-platform)
+            try:
+                # Create a NamedTemporaryFile with delete=False so we can manage it
+                # This automatically uses secure permissions on all platforms
+                temp_file = tempfile.NamedTemporaryFile(
+                        mode='w+b',
+                        prefix=f'transfer_{transfer_id}_',
+                        suffix='.tmp',
+                        delete=False  # We'll manage deletion ourselves
+                )
+                temp_file_path = temp_file.name
+                
+                # Store the path and handle
+                self.temp_file_paths[transfer_id] = temp_file_path
+                self.open_file_handles[transfer_id] = temp_file
+            
+            except OSError as e:
+                raise ValueError(f"Failed to create secure temporary file: {e}")
         
         # Get the open file handle
         file_handle = self.open_file_handles[transfer_id]

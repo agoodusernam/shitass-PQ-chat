@@ -203,6 +203,7 @@ class SecureChatClient:
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.socket.connect((self.host, self.port))
+            self.socket.settimeout(30)
             self.connected = True
             
             print(f"Connected to secure chat server at {self.host}:{self.port}")
@@ -238,14 +239,14 @@ class SecureChatClient:
                     self.handle_message(message_data)
                 
                 except ConnectionError:
-                    print("\nConnection to server lost.")
+                    self.display_system_message("Connection to server lost.")
                     break
                 except Exception as e:
-                    print(f"\nError receiving message: {e}")
+                    self.display_error_message(f"Error receiving message: {e}")
                     break
         
         except Exception as e:
-            print(f"Receive thread error: {e}")
+            self.display_error_message(f"Receive thread error: {e}")
         finally:
             self.disconnect()
     
@@ -260,7 +261,7 @@ class SecureChatClient:
 
         Note:
             Messages can be either JSON-encoded (for control messages) or binary
-            (for optimized file chunks). The method first tries JSON parsing for
+            (for optimised file chunks). The method first tries JSON parsing for
             control messages (including keepalives), then falls back to binary
             file chunk processing if JSON parsing fails.
             
@@ -440,7 +441,7 @@ class SecureChatClient:
             send_message(self.socket, response)
         
         except Exception as e:
-            self.display_regular_message(f"Key exchange init error: {e}", error=True)
+            self.display_error_message(f"Key exchange init error: {e}")
     
     def handle_key_exchange_response(self, message_data: bytes) -> bool:
         """Handle key exchange response from another client."""
@@ -549,14 +550,10 @@ class SecureChatClient:
         except Exception as e:
             self.display_error_message(f"Error handling verification message: {e}")
     
-    def display_regular_message(self, message: str, error=False, prefix: str = "", system=False) -> None:
+    def display_regular_message(self, message: str, prefix: str = "") -> None:
         """Display a regular chat message."""
-        if error:
-            print(f"\nError: {message}")
-        elif prefix != "":
+        if prefix != "":
             print(f"\n{prefix}: {message}")
-        elif system:
-            print(f"\n[SYSTEM]: {message}")
         else:
             print(f"\n{self.peer_nickname}: {message}")
     
@@ -593,73 +590,74 @@ class SecureChatClient:
         """Handle encrypted chat messages."""
         try:
             decrypted_text = self.protocol.decrypt_message(message_data)
-            
-            # Get the message counter that was just processed for delivery confirmation
-            received_message_counter = self.protocol.peer_counter
-            
-            # Attempt to parse the decrypted text as a JSON message
-            try:
-                message_obj: dict[str, Any] = json.loads(decrypted_text)
-                
-                # Validate unexpected fields when peer is unverified (inner JSON)
-                if not self.protocol.peer_key_verified:
-                    allowed_inner = self._allowed_unverified_inner_fields()
-                    unexpected_inner = self._first_unexpected_field(message_obj, allowed_inner)
-                    if unexpected_inner:
-                        self.display_error_message(f"Dropped decrypted message from unverified peer due to unexpected field '{unexpected_inner}'.")
-                        return
-                
-                message_type: int = message_obj.get("type")
-                
-                match message_type:
-                    case MessageType.EMERGENCY_CLOSE:
-                        self.handle_emergency_close()
-                    case MessageType.DUMMY_MESSAGE:
-                        pass
-                    case MessageType.FILE_METADATA:
-                        self.handle_file_metadata(decrypted_text)
-                    case MessageType.FILE_ACCEPT:
-                        self.handle_file_accept(decrypted_text)
-                    case MessageType.FILE_REJECT:
-                        self.handle_file_reject(decrypted_text)
-                    case MessageType.FILE_COMPLETE:
-                        self.handle_file_complete(decrypted_text)
-                    case MessageType.DELIVERY_CONFIRMATION:
-                        if self.key_exchange_complete:
-                            self.handle_delivery_confirmation(decrypted_text)
-                    case MessageType.EPHEMERAL_MODE_CHANGE:
-                        self.handle_ephemeral_mode_change(decrypted_text)
-                    case MessageType.REKEY:
-                        self.handle_rekey(decrypted_text)
-                    case MessageType.VOICE_CALL_INIT:
-                        self.handle_voice_call_init(decrypted_text)
-                    case MessageType.VOICE_CALL_ACCEPT:
-                        self.handle_voice_call_accept(decrypted_text)
-                    case MessageType.VOICE_CALL_REJECT:
-                        self.handle_voice_call_reject()
-                    case MessageType.VOICE_CALL_DATA:
-                        self.handle_voice_call_data(decrypted_text)
-                    case MessageType.VOICE_CALL_END:
-                        self.handle_voice_call_end()
-                    case MessageType.NICKNAME_CHANGE:
-                        self.handle_nickname_change(decrypted_text)
-                    case _:
-                        # It's a regular chat message if it's not a file-related type
-                        if not self.protocol.peer_key_verified:
-                            decrypted_text = [char for char in decrypted_text if char in string.printable]
-                        self.display_regular_message(decrypted_text)
-                        self._send_delivery_confirmation(received_message_counter)
-            
-            except (json.JSONDecodeError, TypeError):
-                # If it's not JSON, it's a regular chat message
-                if not self.protocol.peer_key_verified:
-                    decrypted_text = [char for char in decrypted_text if char in string.printable]
-                self.display_regular_message(decrypted_text)
-                # Send delivery confirmation for text messages only
-                self._send_delivery_confirmation(received_message_counter)
-        
-        except Exception as e:
+        except ValueError as e:
             self.display_error_message(str(e))
+            return
+        
+        # Get the message counter that was just processed for delivery confirmation
+        received_message_counter = self.protocol.peer_counter
+        
+        # Attempt to parse the decrypted text as a JSON message
+        try:
+            message_obj: dict[str, Any] = json.loads(decrypted_text)
+            
+            # Validate unexpected fields when peer is unverified (inner JSON)
+            if not self.protocol.peer_key_verified:
+                allowed_inner = self._allowed_unverified_inner_fields()
+                unexpected_inner = self._first_unexpected_field(message_obj, allowed_inner)
+                if unexpected_inner:
+                    self.display_error_message(f"Dropped decrypted message from unverified peer due to unexpected field '{unexpected_inner}'.")
+                    return
+            
+            message_type: int = message_obj.get("type")
+            
+            match message_type:
+                case MessageType.EMERGENCY_CLOSE:
+                    self.handle_emergency_close()
+                case MessageType.DUMMY_MESSAGE:
+                    pass
+                case MessageType.FILE_METADATA:
+                    self.handle_file_metadata(decrypted_text)
+                case MessageType.FILE_ACCEPT:
+                    self.handle_file_accept(decrypted_text)
+                case MessageType.FILE_REJECT:
+                    self.handle_file_reject(decrypted_text)
+                case MessageType.FILE_COMPLETE:
+                    self.handle_file_complete(decrypted_text)
+                case MessageType.DELIVERY_CONFIRMATION:
+                    if self.key_exchange_complete:
+                        self.handle_delivery_confirmation(decrypted_text)
+                case MessageType.EPHEMERAL_MODE_CHANGE:
+                    self.handle_ephemeral_mode_change(decrypted_text)
+                case MessageType.REKEY:
+                    self.handle_rekey(decrypted_text)
+                case MessageType.VOICE_CALL_INIT:
+                    self.handle_voice_call_init(decrypted_text)
+                case MessageType.VOICE_CALL_ACCEPT:
+                    self.handle_voice_call_accept(decrypted_text)
+                case MessageType.VOICE_CALL_REJECT:
+                    self.handle_voice_call_reject()
+                case MessageType.VOICE_CALL_DATA:
+                    self.handle_voice_call_data(decrypted_text)
+                case MessageType.VOICE_CALL_END:
+                    self.handle_voice_call_end()
+                case MessageType.NICKNAME_CHANGE:
+                    self.handle_nickname_change(decrypted_text)
+                case _:
+                    # It's a regular chat message if it's not a file-related type
+                    if not self.protocol.peer_key_verified:
+                        decrypted_text = [char for char in decrypted_text if char in string.printable]
+                    self.display_regular_message(decrypted_text)
+                    self._send_delivery_confirmation(received_message_counter)
+        
+        except (json.JSONDecodeError, TypeError):
+            # If it's not JSON, it's a regular chat message
+            if not self.protocol.peer_key_verified:
+                decrypted_text = [char for char in decrypted_text if char in string.printable]
+            self.display_regular_message(decrypted_text)
+            # Send delivery confirmation for text messages only
+            self._send_delivery_confirmation(received_message_counter)
+    
     
     def _send_delivery_confirmation(self, confirmed_counter: int) -> None:
         """Send a delivery confirmation for a received text message."""
@@ -770,6 +768,9 @@ class SecureChatClient:
             
             # Create file metadata message
             metadata = self.protocol.create_file_metadata_message(file_path, compress=compress)
+            
+            # Use the effective compression decided by the protocol (auto-detects incompressible types)
+            compress = bool(metadata.get("compressed", True))
             
             # Store file path for later sending
             transfer_id = metadata["transfer_id"]
@@ -947,7 +948,7 @@ class SecureChatClient:
                 self.display_system_message("Rekey completed successfully.")
                 self.display_system_message("You are now using fresh encryption keys.")                          
             else:
-                self.display_regular_message("Received unknown rekey action", error=True)
+                self.display_error_message("Received unknown rekey action")
         except Exception as rekey_err:
             print(f"\nError handling rekey message: {rekey_err}")
     

@@ -2037,16 +2037,14 @@ class GUISecureChatClient(SecureChatClient):
             if self._is_image_file(file_path):
                 # Load and display the image
                 image = Image.open(file_path)
-                self.gui.root.after(0, display_image, image, self.gui.root)
+                self.gui.on_tk_thread(display_image, image, self.gui.root)
         except Exception as e:
             self.display_error_message(f"Error displaying received image: {e}")
     
-    def display_regular_message(self, message: str, error=False, prefix: str = "", system=False) -> None:
+    def display_regular_message(self, message: str, prefix: str = "") -> None:
         """Display a regular chat message."""
-        if error:
-            self.gui.append_to_chat(f"Error: {message}")
-        elif prefix != "":
-            self.gui.append_to_chat(f"{prefix}: {message}", is_message=True, show_time=False)
+        if prefix != "":
+            self.gui.append_to_chat(f"{prefix} {message}", is_message=True, show_time=False)
         else:
             self.gui.append_to_chat(f"{self.peer_nickname}: {message}", is_message=True)
     
