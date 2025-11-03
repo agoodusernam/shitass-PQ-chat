@@ -221,7 +221,6 @@ class StreamingGzipCompressor:
         :param data: The data to compress.
         
         :return: A compressed chunk of data, or an empty bytes object if no data is available.
-        
         """
         if data:
             self.compressor.write(data)
@@ -235,8 +234,8 @@ class StreamingGzipCompressor:
         
         return compressed_data
     
-    def finalize(self) -> bytes:
-        """Finalize compression and return any remaining compressed data."""
+    def finalise(self) -> bytes:
+        """Finalise compression and return any remaining compressed data."""
         self.compressor.close()
         
         # Get any remaining compressed data
@@ -247,7 +246,6 @@ class StreamingGzipCompressor:
         return final_data
 
 
-# noinspection PyBroadException
 class SecureChatProtocol:
     """
     SecureChatProtocol - Implements the cryptographic protocol for secure chat using ML-KEM and AES-GCM.
@@ -451,7 +449,8 @@ class SecureChatProtocol:
         self.socket = None
     
     def queue_message(self, message: bytes | str | dict[Any, Any] | tuple[str, Any]) -> None:
-        """Add a message to the send queue.
+        """
+        Add a message to the send queue.
         
         The message can be one of the following:
         - bytes: already-prepared data to send as-is (control or pre-encrypted)
@@ -469,7 +468,8 @@ class SecureChatProtocol:
             self.message_queue.append(message)
     
     def send_emergency_close(self) -> bool:
-        """Send an emergency close message immediately, bypassing the queue.
+        """
+        Send an emergency close message immediately, bypassing the queue.
         
         Behavior:
             - If encryption is ready, encrypt immediately and send over the socket.
@@ -719,14 +719,14 @@ class SecureChatProtocol:
         wordlist = self._load_wordlist()
         
         # Convert hash to word-based fingerprint
-        words = self._hash_to_words(key_hash, wordlist, num_words=16)
-        # 16 words should give ~256 bits of security with a wordlist of ~65k words
+        words = self._hash_to_words(key_hash, wordlist, num_words=8)
+        # 8 words should give ~128 bits of security with a wordlist of ~65k words
         
         # Format the words in a user-friendly way
-        # Display 5 words per line for better readability
+        # Display 4 words per line for better readability
         msg = "\n"
-        for i in range(0, len(words), 5):
-            msg += " ".join(words[i:i + 5]) + "\n"
+        for i in range(0, len(words), 4):
+            msg += " ".join(words[i:i + 4]) + "\n"
         
         return msg.strip()
     
@@ -737,14 +737,14 @@ class SecureChatProtocol:
             wordlist_path = os.path.join(os.path.dirname(__file__), configs.WORDLIST_FILE)
             with open(wordlist_path, 'r', encoding='utf-8') as f:
                 return [line.strip() for line in f if line.strip()]
-        except FileNotFoundError as exc:
+        except FileNotFoundError:
             # Fallback if wordlist file is not found
             raise FileNotFoundError(
                     f"{configs.WORDLIST_FILE} not found. Please ensure the wordlist file is in the same directory as "
-                    "shared.py") from exc
+                    "shared.py")
     
     @staticmethod
-    def _hash_to_words(hash_bytes: bytes, wordlist: list[str], num_words: int = 20) -> list[str]:
+    def _hash_to_words(hash_bytes: bytes, wordlist: list[str], num_words: int = 16) -> list[str]:
         """Convert hash bytes to a list of words from the wordlist."""
         # Convert hash to integer for easier manipulation
         hash_int = int.from_bytes(hash_bytes, byteorder='big')
@@ -1378,7 +1378,7 @@ class SecureChatProtocol:
                         
                         if not file_chunk:
                             # End of file - finalize compression
-                            final_compressed = compressor.finalize()
+                            final_compressed = compressor.finalise()
                             if final_compressed:
                                 pending_data += final_compressed
                             break
@@ -1400,14 +1400,14 @@ class SecureChatProtocol:
             except (OSError, IOError) as e:
                 # Clean up on error
                 try:
-                    compressor.finalize()
+                    compressor.finalise()
                 except Exception:  # ignore finalise issues because we're already failing
                     pass  # intentional: cleanup best-effort
                 raise e
             except Exception as e:
                 # Clean up on unexpected error
                 try:
-                    compressor.finalize()
+                    compressor.finalise()
                 except Exception:
                     pass  # intentional: cleanup best-effort
                 raise e
