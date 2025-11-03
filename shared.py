@@ -39,9 +39,7 @@ except ImportError as exc_:
     raise ImportError("Please install the required libraries with pip install -r requirements.txt") from exc_
 
 # Protocol constants
-PROTOCOL_VERSION: Final[str] = "4.0.1"
-
-
+PROTOCOL_VERSION: Final[str] = "4.1.0"
 # Protocol compatibility is denoted by version number
 # Breaking.Minor.Patch - only Breaking versions are checked for compatibility.
 # Breaking version changes introduce breaking changes that are not compatible with previous versions of the same major version.
@@ -107,7 +105,7 @@ INCOMPRESSIBLE_EXTENSIONS: Final[set[str]] = {
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".svgz",
     ".mp3", ".ogg", ".flac", ".aac", ".wav",
     ".mp4", ".mov", ".avi", ".mkv", ".webm", ".mpeg", ".mpg",
-    ".pdf", ".iso", ".dmg", ".apk", ".jar"
+    ".pdf", ".dmg", ".apk", ".jar"
 }
 
 
@@ -115,11 +113,8 @@ def is_likely_incompressible(file_path: str) -> bool:
     """Return True if the file extension suggests gzip won't help.
     This is a heuristic based on common already-compressed formats.
     """
-    try:
-        _, ext = os.path.splitext(file_path)
-        return ext.lower() in INCOMPRESSIBLE_EXTENSIONS
-    except Exception:
-        return False
+    _, ext = os.path.splitext(file_path)
+    return ext.lower() in INCOMPRESSIBLE_EXTENSIONS
 
 
 def decide_compression(file_path: str, user_pref: bool = True) -> bool:
