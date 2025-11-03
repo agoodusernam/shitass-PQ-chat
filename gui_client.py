@@ -2727,7 +2727,7 @@ class GUISecureChatClient(SecureChatClient):
         """Send file chunks to peer with GUI progress updates."""
         try:
             # Get transfer info including compression setting
-            transfer_info: dict[str, shared.FileMetadata | bool | str] = self.pending_file_transfers[transfer_id]
+            transfer_info: shared.FileTransfer = self.pending_file_transfers[transfer_id]
             total_chunks: int = transfer_info["metadata"]["total_chunks"]
             compress: bool = bool(transfer_info.get("compress", True))
             

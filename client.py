@@ -15,7 +15,7 @@ from typing import Any
 
 import shared
 from shared import (SecureChatProtocol, send_message, receive_message, MessageType,
-                    PROTOCOL_VERSION, FileMetadata)
+                    PROTOCOL_VERSION, FileMetadata, FileTransfer)
 
 
 # noinspection PyBroadException
@@ -96,7 +96,7 @@ class SecureChatClient:
         self.voice_call_active: bool = False
         
         # File transfer state
-        self.pending_file_transfers: dict[str, dict[str, FileMetadata | bool | str]] = {}
+        self.pending_file_transfers: dict[str, FileTransfer] = {}
         self.active_file_metadata: dict[str, FileMetadata] = {}
         self._last_progress_shown: dict[str, float | int] = {}
         
@@ -152,13 +152,13 @@ class SecureChatClient:
         return None
     
     @staticmethod
-    def _allowed_unverified_outer_fields(msg_type: Any) -> set[str]:
+    def _allowed_outer_fields(msg_type: Any) -> set[str]:
         """Whitelist of allowed top-level fields for pre-verification JSON messages."""
         base = {"type", "protocol_version", "version"}
         try:
             mt = MessageType(msg_type)
         except Exception:
-            # Unknown type: only allow 'type'
+            # Unknown type: only allow base
             return base
         
         match mt:
@@ -294,95 +294,94 @@ class SecureChatClient:
             
             All exceptions are caught and logged to prevent crashes.
         """
-        try:
-            # Rate-limit unverified peers to 5 messages/sec, unless in file transfer or voice call
-            if not self.protocol.peer_key_verified:
-                if not self.bypass_unverified_limits:
-                    now = time.time()
-                    if now - self._rl_window_start >= 1.0:
-                        self._rl_window_start = now
-                        self._rl_count = 0
-                    if self._rl_count >= 5:
-                        # Drop excess messages
-                        self.display_error_message("Rate-limited unverified peer: drop message")
-                        return
-                    self._rl_count += 1
-            
-            # First, try to parse as JSON (for control messages including keepalive)
-            try:
-                if (not self.protocol.peer_key_verified and len(message_data) > 8192 and not
-                self.bypass_unverified_limits):
-                    # Prevent potential DoS with large messages before key verification
-                    self.display_error_message("Received overly large message without key verification. Dropping.")
+        # Rate-limit unverified peers to 5 messages/sec, unless in file transfer or voice call
+        if not self.protocol.peer_key_verified:
+            if not self.bypass_unverified_limits:
+                now = time.time()
+                if now - self._rl_window_start >= 1.0:
+                    self._rl_window_start = now
+                    self._rl_count = 0
+                if self._rl_count >= 5:
+                    # Drop excess messages
+                    self.display_error_message("Rate-limited unverified peer: drop message")
                     return
-                
-                message_json: dict[str, Any] = json.loads(message_data.decode('utf-8'))
-                message_type = MessageType(int(message_json.get("type", -1)))
-                if message_type == -1:
-                    self.display_error_message("Received message with invalid type.")
-                    return
-                
-                # Validate unexpected fields when peer is unverified (outer JSON)
-                allowed = self._allowed_unverified_outer_fields(message_type)
-                unexpected = self._first_unexpected_field(message_json, allowed)
-                if unexpected:
-                    self.display_error_message(f"Dropped message from unverified peer due to unexpected field '{unexpected}'.")
-                    return
-                
-                match message_type:
-                    case MessageType.KEY_EXCHANGE_INIT:
-                        self.handle_key_exchange_init(message_data)
-                    case MessageType.KEY_EXCHANGE_RESPONSE:
-                        self.handle_key_exchange_response(message_data)
-                    case MessageType.ENCRYPTED_MESSAGE:
-                        if self.key_exchange_complete:
-                            self.handle_encrypted_message(message_data)
-                        else:
-                            self.display_error_message("\nReceived encrypted message before key exchange complete")
-                    case MessageType.ERROR:
-                        self.display_error_message(f"{message_json.get('error', 'Unknown error')}")
-                    case MessageType.KEY_VERIFICATION:
-                        self.handle_key_verification_message(message_data)
-                    case MessageType.KEY_EXCHANGE_RESET:
-                        self.handle_key_exchange_reset(message_data)
-                    case MessageType.KEEP_ALIVE:
-                        self.handle_keepalive()
-                    case MessageType.KEY_EXCHANGE_COMPLETE:
-                        self.handle_key_exchange_complete()
-                    case MessageType.INITIATE_KEY_EXCHANGE:
-                        self.initiate_key_exchange()
-                    case MessageType.SERVER_FULL:
-                        self.handle_server_full()
-                    case MessageType.SERVER_VERSION_INFO:
-                        self.handle_server_version_info(message_data)
-                    case MessageType.SERVER_DISCONNECT:
-                        reason = message_json.get('reason', 'Server initiated disconnect')
-                        self.on_server_disconnect(reason)
-                    case _:
-                        self.display_error_message(f"Unknown message type: {message_type}")
-                return  # Successfully processed as JSON message
-            
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                # Not a JSON message, try binary file chunk processing
-                pass
-            
-            # If JSON parsing failed, check if this might be a binary file chunk message
-            # Binary file chunks start with a 12-byte nonce and are not UTF-8 decodable
-            if len(message_data) >= 12 and self.key_exchange_complete:
-                try:
-                    # Try to process as binary file chunk
-                    result = self.protocol.process_file_chunk(message_data)
-                    self.handle_file_chunk_binary(result)
-                    return
-                except Exception:
-                    # Not a binary file chunk either
-                    pass
-            
-            # If we reach here, the message could not be processed
-            self.display_error_message("Received a message that could not be decoded.")
+                self._rl_count += 1
         
-        except Exception as e:
-            self.display_error_message(f"Error handling message: {e}")
+        if (not self.protocol.peer_key_verified and len(message_data) > 8192 and not
+        self.bypass_unverified_limits):
+            # Prevent potential DoS with large messages before key verification
+            self.display_error_message("Received overly large message without key verification. Dropping.")
+            return
+        
+        # First, try to parse as JSON (for control messages including keepalive)
+        try:
+
+            
+            message_json: dict[str, Any] = json.loads(message_data.decode('utf-8'))
+            message_type = MessageType(int(message_json.get("type", -1)))
+            if message_type == -1:
+                self.display_error_message("Received message with invalid type.")
+                return
+            
+            # Validate unexpected fields when peer is unverified (outer JSON)
+            allowed = self._allowed_outer_fields(message_type)
+            unexpected = self._first_unexpected_field(message_json, allowed)
+            if unexpected:
+                self.display_error_message(f"Dropped message from unverified peer due to unexpected field '{unexpected}'.")
+                return
+            
+            match message_type:
+                case MessageType.KEY_EXCHANGE_INIT:
+                    self.handle_key_exchange_init(message_data)
+                case MessageType.KEY_EXCHANGE_RESPONSE:
+                    self.handle_key_exchange_response(message_data)
+                case MessageType.ENCRYPTED_MESSAGE:
+                    if self.key_exchange_complete:
+                        self.handle_encrypted_message(message_data)
+                    else:
+                        self.display_error_message("\nReceived encrypted message before key exchange complete")
+                case MessageType.ERROR:
+                    self.display_error_message(f"{message_json.get('error', 'Unknown error')}")
+                case MessageType.KEY_VERIFICATION:
+                    self.handle_key_verification_message(message_data)
+                case MessageType.KEY_EXCHANGE_RESET:
+                    self.handle_key_exchange_reset(message_data)
+                case MessageType.KEEP_ALIVE:
+                    self.handle_keepalive()
+                case MessageType.KEY_EXCHANGE_COMPLETE:
+                    self.handle_key_exchange_complete()
+                case MessageType.INITIATE_KEY_EXCHANGE:
+                    self.initiate_key_exchange()
+                case MessageType.SERVER_FULL:
+                    self.handle_server_full()
+                case MessageType.SERVER_VERSION_INFO:
+                    self.handle_server_version_info(message_data)
+                case MessageType.SERVER_DISCONNECT:
+                    reason = message_json.get('reason', 'Server initiated disconnect')
+                    self.on_server_disconnect(reason)
+                case _:
+                    self.display_error_message(f"Unknown message type: {message_type}")
+            return  # Successfully processed as JSON message
+        
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            # Not a JSON message, try binary file chunk processing
+            pass
+        
+        # If JSON parsing failed, check if this might be a binary file chunk message
+        # Binary file chunks use a compact binary frame and are not UTF-8 decodable
+        if len(message_data) >= 48 and self.key_exchange_complete:
+            try:
+                # Try to process as binary file chunk
+                result = self.protocol.process_file_chunk(message_data)
+                self.handle_file_chunk_binary(result)
+                return
+            except Exception:
+                # Not a binary file chunk either
+                pass
+        
+        # If we reach here, the message could not be processed
+        self.display_error_message("Received a message that could not be decoded.")
+    
     
     def handle_keepalive(self) -> None:
         """Handle keepalive messages from the server."""

@@ -11,8 +11,7 @@ import time
 from typing import Final, Self
 import datetime
 
-from shared import send_message, receive_message, create_error_message, \
-    create_reset_message, MessageType, PROTOCOL_VERSION
+from shared import send_message, receive_message, create_reset_message, MessageType, PROTOCOL_VERSION
 import config_manager
 
 assert config_manager  # Remove unused import warning

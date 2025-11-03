@@ -145,6 +145,11 @@ class FileMetadata(TypedDict):
     # Optional fields used by UI layers
     save_path: NotRequired[str]
 
+class FileTransfer(TypedDict):
+    file_path: str
+    metadata:  FileMetadata
+    compress:  bool
+
 
 def bytes_to_human_readable(size: int) -> str:
     """
@@ -252,7 +257,8 @@ class SecureChatProtocol:
     """
     
     def __init__(self) -> None:
-        """Initialise the secure chat protocol with default cryptographic state.
+        """
+        Initialise the secure chat protocol with the default cryptographic state.
         
         Sets up all necessary state variables for the ML-KEM-1024 key exchange,
         AES-GCM encryption, perfect forward secrecy, replay protection, and
@@ -358,7 +364,6 @@ class SecureChatProtocol:
         self.rekey_private_key: bytes = bytes()
         
         # File transfer state
-        self.file_transfers: dict[str, dict] = {}
         self.received_chunks: dict[str, set[int]] = {}
         self.temp_file_paths: dict[str, str] = {}
         self.open_file_handles: dict[str, typing.IO] = {}
@@ -390,7 +395,6 @@ class SecureChatProtocol:
         self.msg_recv_private = None
         self.msg_peer_base_public = bytes()
         # Clear file transfer state as well
-        self.file_transfers = {}
         self.received_chunks = {}
         
         # Clear message queue
@@ -757,23 +761,16 @@ class SecureChatProtocol:
         return words
     
     def get_own_key_fingerprint(self) -> str:
-        """Get the consistent session fingerprint (same for both users)."""
-        if not self.own_public_key or not self.peer_public_key:
-            raise ValueError("Both public keys must be available for fingerprint generation")
-        return self.generate_session_fingerprint()
-    
-    def generate_session_fingerprint(self) -> str:
-        """Generate a consistent fingerprint for the session that both users will see.
+        """
+        Generate a consistent fingerprint for the session that both users will see.
         Includes both ML-KEM public keys and the ephemeral X25519 DH public keys from the key exchange.
         """
         # Ensure we have all required key materials
-        if not self.own_public_key or not self.peer_public_key:
+        if not self.own_public_key or not self.peer_public_key or not self.peer_dh_public_key_bytes:
             raise ValueError("Both public keys must be available")
-        if not self.dh_public_key_bytes or not getattr(self, 'peer_dh_public_key_bytes', b""):
-            raise ValueError("Both DH public keys must be available")
         
         # Build a deterministic, order-independent combination of all four keys
-        components = [
+        components: list[bytes] = [
             self.own_public_key,
             self.peer_public_key,
             self.dh_public_key_bytes,
@@ -803,8 +800,6 @@ class SecureChatProtocol:
             return message.get("verified", False)
         except (UnicodeDecodeError, json.JSONDecodeError) as e:
             raise ValueError(f"Key verification message decoding failed: {e}") from e
-        except Exception as e:  # fallback for any unforeseen error
-            raise ValueError(f"Key verification message processing failed (unexpected): {e}") from e
     
     def create_key_exchange_init(self, public_key: bytes) -> bytes:
         """Create initial key exchange message with X25519 DH public key."""
@@ -903,10 +898,10 @@ class SecureChatProtocol:
         """
         try:
             message = json.loads(data.decode('utf-8'))
-            ciphertext = base64.b64decode(message["ciphertext"])
-            self.peer_public_key = base64.b64decode(message["public_key"])
+            ciphertext = base64.b64decode(message["ciphertext"], validate=True)
+            self.peer_public_key = base64.b64decode(message["public_key"], validate=True)
             peer_dh_pub_b64 = message["dh_public_key"]
-            peer_dh_pub_bytes = base64.b64decode(peer_dh_pub_b64)
+            peer_dh_pub_bytes = base64.b64decode(peer_dh_pub_b64, validate=True)
         except (UnicodeDecodeError, binascii.Error):
             raise DecodeError("Key exchange response decode error, UnicodeDecodeError")
         except json.JSONDecodeError:
@@ -1286,7 +1281,6 @@ class SecureChatProtocol:
             "processed_size": total_processed_size
         }
         
-        # mypy believes metadata to be of type 'dict[str, object]' but i have no idea why
         return metadata
     
     def create_file_accept_message(self, transfer_id: str) -> bytes:
@@ -1307,19 +1301,34 @@ class SecureChatProtocol:
         return self.encrypt_message(json.dumps(message))
     
     def create_file_chunk_message(self, transfer_id: str, chunk_index: int, chunk_data: bytes) -> bytes:
-        """Create an optimized file chunk message with direct binary encryption."""
+        """Create an optimized file chunk message with direct binary encryption and DH double ratchet.
+        Frame layout: [4-byte counter][12-byte nonce][32-byte eph_pub][ciphertext]
+        AAD covers type, counter, nonce, and dh_public_key.
+        """
         if not self.shared_key or not self.send_chain_key:
             raise ValueError("No shared key or send chain key established")
         
+        # Bump global message counter (shared with text messages) for unified ratchet state
         self.message_counter += 1
         
+        # Generate ephemeral X25519 key for this chunk
+        eph_priv = X25519PrivateKey.generate()
+        eph_pub_bytes = eph_priv.public_key().public_bytes_raw()
+        peer_pub_bytes = self.peer_dh_public_key_bytes
+        if not peer_pub_bytes:
+            raise ValueError("Missing peer DH public key for file chunk encryption")
+        
+        # Compute DH shared secret for this chunk and mix into send chain
+        dh_shared = eph_priv.exchange(X25519PublicKey.from_public_bytes(peer_pub_bytes))
+        mixed_chain_key = self._mix_dh_with_chain(self.send_chain_key, dh_shared, self.message_counter, "m")
+        
         # Derive unique message key for this chunk
-        message_key = self._derive_message_key(self.send_chain_key, self.message_counter)
+        message_key = self._derive_message_key(mixed_chain_key, self.message_counter)
         
         # Ratchet the send chain key forward for the next message
         self.send_chain_key = self._ratchet_chain_key(self.send_chain_key, self.message_counter)
         
-        # Create compact header (no JSON, no base64 for chunk data)
+        # Create compact header
         header = {
             "type":        MessageType.FILE_CHUNK,
             "transfer_id": transfer_id,
@@ -1327,15 +1336,16 @@ class SecureChatProtocol:
         }
         header_json = json.dumps(header).encode('utf-8')
         
-        # Encrypt header and chunk data separately but in one operation
+        # Encrypt header and chunk data in one operation
         aesgcm = AESGCM(message_key)
         nonce = os.urandom(12)
         
-        # Create AAD from counter and nonce for authentication
+        # Create AAD including eph pub to authenticate ratchet key
         aad_data = {
-            "type":    MessageType.FILE_CHUNK,
-            "counter": self.message_counter,
-            "nonce":   base64.b64encode(nonce).decode('utf-8')
+            "type":          MessageType.FILE_CHUNK,
+            "counter":       self.message_counter,
+            "nonce":         base64.b64encode(nonce).decode('utf-8'),
+            "dh_public_key": base64.b64encode(eph_pub_bytes).decode('utf-8'),
         }
         aad = json.dumps(aad_data).encode('utf-8')
         
@@ -1344,20 +1354,20 @@ class SecureChatProtocol:
         plaintext = header_len + header_json + chunk_data
         ciphertext = aesgcm.encrypt(nonce, plaintext, aad)
         
-        # Delete the message key
+        # Securely delete the message key
         message_key = b'\x00' * len(message_key)
         del message_key
         
-        # Pack counter (4 bytes) + nonce (12 bytes) + ciphertext
+        # Pack: counter (4 bytes) + nonce (12 bytes) + eph_pub (32 bytes) + ciphertext
         counter_bytes = struct.pack('!I', self.message_counter)
-        return counter_bytes + nonce + ciphertext
+        return counter_bytes + nonce + eph_pub_bytes + ciphertext
     
     @staticmethod
     def chunk_file(file_path: str, compress: bool = True) -> Generator[bytes, None, None]:
         """Generate file chunks for transmission one at a time.
 
         This is a streaming generator function that optionally compresses and yields chunks
-        without loading the entire file into memory. This approach is memory-efficient 
+        without loading the entire file into memory. This approach is memory-efficient
         for large files and provides a steady stream of data for network transmission.
         
         Args:
@@ -1440,47 +1450,62 @@ class SecureChatProtocol:
             raise ValueError(f"File metadata JSON decode failed: {e}") from e
         except KeyError as e:
             raise ValueError(f"File metadata missing field: {e}") from e
-        except Exception as e:
-            raise ValueError(f"File metadata processing failed (unexpected): {e}") from e
     
     def process_file_chunk(self, encrypted_data: bytes) -> dict:
-        """Process an optimized file chunk message with binary format."""
+        """Process an optimized file chunk message with binary format and DH double ratchet.
+        Expects frame: [4-byte counter][12-byte nonce][32-byte eph_pub][ciphertext].
+        """
         if not self.shared_key or not self.receive_chain_key:
             raise ValueError("No shared key or receive chain key established")
         
         try:
-            # Extract counter, nonce, and ciphertext from the message
-            if len(encrypted_data) < 16:  # 4 bytes for counter + 12 for nonce
+            # Extract counter, nonce, peer ephemeral, and ciphertext from the message
+            if len(encrypted_data) < 4 + 12 + 32:
                 raise ValueError("Invalid chunk message format")
             
             counter = struct.unpack('!I', encrypted_data[:4])[0]
             nonce = encrypted_data[4:16]
-            ciphertext = encrypted_data[16:]
+            peer_eph_pub = encrypted_data[16:48]
+            ciphertext = encrypted_data[48:]
             
             # Check for replay attacks or very old messages
             if counter <= self.peer_counter:
                 raise ValueError(
                         f"Replay attack or out-of-order message detected. Expected > {self.peer_counter}, got {counter}")
             
-            # Advance the chain key to the correct state for this message
+            # Advance the chain key to the correct state for this message (symmetric ratchet)
             temp_chain_key = self.receive_chain_key
             for i in range(self.peer_counter + 1, counter):
                 temp_chain_key = self._ratchet_chain_key(temp_chain_key, i)
             
-            # Derive the message key for the current message
-            message_key = self._derive_message_key(temp_chain_key, counter)
+            # DH mix: use our receive private key for message-phase ratchet
+            if not self.msg_recv_private:
+                raise ValueError("Local DH private key not initialized for file chunk ratchet")
+            dh_shared = self.msg_recv_private.exchange(X25519PublicKey.from_public_bytes(peer_eph_pub))
+            mixed_chain_key = self._mix_dh_with_chain(temp_chain_key, dh_shared, counter, "m")
             
-            # Create AAD from counter and nonce for authentication verification
+            # Derive the message key for the current message
+            message_key = self._derive_message_key(mixed_chain_key, counter)
+            
+            # Calculate what the new chain key state WOULD be (symmetric ratchet only)
+            new_chain_key = self._ratchet_chain_key(temp_chain_key, counter)
+            
+            # Create AAD including eph pub to authenticate ratchet key
             aad_data = {
-                "type":    MessageType.FILE_CHUNK,
-                "counter": counter,
-                "nonce":   base64.b64encode(nonce).decode('utf-8')
+                "type":          MessageType.FILE_CHUNK,
+                "counter":       counter,
+                "nonce":         base64.b64encode(nonce).decode('utf-8'),
+                "dh_public_key": base64.b64encode(peer_eph_pub).decode('utf-8'),
             }
             aad = json.dumps(aad_data).encode('utf-8')
             
             # Decrypt the chunk payload with AAD verification
             aesgcm = AESGCM(message_key)
-            plaintext = aesgcm.decrypt(nonce, ciphertext, aad)
+            try:
+                plaintext = aesgcm.decrypt(nonce, ciphertext, aad)
+            except InvalidTag:
+                message_key = b'\x00' * len(message_key)
+                raise ValueError("File chunk decryption failed: InvalidTag")
             
             # Parse the decrypted header and extract chunk data
             if len(plaintext) < 2:
@@ -1498,8 +1523,10 @@ class SecureChatProtocol:
                 raise ValueError("Invalid message type in decrypted chunk")
             
             # Decryption successful, update the state
-            self.receive_chain_key = self._ratchet_chain_key(temp_chain_key, counter)
+            self.receive_chain_key = new_chain_key
             self.peer_counter = counter
+            # Store peer's latest eph public key for completeness
+            self.msg_peer_base_public = peer_eph_pub
             
             # Securely delete the message key
             message_key = b'\x00' * len(message_key)
@@ -1510,13 +1537,12 @@ class SecureChatProtocol:
                 "chunk_index": header["chunk_index"],
                 "chunk_data":  chunk_data
             }
-        except ValueError as e:
-            raise e
         except (UnicodeDecodeError, json.JSONDecodeError) as e:
             raise ValueError(f"File chunk JSON decode failed: {e}") from e
         except KeyError as e:
             raise ValueError(f"File chunk missing field: {e}") from e
-        except (binascii.Error, struct.error) as e:
+        except (binascii.Error, struct.error, ValueError) as e:
+            # ValueError may come from base64 decode or other parsing errors
             raise ValueError(f"File chunk structural decode error: {e}") from e
         except Exception as e:
             raise ValueError(f"File chunk processing failed (unexpected): {e}")
