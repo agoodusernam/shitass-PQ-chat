@@ -18,7 +18,9 @@ from collections import deque
 from enum import IntEnum
 from typing import Final, Any, SupportsIndex, SupportsBytes, TypedDict, NotRequired
 from collections.abc import Generator, Buffer
-import binascii  # for base64 decode error differentiation
+import binascii
+
+from cryptography.exceptions import InvalidTag
 
 import config_handler
 import config_manager
@@ -27,7 +29,7 @@ assert config_manager  # silence unused import warning
 import configs
 
 try:
-    from kyber_py.ml_kem import ML_KEM_1024
+    from kyber_py.ml_kem import ML_KEM_1024 # TODO: Switch to production ready library
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     from cryptography.hazmat.primitives.kdf.hkdf import HKDF
     from cryptography.hazmat.primitives import hashes
@@ -38,6 +40,8 @@ except ImportError as exc_:
 
 # Protocol constants
 PROTOCOL_VERSION: Final[str] = "4.0.1"
+
+
 # Protocol compatibility is denoted by version number
 # Breaking.Minor.Patch - only Breaking versions are checked for compatibility.
 # Breaking version changes introduce breaking changes that are not compatible with previous versions of the same major version.
@@ -45,6 +49,7 @@ PROTOCOL_VERSION: Final[str] = "4.0.1"
 # Patch versions are for bug fixes and minor improvements that do not affect compatibility.
 
 class MessageType(IntEnum):
+    NONE = -1
     # Key Exchange
     # Server to client
     INITIATE_KEY_EXCHANGE = 1
@@ -58,6 +63,7 @@ class MessageType(IntEnum):
     ENCRYPTED_MESSAGE = 10
     DELIVERY_CONFIRMATION = 11
     DUMMY_MESSAGE = 12
+    TEXT_MESSAGE = 13
     
     # File Transfer
     FILE_METADATA = 20
@@ -95,12 +101,12 @@ class MessageType(IntEnum):
 # File transfer constants
 SEND_CHUNK_SIZE: Final[int] = 1024 * 1024  # 1 MiB chunks for sending
 
-# Incompressible file types where compression is wasteful or harmful
+# Incompressible file types where compression is wasteful
 INCOMPRESSIBLE_EXTENSIONS: Final[set[str]] = {
-    ".zip", ".gz", ".tgz", ".bz2", ".xz", ".zst", ".lz4", ".7z", ".rar",
+    ".zip", ".gz", ".tgz", ".bz2", ".xz", ".zst", ".lz4", ".7z", ".rar", ".hc", ".bin",
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".svgz",
-    ".mp3", ".ogg", ".flac", ".aac", ".wav",  # audio (most already compressed; wav often doesn't compress well over gzip)
-    ".mp4", ".mov", ".avi", ".mkv", ".webm", ".mpeg", ".mpg",  # video
+    ".mp3", ".ogg", ".flac", ".aac", ".wav",
+    ".mp4", ".mov", ".avi", ".mkv", ".webm", ".mpeg", ".mpg",
     ".pdf", ".iso", ".dmg", ".apk", ".jar"
 }
 
@@ -117,7 +123,8 @@ def is_likely_incompressible(file_path: str) -> bool:
 
 
 def decide_compression(file_path: str, user_pref: bool = True) -> bool:
-    """Decide whether to compress a file before sending.
+    """
+    Decide whether to compress a file before sending.
     Compression is enabled only if the user prefers it AND the file is not of a
     type that's typically incompressible.
     """
@@ -127,7 +134,8 @@ def decide_compression(file_path: str, user_pref: bool = True) -> bool:
 
 
 class FileMetadata(TypedDict):
-    """Typed dict describing metadata about a file transfer.
+    """
+    Typed dict describing metadata about a file transfer.
     This is used to track incoming/outgoing file transfers and is shared across
     client and GUI code. It intentionally excludes the "type" field which is
     part of the on-the-wire message envelope.
@@ -165,10 +173,10 @@ def bytes_to_human_readable(size: int) -> str:
 
 
 def xor_bytes(a: bytes, b: bytes) -> bytes:
-    """XOR two byte strings of equal length."""
-    if len(a) != len(b):
-        raise ValueError("Byte strings must be of equal length for XOR operation")
-    length = len(a)
+    """
+    XOR two byte objects
+    """
+    length = len(a) if len(a) > len(b) else len(b)
     int_a = int.from_bytes(a, byteorder="big")
     int_b = int.from_bytes(b, byteorder="big")
     
@@ -191,24 +199,35 @@ def debug_enabled():
     
     return False
 
+
 class DecodeError(Exception):
     pass
+
 
 class EncodeError(Exception):
     pass
 
 
-
-
 class StreamingGzipCompressor:
-    """A streaming gzip compressor that yields compressed chunks as they're ready."""
+    """
+    A streaming gzip compressor that yields compressed chunks as they're ready.
     
-    def __init__(self):
+    Takes no arguments.
+    """
+    
+    def __init__(self) -> None:
         self.buffer: io.BytesIO = io.BytesIO()
         self.compressor: gzip.GzipFile = gzip.GzipFile(fileobj=self.buffer, mode='wb', compresslevel=9)
     
     def compress_chunk(self, data: bytes) -> bytes:
-        """Compress a chunk of data and return any available compressed output."""
+        """
+        Compress a chunk of data and return any available compressed output.
+        
+        :param data: The data to compress.
+        
+        :return: A compressed chunk of data, or an empty bytes object if no data is available.
+        
+        """
         if data:
             self.compressor.write(data)
         
@@ -239,67 +258,101 @@ class SecureChatProtocol:
     SecureChatProtocol - Implements the cryptographic protocol for secure chat using ML-KEM and AES-GCM.
     """
     
-    # noinspection PyUnresolvedReferences
     def __init__(self) -> None:
-        """Initialize the secure chat protocol with default cryptographic state.
+        """Initialise the secure chat protocol with default cryptographic state.
         
         Sets up all necessary state variables for the ML-KEM-1024 key exchange,
         AES-GCM encryption, perfect forward secrecy, replay protection, and
         file transfer functionality.
         
-        Attributes:
-            shared_key (bytes): The derived shared secret from key exchange.
-            message_counter (int): Counter for outgoing messages (for PFS).
-            peer_counter (int): Expected counter for incoming messages (for PFS).
-            peer_public_key (bytes): The peer's public key from key exchange.
-            peer_key_verified (bool): Whether the peer's key has been verified.
-            own_public_key (bytes): This client's public key.
-            private_key (bytes): This client's private key for key exchange.
-            chain_key (bytes): Root key for perfect forward secrecy ratcheting.
-            seen_counters (set): Set of seen message counters for replay protection.
-            file_transfers (dict): Dictionary tracking ongoing file transfers.
-            received_chunks (dict): Buffer for received file chunks during transfer.
-            temp_file_paths (dict): Temporary file paths for incoming file transfers.
-            open_file_handles (dict): Open file handles for writing incoming files.
-            sending_transfers (dict): Metadata for files being sent.
-            message_queue (deque): Queue for outgoing messages to prevent traffic analysis.
-            socket (socket.socket | None): The socket used for sending messages.
-            sender_thread (threading.Thread | None): Background thread for sending messages.
-            sender_running (bool): Whether the sender thread is running.
-            sender_lock (threading.Lock): Lock for synchronizing access to the message queue.
-            ack_counters (set): Set of message counters to be acknowledged when the next message is sent.
-            send_dummy_messages (bool): Whether to send dummy messages when idle.
+        A guaranteed attribute is an attribute that is guaranteed to exist and have a valid value.
+        This means that the value of the attribute is always correct and can be safely used after initialisation.
+        
+        Guaranteed Attributes:
+            config (ConfigHandler): The configuration handler instance.
+            message_counter (int): The current message counter.
+            peer_counter (int): The current peer counter.
+            peer_key_verified (bool): Indicates whether the peer's public key has been verified.
+            
+            file_transfers (dict[str, dict]): A dictionary of file transfers in progress.
+            received_chunks (dict[str, set[int]]): A dictionary of received chunks for file transfers.
+            temp_file_paths (dict[str, str]): A dictionary of temporary file paths for file transfers.
+            open_file_handles (dict[str, typing.IO]): A dictionary of open file handles for file transfers.
+            sending_transfers (dict[str, FileMetadata]): A dictionary of file transfers in progress.
+            
+            message_queue (deque): A deque of messages to be sent over the socket.
+            sender_running (bool): Indicates whether the sender thread is running.
+            sender_lock (threading.Lock): A lock object to synchronise access to the message queue.
+            
+            send_dummy_messages (bool): Indicates whether dummy messages should be sent.
+            
+            rekey_in_progress (bool): Indicates whether a rekey is in progress.
+        
+        Unsafe attributes are attributes that may not have a valid value.
+        These may be None, empty, or have invalid values.
+        They will default to whatever an "empty" value would be.
+        
+        Unsafe Attributes:
+            peer_version (str): The version of the peer's SecureChat protocol.
+            own_private_key (bytes): The private key of the local peer.
+            encryption_key (bytes): The encryption key for the current session.
+            shared_key (bytes): The shared key for the current session.
+            peer_public_key (bytes): The public key of the peer.
+            own_public_key (bytes): The public key of the local peer.
+            send_chain_key (bytes): The chain key for the current session.
+            receive_chain_key (bytes): The chain key for the current session.
+            
+            socket (socket.socket | None): The socket object used for communication.
+            sender_thread (threading.Thread | None): The sender thread used for sending messages.
+            
+            pending_shared_key (bytes): The pending shared key for the current session.
+            pending_encryption_key (bytes): The pending encryption key for the current session.
+            pending_send_chain_key (bytes): The pending send chain key for the current session.
+            pending_receive_chain_key (bytes): The pending receive chain key for the current session.
+            rekey_private_key (bytes): The private key for the current rekey.
+            
+            dh_private_key (X25519PrivateKey | None): The private key for the X25519 DH exchange.
+            dh_public_key_bytes (bytes): The public key bytes for the X25519 DH exchange.
+            peer_dh_public_key_bytes (bytes): The public key bytes for the peer's X25519 DH exchange.
+            msg_recv_private (X25519PrivateKey | None): The private key for the message-phase Double Ratchet.
+            msg_peer_base_public (bytes): The base public key for the peer's message-phase Double Ratchet.
+            
         """
+        # Configuration + protocol
         self.config: config_handler.ConfigHandler = config_handler.ConfigHandler()
-        self.peer_version: str = ""
-        self.own_private_key: bytes = bytes()
-        self.encryption_key: bytes = bytes()
-        self.shared_key: bytes = bytes()
-        self.message_counter: int = 0
-        self.peer_counter: int = 0
-        self.peer_public_key: bytes = bytes()
-        self.peer_key_verified: bool = False
-        self.own_public_key: bytes = bytes()
-        self.private_key: bytes = bytes()
-        # Perfect Forward Secrecy - Key Ratcheting
-        self.send_chain_key: bytes = bytes()
-        self.receive_chain_key: bytes = bytes()
+        self.peer_version: str = "0.0.0"
         
-        # File transfer state
-        self.file_transfers: dict[str, dict] = {}
-        self.received_chunks: dict[str, set[int]] = {}
-        self.temp_file_paths: dict[str, str] = {}
-        self.open_file_handles: dict[str, typing.IO] = {}
-        self.sending_transfers: dict[str, FileMetadata] = {}
-        
-        # Message queuing system for traffic analysis prevention
+        # Transport + queuing
         self.message_queue: deque = deque()
         self.socket: socket.socket | None = None
         self.sender_thread: threading.Thread | None = None
         self.sender_running: bool = False
         self.sender_lock: threading.Lock = threading.Lock()
-        
         self.send_dummy_messages: bool = configs.SEND_DUMMY_PACKETS
+        
+        # Cryptographic identity + peer info
+        self.own_public_key: bytes = bytes()
+        self.peer_public_key: bytes = bytes()
+        self.peer_key_verified: bool = False
+        
+        # Session keys
+        self.shared_key: bytes = bytes()
+        self.encryption_key: bytes = bytes()
+        
+        # Ratchet state (symmetric)
+        self.message_counter: int = 0
+        self.peer_counter: int = 0
+        self.send_chain_key: bytes = bytes()
+        self.receive_chain_key: bytes = bytes()
+        
+        # X25519 ephemeral DH (session setup)
+        self.dh_private_key: X25519PrivateKey | None = None
+        self.dh_public_key_bytes: bytes = bytes()
+        self.peer_dh_public_key_bytes: bytes = bytes()
+        
+        # Message-phase Double Ratchet
+        self.msg_recv_private: X25519PrivateKey | None = None
+        self.msg_peer_base_public: bytes = bytes()
         
         # Rekey state
         self.rekey_in_progress: bool = False
@@ -311,14 +364,12 @@ class SecureChatProtocol:
         self.pending_peer_counter: int = 0
         self.rekey_private_key: bytes = bytes()
         
-        # X25519 ephemeral DH state (set during key exchange only)
-        self.dh_private_key: X25519PrivateKey | None = None
-        self.dh_public_key_bytes: bytes = bytes()
-        self.peer_dh_public_key_bytes: bytes = bytes()
-        
-        # Message-phase Double Ratchet state
-        self.msg_recv_private: X25519PrivateKey | None = None
-        self.msg_peer_base_public: bytes = bytes()
+        # File transfer state
+        self.file_transfers: dict[str, dict] = {}
+        self.received_chunks: dict[str, set[int]] = {}
+        self.temp_file_paths: dict[str, str] = {}
+        self.open_file_handles: dict[str, typing.IO] = {}
+        self.sending_transfers: dict[str, FileMetadata] = {}
     
     @property
     def encryption_ready(self) -> bool:
@@ -373,28 +424,20 @@ class SecureChatProtocol:
         self.temp_file_paths = {}
         self.sending_transfers = {}
     
-    def start_sending_transfer(self, transfer_id: str, metadata: FileMetadata) -> None:
-        """Start tracking a sending file transfer."""
-        self.sending_transfers[transfer_id] = metadata
     
     def stop_sending_transfer(self, transfer_id: str) -> None:
         """Stop tracking a sending file transfer."""
         if transfer_id in self.sending_transfers:
             del self.sending_transfers[transfer_id]
     
+    @property
     def has_active_file_transfers(self) -> bool:
         """Check if any file transfers (sending or receiving) are currently active."""
-        # Check for active receiving transfers
-        if self.received_chunks or self.open_file_handles:
+        if self.received_chunks or self.open_file_handles or self.sending_transfers:
             return True
-        
-        # Check for active sending transfers
-        if self.sending_transfers:
-            return True
-        
         return False
     
-    def start_sender_thread(self, sock) -> None:
+    def start_sender_thread(self, sock: socket.socket) -> None:
         """Start the background sender thread for message queuing."""
         if self.sender_thread is not None and self.sender_thread.is_alive():
             return  # Thread already running
@@ -440,35 +483,19 @@ class SecureChatProtocol:
         Returns:
             bool: True if the message was sent successfully, False otherwise.
         """
-        try:
-            if not self.socket:
-                return False
-            emergency_message = {
-                "type": MessageType.EMERGENCY_CLOSE,
-            }
-            if self.shared_key and self.send_chain_key:
-                # Encrypt immediately using normal ratcheting
-                encrypted = self.encrypt_message(json.dumps(emergency_message))
-                send_message(self.socket, encrypted)
-            
-            else:
-                # Fall back to plaintext immediate send
-                send_message(self.socket, json.dumps(emergency_message).encode('utf-8'))
-            
-            return True
-        except (OSError, ConnectionError) as sock_err:
-            # Socket level failure
-            print(f"Failed to send emergency close (socket issue): {sock_err}")
+        if not self.socket:
             return False
+        emergency_message = {"type": MessageType.EMERGENCY_CLOSE}
+        if self.shared_key and self.send_chain_key:
+            # Encrypt immediately using normal ratcheting
+            encrypted = self.encrypt_message(json.dumps(emergency_message))
+            send_message(self.socket, encrypted)
         
-        except ValueError as proto_err:
-            # Encryption state not ready / protocol state issue
-            print(f"Failed to send emergency close (protocol issue): {proto_err}")
-            return False
+        else:
+            # Fall back to plaintext immediate send
+            send_message(self.socket, json.dumps(emergency_message).encode('utf-8'))
         
-        except Exception as unknown_err:  # keep broad catch for any unforeseen error
-            print(f"Failed to send emergency close (unexpected error): {unknown_err}")
-            return False
+        return True
     
     def _generate_dummy_message(self) -> bytes:
         """Generate a dummy message with random data."""
@@ -488,89 +515,105 @@ class SecureChatProtocol:
         Control messages (key exchange, explicit plaintext items) are sent as-is.
         """
         while self.sender_running:
-            item = None
+            item = self._get_next_item()
+            to_send, post_action = self._prepare_item_for_sending(item)
             
-            # Check if there's a message in the queue
-            with self.sender_lock:
-                if self.message_queue:
-                    item = self.message_queue.popleft()
-            
-            # If no real message, generate a dummy message
-            # Skip dummy messages during file transfers
-            if item is None and self.send_dummy_messages and not self.has_active_file_transfers():
-                if self.encryption_ready and configs.SEND_DUMMY_PACKETS:
-                    item = self._generate_dummy_message()
-            
-            # Resolve the queue item into bytes to send
-            to_send: bytes | None = None
-            post_action: str | None = None
-            if item is not None:
-                try:
-                    # Already bytes -> send as-is
-                    if isinstance(item, (bytes, bytearray)):
-                        to_send = bytes(item)
-                    # Plaintext string -> encrypt
-                    elif isinstance(item, (str, dict)):
-                        if isinstance(item, dict):
-                            item = json.dumps(item)
-                        if self.shared_key and self.send_chain_key:
-                            to_send = self.encrypt_message(item)
-                        else:
-                            raise ValueError("Encryption keys not ready for plaintext item")
-                    # Instruction tuple
-                    elif isinstance(item, tuple) and item:
-                        kind = item[0]
-                        if kind == "encrypt_text" and len(item) >= 2:
-                            text = item[1]
-                            if isinstance(text, str) and self.shared_key and self.send_chain_key:
-                                to_send = self.encrypt_message(text)
-                            else:
-                                raise ValueError("Invalid text encryption request or keys not ready")
-                        elif kind == "encrypt_json" and len(item) >= 2:
-                            obj = item[1]
-                            if isinstance(obj, dict) and self.shared_key and self.send_chain_key:
-                                to_send = self.encrypt_message(json.dumps(obj))
-                            else:
-                                raise ValueError("Invalid JSON encryption request or keys not ready")
-                        elif kind == "encrypt_json_then_switch" and len(item) >= 2:
-                            obj = item[1]
-                            if isinstance(obj, dict) and self.shared_key and self.send_chain_key:
-                                to_send = self.encrypt_message(json.dumps(obj))
-                                post_action = "switch_keys"
-                            else:
-                                raise ValueError("Invalid JSON (switch) request or keys not ready")
-                        elif kind in ("plaintext", "encrypted") and len(item) >= 2:
-                            data = item[1]
-                            if isinstance(data, (SupportsIndex, SupportsBytes, Buffer)):
-                                to_send = bytes(data)
-                            else:
-                                raise TypeError("Provided data is not bytes-like for plaintext/encrypted send")
-                        else:
-                            raise ValueError(f"Unsupported instruction tuple: {kind}")
-                except (ValueError, TypeError) as e:
-                    # If preparing this item fails, drop it and continue
-                    print(f"Message preparation error (dropped): {e}")
-                    to_send = None
-                except Exception as e:  # keep broad for any unforeseen preparation issue
-                    print(f"Unexpected error preparing message (dropped): {e}")
-                    to_send = None
-            
-            # Send the message if we have one and a socket
             if to_send is not None and self.socket is not None:
-                try:
-                    send_message(self.socket, to_send)
-                    # Perform any post-send action (e.g., switching to pending keys after rekey commit)
-                    if post_action == "switch_keys":
-                        self.activate_pending_keys()
-                except (OSError, ConnectionError) as send_err:
-                    # If sending fails, the connection is likely broken
-                    print(f"Send failed, likely broken connection: {send_err}")
-                    # Main thread expected to handle reconnection/cleanup
-                except Exception as send_unknown:
-                    print(f"Unexpected send error: {send_unknown}")
+                self._send_prepared_item(to_send, post_action)
             
-            # Wait 250ms before next cycle
             time.sleep(0.25)
+    
+    def _get_next_item(self):
+        """Get the next item from the queue or generate a dummy message."""
+        with self.sender_lock:
+            if self.message_queue:
+                return self.message_queue.popleft()
+        
+        # Generate dummy message if appropriate
+        if self.send_dummy_messages and not self.has_active_file_transfers:
+            if self.encryption_ready and configs.SEND_DUMMY_PACKETS:
+                return self._generate_dummy_message()
+        
+        return None
+    
+    def _prepare_item_for_sending(self, item) -> tuple[bytes | None, str | None]:
+        """Convert a queue item into bytes ready for transmission."""
+        if item is None:
+            return None, None
+        
+        try:
+            if isinstance(item, (bytes, bytearray)):
+                return bytes(item), None
+            
+            if isinstance(item, (str, dict)):
+                return self._encrypt_plaintext_item(item), None
+            
+            if isinstance(item, tuple) and item:
+                return self._process_instruction_tuple(item)
+            
+            raise ValueError(f"Unsupported item type: {type(item)}")
+        
+        except (ValueError, TypeError) as e:
+            print(f"Message preparation error (dropped): {e}")
+            return None, None
+        except Exception as e:
+            print(f"Unexpected error preparing message (dropped): {e}")
+            return None, None
+    
+    def _encrypt_plaintext_item(self, item) -> bytes:
+        """Encrypt a string or dict item."""
+        if isinstance(item, dict):
+            item = json.dumps(item)
+        
+        if not (self.shared_key and self.send_chain_key):
+            raise ValueError("Encryption keys not ready for plaintext item")
+        
+        return self.encrypt_message(item)
+    
+    def _process_instruction_tuple(self, item: tuple) -> tuple[bytes, str | None]:
+        """Process instruction tuples like ('encrypt_text', data)."""
+        kind = item[0]
+        
+        if kind == "encrypt_text" and len(item) >= 2:
+            return self._encrypt_text_message(item[1]), None
+        
+        if kind == "encrypt_json" and len(item) >= 2:
+            return self._encrypt_json_message(item[1]), None
+        
+        if kind == "encrypt_json_then_switch" and len(item) >= 2:
+            return self._encrypt_json_message(item[1]), "switch_keys"
+        
+        if kind in ("plaintext", "encrypted") and len(item) >= 2:
+            data = item[1]
+            if isinstance(data, (SupportsIndex, SupportsBytes, Buffer)):
+                return bytes(data), None
+            raise TypeError("Provided data is not bytes-like for plaintext/encrypted send")
+        
+        raise ValueError(f"Unsupported instruction tuple: {kind}")
+    
+    def _encrypt_text_message(self, text: str) -> bytes:
+        """Encrypt a text message."""
+        if not isinstance(text, str) or not (self.shared_key and self.send_chain_key):
+            raise ValueError("Invalid text encryption request or keys not ready")
+        
+        inner_obj = {"type": MessageType.TEXT_MESSAGE, "text": text}
+        return self.encrypt_message(json.dumps(inner_obj))
+    
+    def _encrypt_json_message(self, obj: dict) -> bytes:
+        """Encrypt a JSON message."""
+        if not isinstance(obj, dict) or not (self.shared_key and self.send_chain_key):
+            raise ValueError("Invalid JSON encryption request or keys not ready")
+        
+        return self.encrypt_message(json.dumps(obj))
+    
+    def _send_prepared_item(self, to_send: bytes, post_action: str | None) -> None:
+        """Send prepared bytes and perform any post-send actions."""
+        success, err_msg = send_message(self.socket, to_send)
+        if not success:
+            print(f"Failed to send message: {err_msg}")
+        
+        if post_action == "switch_keys":
+            self.activate_pending_keys()
     
     def generate_keypair(self) -> tuple[bytes, bytes]:
         """Generate ML-KEM keypair for key exchange."""
@@ -787,13 +830,12 @@ class SecureChatProtocol:
             "version":       PROTOCOL_VERSION,
             "type":          MessageType.KEY_EXCHANGE_RESPONSE,
             "ciphertext":    base64.b64encode(ciphertext).decode('utf-8'),
-            "public_key":    base64.b64encode(self.own_public_key).decode('utf-8') if self.own_public_key else "",
-            "dh_public_key": base64.b64encode(self.dh_public_key_bytes).decode(
-                'utf-8') if self.dh_public_key_bytes else "",
+            "public_key":    base64.b64encode(self.own_public_key).decode('utf-8'),
+            "dh_public_key": base64.b64encode(self.dh_public_key_bytes).decode('utf-8'),
         }
         return json.dumps(message).encode('utf-8')
     
-    def process_key_exchange_init(self, data: bytes) -> tuple[bytes, bytes, str | None]:
+    def process_key_exchange_init(self, data: bytes) -> tuple[bytes, bytes, str]:
         """Process initial key exchange and return combined shared key, KEM ciphertext, and version warning if any.
         
         Returns:
@@ -802,61 +844,60 @@ class SecureChatProtocol:
         """
         try:
             message = json.loads(data.decode('utf-8'))
-            # Check protocol version
-            self.peer_version = str(message["version"])
-            peer_version = message.get("version")
-            version_warning = None
-            if peer_version != "" and peer_version != PROTOCOL_VERSION:
-                version_warning = (
-                    f"WARNING: Protocol version mismatch. Local: {PROTOCOL_VERSION}, Peer: {peer_version}. "
-                    f"Communication may not work properly.")
-            kem_public_key = base64.b64decode(message["public_key"])
-            peer_dh_pub_b64 = message.get("dh_public_key", "")
-            peer_dh_pub_bytes = base64.b64decode(peer_dh_pub_b64) if peer_dh_pub_b64 else b""
-            if debug_enabled(): peer_dh_pub_bytes = xor_bytes(peer_dh_pub_bytes, os.urandom(len(peer_dh_pub_bytes)))
-            # Store peer's KEM public key for verification
-            self.peer_public_key = kem_public_key
-            # Store peer's DH public key for fingerprinting/verification context
-            self.peer_dh_public_key_bytes = peer_dh_pub_bytes
-            
-            # Generate our own KEM keypair if we don't have one yet (for verification purposes)
-            if not self.own_public_key:
-                self.own_public_key, self.own_private_key = self.generate_keypair()
-            
-            # Generate our ephemeral X25519 keypair for DH and compute DH shared secret
-            self.dh_private_key = X25519PrivateKey.generate()
-            self.dh_public_key_bytes = self.dh_private_key.public_key().public_bytes_raw()
-            if not peer_dh_pub_bytes:
-                raise ValueError("Missing DH public key in key exchange init")
-            peer_dh_pub = X25519PublicKey.from_public_bytes(peer_dh_pub_bytes)
-            dh_shared_secret = self.dh_private_key.exchange(peer_dh_pub)
-            
-            # Perform KEM encapsulation to obtain KEM shared secret and ciphertext to send back
-            kem_shared_secret, ciphertext = ML_KEM_1024.encaps(kem_public_key)
-            if debug_enabled(): kem_shared_secret = xor_bytes(kem_shared_secret, os.urandom(len(kem_shared_secret)))
-            
-            # Combine secrets using XOR
-            if len(kem_shared_secret) != len(dh_shared_secret):
-                raise ValueError("Shared secret length mismatch between KEM and DH")
-            combined_shared = xor_bytes(kem_shared_secret, dh_shared_secret)
-            
-            # Derive keys from combined shared secret
-            self.encryption_key = self.derive_keys(combined_shared)
-            self.shared_key = combined_shared
-            
-            # Initialize message-phase Double Ratchet baseline
-            self.msg_recv_private = self.dh_private_key
-            self.msg_peer_base_public = self.peer_dh_public_key_bytes
-            
-            return combined_shared, ciphertext, version_warning
-        except (UnicodeDecodeError, json.JSONDecodeError) as e:
-            raise DecodeError(f"Key exchange init decode error: {e}") from e
+            peer_version = str(message["version"])
+            self.peer_version = peer_version
+            kem_public_key = base64.b64decode(message["public_key"], validate=True)
+            peer_dh_pub_b64 = message["dh_public_key"]
+            peer_dh_pub_bytes = base64.b64decode(peer_dh_pub_b64, validate=True)
+        except UnicodeDecodeError as e:
+            raise ValueError(f"Key exchange init message contains invalid UTF-8 characters") from e
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Key exchange init message could not be parsed") from e
         except KeyError as e:
-            raise KeyError(f"Key exchange init missing field: {e}") from e
-        except (binascii.Error, ValueError) as e:
-            raise ValueError(f"Key exchange init value error: {e}") from e
-        except Exception as e:
-            raise Exception(f"Key exchange init failed (unexpected): {e}") from e
+            raise ValueError(f"Key exchange init message is missing required fields") from e
+        except binascii.Error as e:
+            raise ValueError(f"Key exchange init message contains invalid base64-encoded data") from e
+        
+        # Check protocol version
+        version_warning = ""
+        if peer_version != "" and peer_version != PROTOCOL_VERSION:
+            version_warning = (
+                f"WARNING: Protocol version mismatch. Local: {PROTOCOL_VERSION}, Peer: {peer_version}. " +
+                "Communication may not work properly.")
+        if debug_enabled(): peer_dh_pub_bytes = xor_bytes(peer_dh_pub_bytes, os.urandom(len(peer_dh_pub_bytes)))
+        # Store peer's KEM public key for verification
+        self.peer_public_key = kem_public_key
+        # Store peer's DH public key for fingerprinting/verification context
+        self.peer_dh_public_key_bytes = peer_dh_pub_bytes
+        
+        # Generate our own KEM keypair if we don't have one yet (for verification purposes)
+        if not self.own_public_key:
+            self.own_public_key, _ = self.generate_keypair()
+        
+        # Generate our ephemeral X25519 keypair for DH and compute DH shared secret
+        self.dh_private_key = X25519PrivateKey.generate()
+        self.dh_public_key_bytes = self.dh_private_key.public_key().public_bytes_raw()
+        peer_dh_pub = X25519PublicKey.from_public_bytes(peer_dh_pub_bytes)
+        dh_shared_secret = self.dh_private_key.exchange(peer_dh_pub)
+        
+        # Perform KEM encapsulation to obtain KEM shared secret and ciphertext to send back
+        kem_shared_secret, ciphertext = ML_KEM_1024.encaps(kem_public_key)
+        if debug_enabled(): kem_shared_secret = xor_bytes(kem_shared_secret, os.urandom(len(kem_shared_secret)))
+        
+        # Combine secrets using XOR
+        if len(kem_shared_secret) != len(dh_shared_secret):
+            raise ValueError("Shared secret length mismatch between KEM and DH")
+        combined_shared = xor_bytes(kem_shared_secret, dh_shared_secret)
+        
+        # Derive keys from combined shared secret
+        self.encryption_key = self.derive_keys(combined_shared)
+        self.shared_key = combined_shared
+        
+        # Initialise message-phase Double Ratchet baseline
+        self.msg_recv_private = self.dh_private_key
+        self.msg_peer_base_public = self.peer_dh_public_key_bytes
+        
+        return combined_shared, ciphertext, version_warning
     
     def process_key_exchange_response(self, data: bytes, private_key: bytes) -> tuple[bytes, str | None]:
         """Process key exchange response and derive combined shared key using KEM ⊕ X25519 DH.
@@ -867,54 +908,45 @@ class SecureChatProtocol:
         """
         try:
             message = json.loads(data.decode('utf-8'))
-            
-            # Check protocol version
-            peer_version = message.get("version", None)
-            version_warning = None
-            if peer_version is not None and peer_version != PROTOCOL_VERSION:
-                version_warning = (f"WARNING: Protocol version mismatch. Local: {PROTOCOL_VERSION}, Peer: " +
-                                   f"{peer_version}. Communication may not work properly.")
-            
             ciphertext = base64.b64decode(message["ciphertext"])
-            # Store peer's KEM public key for verification
-            if "public_key" in message and message["public_key"]:
-                self.peer_public_key = base64.b64decode(message["public_key"])
-            # Obtain peer's DH public key
-            peer_dh_pub_b64 = message.get("dh_public_key", "")
-            if not peer_dh_pub_b64:
-                raise ValueError("Missing DH public key in key exchange response")
+            self.peer_public_key = base64.b64decode(message["public_key"])
+            peer_dh_pub_b64 = message["dh_public_key"]
             peer_dh_pub_bytes = base64.b64decode(peer_dh_pub_b64)
-            if debug_enabled(): peer_dh_pub_bytes = xor_bytes(peer_dh_pub_bytes, os.urandom(len(peer_dh_pub_bytes)))
-            # Store peer's DH public key for fingerprinting/verification context
-            self.peer_dh_public_key_bytes = peer_dh_pub_bytes
-            if not self.dh_private_key:
-                raise ValueError("Local DH private key not initialized for key exchange response")
-            peer_dh_pub = X25519PublicKey.from_public_bytes(peer_dh_pub_bytes)
-            dh_shared_secret = self.dh_private_key.exchange(peer_dh_pub)
+        except (UnicodeDecodeError, binascii.Error):
+            raise DecodeError("Key exchange response decode error, UnicodeDecodeError")
+        except json.JSONDecodeError:
+            raise DecodeError("Key exchange response decode error, json.JSONDecodeError")
             
-            kem_shared_secret = ML_KEM_1024.decaps(private_key, ciphertext)
-            if debug_enabled(): kem_shared_secret = xor_bytes(kem_shared_secret, os.urandom(len(kem_shared_secret)))
-            if len(kem_shared_secret) != len(dh_shared_secret):
-                raise ValueError("Shared secret length mismatch between KEM and DH")
-            combined_shared = xor_bytes(kem_shared_secret, dh_shared_secret)
-            
-            # Derive keys from combined shared secret
-            self.encryption_key = self.derive_keys(combined_shared)
-            self.shared_key = combined_shared
-            
-            # Initialize message-phase Double Ratchet baseline
-            self.msg_recv_private = self.dh_private_key
-            self.msg_peer_base_public = self.peer_dh_public_key_bytes
-            
-            return combined_shared, version_warning
-        except (UnicodeDecodeError, json.JSONDecodeError) as e:
-            raise ValueError(f"Key exchange response decode error: {e}") from e
-        except KeyError as e:
-            raise ValueError(f"Key exchange response missing field: {e}") from e
-        except (binascii.Error, ValueError) as e:
-            raise ValueError(f"Key exchange response value error: {e}") from e
-        except Exception as e:
-            raise ValueError(f"Key exchange response failed (unexpected): {e}") from e
+        peer_version = message.get("version", None)
+        
+        version_warning = None
+        if peer_version is not None and peer_version != PROTOCOL_VERSION:
+            version_warning = (f"WARNING: Protocol version mismatch. Local: {PROTOCOL_VERSION}, Peer: " +
+                               f"{peer_version}. Communication may not work properly.")
+        
+        
+        if debug_enabled(): peer_dh_pub_bytes = xor_bytes(peer_dh_pub_bytes, os.urandom(len(peer_dh_pub_bytes)))
+        # Store peer's DH public key for fingerprinting/verification context
+        self.peer_dh_public_key_bytes = peer_dh_pub_bytes
+        if not self.dh_private_key:
+            raise ValueError("Local DH private key not initialized for key exchange response")
+        peer_dh_pub = X25519PublicKey.from_public_bytes(peer_dh_pub_bytes)
+        dh_shared_secret = self.dh_private_key.exchange(peer_dh_pub)
+        
+        kem_shared_secret = ML_KEM_1024.decaps(private_key, ciphertext)
+        if debug_enabled(): kem_shared_secret = xor_bytes(kem_shared_secret, os.urandom(len(kem_shared_secret)))
+        combined_shared = xor_bytes(kem_shared_secret, dh_shared_secret)
+        
+        # Derive keys from combined shared secret
+        self.encryption_key = self.derive_keys(combined_shared)
+        self.shared_key = combined_shared
+        
+        # Initialize message-phase Double Ratchet baseline
+        self.msg_recv_private = self.dh_private_key
+        self.msg_peer_base_public = self.peer_dh_public_key_bytes
+        
+        return combined_shared, version_warning
+
     
     def encrypt_message(self, plaintext: str) -> bytes:
         """
@@ -966,9 +998,9 @@ class SecureChatProtocol:
         # Create AAD from message metadata for authentication
         nonce: bytes = os.urandom(12)
         aad_data: dict[str, MessageType | int | str] = {
-            "type":    MessageType.ENCRYPTED_MESSAGE,
-            "counter": self.message_counter,
-            "nonce":   base64.b64encode(nonce).decode('utf-8'),
+            "type":          MessageType.ENCRYPTED_MESSAGE,
+            "counter":       self.message_counter,
+            "nonce":         base64.b64encode(nonce).decode('utf-8'),
             "dh_public_key": base64.b64encode(eph_pub_bytes).decode('utf-8')
         }
         aad: bytes = json.dumps(aad_data).encode('utf-8')
@@ -1014,97 +1046,97 @@ class SecureChatProtocol:
         """
         if not self.shared_key or not self.receive_chain_key:
             raise ValueError("No shared key or receive chain key established")
-        legitimate = False
         try:
             message: dict[str, Any] = json.loads(data.decode('utf-8'))
             nonce: bytes = base64.b64decode(message["nonce"])
             ciphertext: bytes = base64.b64decode(message["ciphertext"])
-            counter = message["counter"]
-            peer_dh_pub_b64 = message.get("dh_public_key", "")
-            if not peer_dh_pub_b64:
-                raise ValueError("Missing DH public key in message")
-            
-            expected_verification: bytes = base64.b64decode(message["verification"])
-            verif_hasher = hashlib.sha3_512()
-            verif_hasher.update(self.encryption_key)
-            # Include dh_public_key in verification to authenticate the ratchet key
-            verif_hasher.update(json.dumps({
-                "type":          message["type"],
-                "counter":       counter,
-                "nonce":         message["nonce"],
-                "ciphertext":    message["ciphertext"],
-                "dh_public_key": peer_dh_pub_b64,
-            }).encode('utf-8'))
-            actual_verification = verif_hasher.digest()
-            if actual_verification != expected_verification:
-                raise ValueError("Message verification failed - possible tampering or corruption")
-            
-            legitimate = True
-            # Check for replay attacks or old messages
-            if counter <= self.peer_counter:
-                raise ValueError(
-                    f"Message legitimate but counter has unexpected value: higher than {self.peer_counter} got {counter}")
-            
-            temp_chain_key = self.receive_chain_key
-            for i in range(self.peer_counter + 1, counter):
-                temp_chain_key = self._ratchet_chain_key(temp_chain_key, i)
-            
-            # Mix DH from peer's message into the temp chain key
-            if not self.msg_recv_private:
-                raise ValueError("Local DH private key not initialized for message ratchet")
-            peer_dh_pub_bytes = base64.b64decode(peer_dh_pub_b64)
-            dh_shared = self.msg_recv_private.exchange(X25519PublicKey.from_public_bytes(peer_dh_pub_bytes))
-            mixed_chain_key = self._mix_dh_with_chain(temp_chain_key, dh_shared, counter, "m")
-            
-            # Derive the message key for the current message from the mixed chain
-            message_key = self._derive_message_key(mixed_chain_key, counter)
-            
-            # Calculate what the new chain key state WOULD be (symmetric ratchet only)
-            new_chain_key = self._ratchet_chain_key(temp_chain_key, counter)
-            
-            # Create AAD from message metadata for authentication verification
-            aad_data = {
-                "type":    MessageType.ENCRYPTED_MESSAGE,
-                "counter": counter,
-                "nonce":   base64.b64encode(nonce).decode('utf-8'),
-                "dh_public_key": base64.b64encode(peer_dh_pub_bytes).decode('utf-8')
-            }
-            aad = json.dumps(aad_data).encode('utf-8')
-            
-            # Decrypt with the derived message key and verify AAD
-            aesgcm = AESGCM(message_key)
-            decrypted_data = aesgcm.decrypt(nonce, ciphertext, aad)
-            
-            # Remove padding (null bytes) that was added during encryption
-            # Find the first null byte and truncate there
-            null_index = decrypted_data.find(b'\x00')
-            if null_index != -1:
-                decrypted_data = decrypted_data[:null_index]
-            
-            # Update ratchet state
-            self.receive_chain_key = new_chain_key
-            self.peer_counter = counter
-            # Store peer's latest public key for our next send
-            self.msg_peer_base_public = peer_dh_pub_bytes
-            
-            # delete the message key
-            message_key = b'\x00' * len(message_key)
-            del message_key
-            
-            return decrypted_data.decode('utf-8')
-        except (UnicodeDecodeError, json.JSONDecodeError) as e:
-            raise ValueError(f"Message decode failed: {e}") from e
+            counter: int = message["counter"]
+            peer_dh_pub_b64: str = message["dh_public_key"]
+            peer_dh_pub_bytes = base64.b64decode(peer_dh_pub_b64, validate=True)
+            expected_verification: bytes = base64.b64decode(message["verification"], validate=True)
+        except (UnicodeDecodeError, json.JSONDecodeError, binascii.Error) as e:
+            raise ValueError("Message decoding failed, message dropped") from e
         except KeyError as e:
-            raise ValueError(f"Missing required field in message: {e}") from e
-        except (binascii.Error, ValueError) as e:
-            if legitimate:
-                raise ValueError(f"Message is legitimate but decryption failed: {e}") from e
-            raise ValueError(f"Message illegitimate or tampered: {e}") from e
-        except Exception as e:  # Catch-all
-            if legitimate:
-                raise ValueError(f"Message is legitimate but decryption failed (unexpected): {e}") from e
-            else:
-                raise ValueError(f"Message is NOT legitimate or has been tampered with (unexpected): {e}") from e
+            raise ValueError("Message missing field, message dropped") from e
+        
+        verif_hasher = hashlib.sha3_512()
+        verif_hasher.update(self.encryption_key)
+        # Include dh_public_key in verification to authenticate the ratchet key
+        verif_hasher.update(json.dumps({
+            "type":          message["type"],
+            "counter":       counter,
+            "nonce":         message["nonce"],
+            "ciphertext":    message["ciphertext"],
+            "dh_public_key": peer_dh_pub_b64,
+        }).encode('utf-8'))
+        actual_verification = verif_hasher.digest()
+        if actual_verification != expected_verification:
+            raise ValueError("Message verification failed - possible tampering or corruption")
+        
+        # Check for replay attacks or old messages
+        if counter <= self.peer_counter:
+            raise ValueError(
+                    f"Message legitimate but counter has unexpected value: higher than {self.peer_counter} got {counter}")
+        
+        temp_chain_key = self.receive_chain_key
+        for i in range(self.peer_counter + 1, counter):
+            temp_chain_key = self._ratchet_chain_key(temp_chain_key, i)
+        
+        # Mix DH from peer's message into the temp chain key
+        if not self.msg_recv_private:
+            raise ValueError("Local DH private key not initialized for message ratchet")
+        
+        dh_shared = self.msg_recv_private.exchange(X25519PublicKey.from_public_bytes(peer_dh_pub_bytes))
+
+        mixed_chain_key = self._mix_dh_with_chain(temp_chain_key, dh_shared, counter, "m")
+        
+        # Derive the message key for the current message from the mixed chain
+        message_key = self._derive_message_key(mixed_chain_key, counter)
+        
+        # Calculate what the new chain key state WOULD be (symmetric ratchet only)
+        new_chain_key = self._ratchet_chain_key(temp_chain_key, counter)
+        
+        # Create AAD from message metadata for authentication verification
+        aad_data = {
+            "type":          MessageType.ENCRYPTED_MESSAGE,
+            "counter":       counter,
+            "nonce":         base64.b64encode(nonce).decode('utf-8'),
+            "dh_public_key": base64.b64encode(peer_dh_pub_bytes).decode('utf-8')
+        }
+        aad = json.dumps(aad_data).encode('utf-8')
+        
+        # Decrypt with the derived message key and verify AAD
+        aesgcm = AESGCM(message_key)
+        try:
+            decrypted_data = aesgcm.decrypt(nonce, ciphertext, aad)
+        except InvalidTag:
+            message_key = b'\x00' * len(message_key)
+            raise ValueError("Message is probably legitimate but failed to decrypt, InvalidTag")
+            
+        
+        # Remove padding (null bytes) that was added during encryption
+        # Find the first null byte and truncate there
+        null_index = decrypted_data.find(b'\x00')
+        if null_index != -1:
+            decrypted_data = decrypted_data[:null_index]
+        
+        try:
+            decrypted_data = decrypted_data.decode('utf-8')
+        except UnicodeDecodeError:
+            message_key = b'\x00' * len(message_key)
+            raise ValueError("Message is probably legitimate but failed to decode, UnicodeDecodeError")
+        
+        # Update ratchet state
+        self.receive_chain_key = new_chain_key
+        self.peer_counter = counter
+        # Store peer's latest public key for our next send
+        self.msg_peer_base_public = peer_dh_pub_bytes
+        
+        # delete the message key
+        message_key = b'\x00' * len(message_key)
+        del message_key
+        
+        return decrypted_data
     
     # Rekey methods
     def activate_pending_keys(self) -> None:
@@ -1340,8 +1372,8 @@ class SecureChatProtocol:
         
         if compress:
             # Use streaming compression
-            compressor = StreamingGzipCompressor()
-            pending_data = b''
+            compressor: StreamingGzipCompressor = StreamingGzipCompressor()
+            pending_data: bytes = b''
             
             try:
                 with open(file_path, 'rb') as original_file:
@@ -1374,7 +1406,7 @@ class SecureChatProtocol:
                 # Clean up on error
                 try:
                     compressor.finalize()
-                except Exception:  # ignore finalize issues because we're already failing
+                except Exception:  # ignore finalise issues because we're already failing
                     pass  # intentional: cleanup best-effort
                 raise e
             except Exception as e:
@@ -1514,7 +1546,6 @@ class SecureChatProtocol:
         # Initialise tracking structures if this is the first chunk for this transfer
         if transfer_id not in self.received_chunks:
             self.received_chunks[transfer_id] = set()
-            
             
             # Create temp file with secure permissions (cross-platform)
             try:
@@ -1698,20 +1729,14 @@ def create_reset_message() -> bytes:
     return json.dumps(message).encode('utf-8')
 
 
-def send_message(sock: socket.socket | None, data: bytes) -> bool:
+def send_message(sock: socket.socket, data: bytes) -> tuple[bool, str]:
     """Send a length-prefixed message over a socket."""
     try:
-        if not sock:
-            raise ValueError("Socket is None")
         length = struct.pack('!I', len(data))
         sock.sendall(length + data)
-        return True
-    except socket.timeout:
-        return False
-    except (OSError, IOError):
-        return False
-    except Exception:
-        return False
+        return True, ""
+    except socket.error as e:
+        return False, str(e)
 
 
 def receive_message(sock) -> bytes:

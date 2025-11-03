@@ -104,6 +104,7 @@ class ProtocolCryptoTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.bob.decrypt_message(tampered3_bytes)
         
+        # Tamper with verification hash -> should fail authentication
         tampered4 = json.loads(c4.decode("utf-8"))
         ver_bytes = bytearray(base64.b64decode(tampered["verification"]))
         ver_bytes[0] ^= 0x01

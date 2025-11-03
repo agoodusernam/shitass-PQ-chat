@@ -9,6 +9,11 @@
 /.idea/codeStyles/codeStyleConfig.xml
 /.idea/PythonProject.iml
 /.idea/copilotDiffState.xml
+/.idea/copilot.data.migration.agent.xml
+/.idea/copilot.data.migration.ask.xml
+/.idea/copilot.data.migration.ask2agent.xml
+/.idea/copilot.data.migration.edit.xml
+/.idea/workspace.xml
 /themes.json
 /.idea/dictionaries/project.xml
 /theme.json

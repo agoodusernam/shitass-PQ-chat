@@ -31,8 +31,8 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
     Logging is intentionally very minimal since this is a security and privacy focused application.
     """
     
-    def __init__(self, host='0.0.0.0', port=16384):
-        """Initialize the secure chat server.
+    def __init__(self, host: str = '0.0.0.0', port: int = 16384):
+        """Initialise the secure chat server.
         
         Args:
             host (str, optional): The hostname or IP address to bind the server to.
@@ -40,9 +40,9 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
             port (int, optional): The port number to listen on. Defaults to 16384.
         """
         self.clients: dict[str, 'SecureChatRequestHandler'] = {}
-        self.clients_lock = threading.Lock()
-        self.running = False
-        self.client_counter = 0  # Counter for unique client IDs
+        self.clients_lock: threading.Lock = threading.Lock()
+        self.running: bool = False
+        self.client_counter: int = 0  # Counter for unique client IDs
         
         super().__init__((host, port), SecureChatRequestHandler)  # type: ignore
         
@@ -122,28 +122,14 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
         with self.clients_lock:
             for client_id, client_handler in self.clients.items():
                 if client_id != sender_id and client_handler.is_connected():
-                    try:
-                        send_message(client_handler.request, message_data)
-                    except (OSError, ConnectionError) as e:
-                        print(f"Failed to route message to {client_id} (socket): {e}")
-                        client_handler.disconnect(f"Routing failure (socket): {e}")
-                    except Exception as e:
-                        print(f"Failed to route message to {client_id} (unexpected): {e}")
-                        client_handler.disconnect(f"Routing failure: {e}")
+                    send_message(client_handler.request, message_data)
     
     def broadcast_error(self, error_text: str):
         """Broadcast an error message to all connected clients."""
-        error_msg = create_error_message(error_text)
+        error_msg = json.dumps({"type":  MessageType.ERROR, "error": error_text}).encode('utf-8')
         with self.clients_lock:
             for client_handler in self.clients.values():
-                try:
-                    send_message(client_handler.request, error_msg)
-                except (OSError, ConnectionError):
-                    # Ignore: client already disconnected or unreachable
-                    pass
-                except Exception:
-                    # unexpected, ignore to continue broadcasting to other clients
-                    pass
+                send_message(client_handler.request, error_msg)
     
     def start_server(self):
         """Start the server and serve forever."""
@@ -179,17 +165,17 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
     
     def __init__(self, request: socket.socket | tuple[bytes, socket.socket], client_address: str,
                  server: SecureChatServer) -> None:
-        self.client_id = None
-        self.connected = True
-        self.key_exchange_complete = False
-        self.announced_disconnect = False
+        self.client_id: str = ""
+        self.connected: bool = True
+        self.key_exchange_complete: bool = False
+        self.announced_disconnect: bool = False
         
         # Keepalive tracking
-        self.last_keepalive_time = time.time()
-        self.keepalive_failures = 0
-        self.waiting_for_keepalive_response = False
-        self.keepalive_thread = None
-        self.unexpected_message_count = 0
+        self.last_keepalive_time: float = time.time()
+        self.keepalive_failures: int = 0
+        self.waiting_for_keepalive_response: bool = False
+        self.keepalive_thread: threading.Thread | None = None
+        self.unexpected_message_count: int = 0
         
         super().__init__(request, client_address, server)
     

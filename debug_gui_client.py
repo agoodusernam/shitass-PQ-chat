@@ -337,9 +337,9 @@ class DebugChatGUI(ChatGUI):
     
     def __init__(self, root: TkinterDnD.Tk) -> None:
         # Initialize debug-specific attributes
-        self.debug_visible = True  # Show debug panel by default
-        self.last_debug_update = 0
-        self.debug_update_interval = 1.0
+        self.debug_visible: bool = True  # Show debug panel by default
+        self.last_debug_update: int = 0
+        self.debug_update_interval: float = 1.0
         # Toggle: attach cryptographic info to messages
         self.attach_crypto_info_to_messages: bool = False
         
@@ -549,12 +549,12 @@ class DebugChatGUI(ChatGUI):
         self.file_transfer_btn.config(state=ltk.DISABLED)
         
         # Debug frame (middle, initially visible)
-        self.debug_frame = tk.Frame(content_frame, bg=self.BG_COLOR, width=300)
+        self.debug_frame = tk.Frame(content_frame, bg=self.BG_COLOR, width=330)
         self.debug_frame.pack_propagate(False)
         self.debug_visible = True
         
         # Debug Actions frame (right side)
-        self.debug_actions_frame = tk.Frame(content_frame, bg=self.BG_COLOR, width=250)
+        self.debug_actions_frame = tk.Frame(content_frame, bg=self.BG_COLOR, width=300)
         self.debug_actions_frame.pack_propagate(False)
         
         # Pack debug frames to the right
@@ -921,14 +921,14 @@ class DebugChatGUI(ChatGUI):
                 debug_text += "  Verification Pending\n"
             
             if self.client.protocol and self.client.protocol.shared_key:
-                debug_text += f"  ✓ Shared Key: {self.client.protocol.shared_key[:16].hex()}...\n"
+                debug_text += f"    ✓ Shared Key: {self.client.protocol.shared_key[:16].hex()}...\n"
             else:
-                debug_text += "  ✗ No Shared Key\n"
+                debug_text += "     ✗ No Shared Key\n"
             
             if self.client.protocol and self.client.protocol.encryption_key:
-                debug_text += f"  ✓ Encryption Key: {self.client.protocol.encryption_key[:16].hex()}...\n"
+                debug_text += f"    ✓ Encryption Key: {self.client.protocol.encryption_key[:16].hex()}...\n"
             else:
-                debug_text += "  ✗ No Encryption Key\n"
+                debug_text += "     ✗ No Encryption Key\n"
             
             # Chain Keys and Counters
             debug_text += "\nCHAIN KEYS & COUNTERS:\n"
@@ -2035,7 +2035,7 @@ class DebugChatGUI(ChatGUI):
 class DebugGUISecureChatClient(GUISecureChatClient):
     """Debug version of GUISecureChatClient - extends base with debug features."""
     
-    def __init__(self, gui: DebugChatGUI, host='localhost', port=16384):
+    def __init__(self, gui: DebugChatGUI, host: str = 'localhost', port: int = 16384):
         super().__init__(gui, host, port)
         self.gui: DebugChatGUI = gui
         

@@ -405,12 +405,12 @@ def print_report(results: dict[str, Any]) -> None:
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Benchmark SecureChatProtocol encryption/decryption performance")
-    parser.add_argument('-n', '--num', dest='num_messages', type=int, default=1000,
+    parser.add_argument('-n', '--num', dest='num_messages', type=int, default=20000,
                         help='Number of messages to benchmark')
     parser.add_argument('--mode', choices=['random', 'fixed', 'list'], default='random',
                         help='Message size selection mode')
     parser.add_argument('--min', dest='min_size', type=int, default=16, help='Minimum message size (random mode)')
-    parser.add_argument('--max', dest='max_size', type=int, default=2048, help='Maximum message size (random mode)')
+    parser.add_argument('--max', dest='max_size', type=int, default=1048576, help='Maximum message size (random mode)')
     parser.add_argument('--fixed', dest='fixed_size', type=int, default=512, help='Fixed message size (fixed mode)')
     parser.add_argument('--sizes', dest='sizes', type=str, default='', help='Comma separated sizes (list mode)')
     parser.add_argument('--warmup', dest='warmup', type=int, default=50, help='Warmup iterations (not measured)')

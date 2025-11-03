@@ -3,6 +3,7 @@ import base64
 import json
 import os
 import re
+import sys
 import tempfile
 import threading
 import time
@@ -10,7 +11,7 @@ import tkinter as tk
 import uuid
 import wave
 from collections import deque
-from tkinter import scrolledtext, messagebox, filedialog
+from tkinter import scrolledtext, messagebox, filedialog, StringVar
 from typing import Callable, Any, Literal, ParamSpec
 
 import config_handler
@@ -63,8 +64,34 @@ try:
     
     PYAUDIO_AVAILABLE = True
 except ImportError:
+    # fake class so type hinting works even if pyaudio is not installed
+    class pyaudio:
+        paUInt8 = 0
+        paInt8 = 1
+        paInt16 = 2
+        paInt24 = 3
+        paInt32 = 4
+        
+        class PyAudio:
+            def open(self, **_):
+                return pyaudio.Stream()
+            def get_format_from_width(self, *_):
+                return 0
+            def terminate(self):
+                pass
+        class Stream:
+            def write(self, *_):
+                pass
+            def is_active(self):
+                return False
+            def is_stopped(self):
+                return True
+            def close(self):
+                pass
+            def read(self, *_, **__):
+                return b""
+            
     PYAUDIO_AVAILABLE = False
-    pyaudio = None
 
 from client import SecureChatClient
 from shared import bytes_to_human_readable, MessageType
@@ -116,7 +143,7 @@ def get_image_from_clipboard() -> Image.Image | None:
         return None
 
 
-def display_image(image: Image.Image, root):
+def display_image(image: Image.Image, root: tk.Tk):
     """Display an image in a new Tkinter window, scaling it down if it's too large."""
     if not PIL_AVAILABLE or not ImageTk:
         messagebox.showerror("Error", "PIL is not available. Cannot display image.")
@@ -415,6 +442,12 @@ class ChatGUI:
         self.spellcheck_timer: str = ""
         self.spellcheck_enabled: bool = SPELLCHECKER_AVAILABLE
         self.misspelled_tags: set[str] = set()
+        if PYAUDIO_AVAILABLE:
+            self.audio_interface: pyaudio.PyAudio | None = pyaudio.PyAudio()
+            self.notification_stream: pyaudio.Stream | None = None
+        else:
+            self.audio_interface = None
+            self.notification_stream = None
         
         # Create GUI elements
         self.create_widgets()
@@ -451,6 +484,25 @@ class ChatGUI:
         # Bind Control+Q for emergency close at window level
         self.root.bind("<Control-q>", self.emergency_close)
     
+    def get_notif_stream(self, audio_format: int, channels: int, rate: int) -> pyaudio.Stream:
+        """Get a PyAudio stream for notification sounds."""
+        if self.notification_stream is not None:
+            return self.notification_stream
+        
+        self.notification_stream = self.pyaudio_obj.open(format=audio_format, channels=channels, rate=rate, output=True)
+        
+        return self.notification_stream
+    
+    @property
+    def pyaudio_obj(self):
+        if not PYAUDIO_AVAILABLE:
+            return None
+        if self.audio_interface is None:
+            self.audio_interface = pyaudio.PyAudio()
+        
+        return self.audio_interface
+        
+    
     def play_notification_sound(self):
         """Play a notification sound if the window is not focused."""
         if not self.notification_enabled or self.window_focused:
@@ -458,17 +510,13 @@ class ChatGUI:
         
         def play_notif():
             with wave.open(configs.MESSAGE_NOTIF_SOUND_FILE, "rb") as w:
-                p = pyaudio.PyAudio()
-                stream = p.open(format=p.get_format_from_width(w.getsampwidth()),
-                                channels=w.getnchannels(),
-                                rate=w.getframerate(),
-                                output=True)
+                stream = self.get_notif_stream(audio_format=self.audio_interface.get_format_from_width(w.getsampwidth()),
+                                               channels=w.getnchannels(),
+                                               rate=w.getframerate())
                 
                 while len(data := w.readframes(1024)):
                     stream.write(data)
                 
-                stream.close()
-                p.terminate()
                 
         try:
             if os.path.exists(configs.MESSAGE_NOTIF_SOUND_FILE) and PYAUDIO_AVAILABLE:
@@ -1397,13 +1445,12 @@ class ChatGUI:
                 self.verify_yes()
                 return "break"
             
-            elif self.client.pending_file_requests:
+            if self.client.pending_file_requests:
                 self.file_transfer_yes()
                 return "break"
             
-            else:
-                self.append_to_chat("No verification or file transfer pending.")
-                return "break"
+            self.append_to_chat("No verification or file transfer pending.")
+            return "break"
         
         if message.lower() in ['/vn', '/verify no', '/no', '/n', '/reject']:
             self.message_entry.delete("1.0", tk.END)
@@ -1655,7 +1702,7 @@ class ChatGUI:
                     
                     start_pos = f"{pos}+1c"
         
-        except:
+        except Exception:
             # Silently ignore spellcheck errors to avoid disrupting user experience
             pass
     
@@ -1695,7 +1742,11 @@ class ChatGUI:
             context_menu: tk.Menu = tk.Menu(self.root, tearoff=0)
             
             # Get suggestions
-            suggestions: list[str | None] = list(self.spell_checker.candidates(word))[:5]  # Limit to 5 suggestions
+            candidates: set[str] | None = self.spell_checker.candidates(word)
+            if candidates:
+                suggestions: list[str] = list(self.spell_checker.candidates(word))[:5]  # Limit to 5 suggestions
+            else:
+                suggestions = []
             
             if suggestions:
                 for suggestion in suggestions:
@@ -1731,7 +1782,7 @@ class ChatGUI:
         except Exception:
             pass
     
-    def add_to_dictionary(self, word):
+    def add_to_dictionary(self, word: str):
         """Add a word to the personal dictionary."""
         try:
             self.spell_checker.word_frequency.load_words([word])
@@ -1751,10 +1802,9 @@ class ChatGUI:
                     self.client.socket.close()
             # Close the application immediately
             self.on_tk_thread(self.root.quit)
-            os._exit(1)
+            sys.exit(0)
         except Exception as e:
             # Even if there's an error, still close the application
-            print(f"Error during emergency close: {e}")
             os._exit(1)
     
     def on_closing(self):
@@ -1763,43 +1813,36 @@ class ChatGUI:
             self.client.disconnect()
         self.root.destroy()
     
+    def _cleanup_thread(self):
+        while True:
+            if (self.ephemeral_mode in ("LOCAL", "GLOBAL")) and self.ephemeral_messages:
+                current_time = time.time()
+                # Find messages older than 30 seconds
+                expired_message_ids: list[str] = []
+                for message_id, timestamp in list(self.ephemeral_messages.items()):
+                    if current_time - timestamp >= 30.0:
+                        expired_message_ids.append(message_id)
+                
+                # Remove expired messages
+                if expired_message_ids:
+                    self.on_tk_thread(self.remove_ephemeral_messages, expired_message_ids)
+            
+            time.sleep(1.0)  # Check every second
+    
     def start_ephemeral_cleanup(self):
         """Start the background thread to clean up ephemeral messages."""
-        
-        def cleanup_thread():
-            while True:
-                try:
-                    if (self.ephemeral_mode in ("LOCAL", "GLOBAL")) and self.ephemeral_messages:
-                        current_time = time.time()
-                        # Find messages older than 30 seconds
-                        expired_message_ids = []
-                        for message_id, timestamp in list(self.ephemeral_messages.items()):
-                            if current_time - timestamp >= 30.0:
-                                expired_message_ids.append(message_id)
-                        
-                        # Remove expired messages
-                        if expired_message_ids:
-                            self.on_tk_thread(self.remove_ephemeral_messages, expired_message_ids)
-                    
-                    time.sleep(1.0)  # Check every second
-                except Exception:
-                    # Silently continue on errors to avoid breaking the cleanup thread
-                    pass
-        
-        threading.Thread(target=cleanup_thread, daemon=True).start()
     
-    def on_ephemeral_change(self, value):
+        threading.Thread(target=self._cleanup_thread, daemon=True).start()
+    
+    def on_ephemeral_change(self, value: StringVar):
         """Handle dropdown selection for ephemeral mode: OFF, LOCAL, GLOBAL."""
-        try:
-            selected = str(value).upper()
-        except Exception:
-            selected = "OFF"
+        selected = str(value)
         # Enforce owner lock when currently in GLOBAL owned by someone else
         if self.ephemeral_mode == "GLOBAL" and self.ephemeral_global_owner_id and self.ephemeral_global_owner_id != self.local_client_id:
             if selected != "GLOBAL":
                 # Revert selection and inform user
-                self.root.after(0, self.ephemeral_mode_var.set, "GLOBAL")
-                self.append_to_chat("Global ephemeral mode was enabled by the other user. Only they can disable it.")
+                self.ephemeral_mode_var.set("GLOBAL")
+                self._append_to_chat("Global ephemeral mode was enabled by the other user. Only they can disable it.")
                 return
         # Apply selection
         if selected == "LOCAL":
@@ -1809,7 +1852,7 @@ class ChatGUI:
             previous_owner = self.ephemeral_global_owner_id
             self.ephemeral_mode = "LOCAL"
             self.ephemeral_global_owner_id = None
-            self.append_to_chat("Local ephemeral mode enabled - your messages will disappear after 30 seconds")
+            self._append_to_chat("Local ephemeral mode enabled - your messages will disappear after 30 seconds")
             # Broadcast OFF if we were the global owner
             if was_global_owner and self.connected and self.client and self.client.key_exchange_complete:
                 self.send_ephemeral_mode_change("OFF", previous_owner)
@@ -1817,12 +1860,12 @@ class ChatGUI:
         elif selected == "GLOBAL":
             # Require secure session to announce globally
             if not (self.connected and self.client and self.client.key_exchange_complete):
-                self.append_to_chat("Cannot enable global ephemeral before secure session is established.")
-                self.root.after(0, self.ephemeral_mode_var.set, self.ephemeral_mode)
+                self._append_to_chat("Cannot enable global ephemeral before secure session is established.")
+                self.ephemeral_mode_var.set(self.ephemeral_mode)
                 return
             self.ephemeral_mode = "GLOBAL"
             self.ephemeral_global_owner_id = self.local_client_id
-            self.append_to_chat("Global ephemeral mode enabled - only you can disable it")
+            self._append_to_chat("Global ephemeral mode enabled - only you can disable it")
             # Broadcast to peer
             self.send_ephemeral_mode_change("GLOBAL", self.ephemeral_global_owner_id)
             self.update_ephemeral_ui()
@@ -1830,8 +1873,8 @@ class ChatGUI:
             # OFF
             if self.ephemeral_mode == "GLOBAL" and self.ephemeral_global_owner_id and self.ephemeral_global_owner_id != self.local_client_id:
                 # Not allowed to turn off
-                self.append_to_chat("Only the user who enabled global ephemeral mode can disable it.")
-                self.root.after(0, self.ephemeral_mode_var.set, "GLOBAL")
+                self._append_to_chat("Only the user who enabled global ephemeral mode can disable it.")
+                self.ephemeral_mode_var.set("GLOBAL")
                 return
             # Turn off locally and broadcast OFF if we are the owner
             was_global_owner = (
@@ -1839,7 +1882,7 @@ class ChatGUI:
             self.ephemeral_mode = "OFF"
             previous_owner = self.ephemeral_global_owner_id
             self.ephemeral_global_owner_id = None
-            self.append_to_chat("Ephemeral mode disabled.")
+            self._append_to_chat("Ephemeral mode disabled.")
             # Remove all existing ephemeral messages locally
             all_message_ids = list(self.ephemeral_messages.keys())
             if all_message_ids:
@@ -1851,65 +1894,51 @@ class ChatGUI:
     
     def send_ephemeral_mode_change(self, mode: str, owner_id: str | None):
         """Send an encrypted EPHEMERAL_MODE_CHANGE message to the peer."""
-        try:
-            if not (self.client and self.client.socket and self.client.protocol):
-                return
-            payload = {
-                "type":     MessageType.EPHEMERAL_MODE_CHANGE,
-                "mode":     mode,
-                "owner_id": owner_id,
-            }
-            self.client.protocol.queue_message(("encrypt_json", payload))
-        except Exception as e:
-            self.append_to_chat(f"Error sending ephemeral mode change: {e}")
+        if not (self.client and self.client.socket and self.client.protocol):
+            return
+        payload = {
+            "type":     MessageType.EPHEMERAL_MODE_CHANGE,
+            "mode":     mode,
+            "owner_id": owner_id,
+        }
+        self.client.protocol.queue_message(("encrypt_json", payload))
     
     def update_ephemeral_ui(self):
         """Update dropdown UI state and colour based on current ephemeral mode and ownership."""
-        try:
-            # Colour feedback
-            if self.ephemeral_mode == "GLOBAL":
-                bg = self.theme_colors["EPHEMERAL_GLOBAL_BG"]
-                fg = self.theme_colors["EPHEMERAL_GLOBAL_FG"]
-            elif self.ephemeral_mode == "LOCAL":
-                bg = self.theme_colors["EPHEMERAL_LOCAL_BG"]
-                fg = self.theme_colors["EPHEMERAL_LOCAL_FG"]
-            else:
-                bg = self.BUTTON_BG_COLOR
-                fg = self.FG_COLOR
-            self.ephemeral_menu.config(bg=bg, fg=fg, activebackground=self.BUTTON_ACTIVE_BG,
-                                       activeforeground=fg)
-        except Exception:
-            pass
+        # Colour feedback
+        if self.ephemeral_mode == "GLOBAL":
+            bg = self.theme_colors["EPHEMERAL_GLOBAL_BG"]
+            fg = self.theme_colors["EPHEMERAL_GLOBAL_FG"]
+        elif self.ephemeral_mode == "LOCAL":
+            bg = self.theme_colors["EPHEMERAL_LOCAL_BG"]
+            fg = self.theme_colors["EPHEMERAL_LOCAL_FG"]
+        else:
+            bg = self.BUTTON_BG_COLOR
+            fg = self.FG_COLOR
+        self.ephemeral_menu.config(bg=bg, fg=fg, activebackground=self.BUTTON_ACTIVE_BG,
+                                   activeforeground=fg)
         # Lock control if global owned by peer
-        try:
-            if self.ephemeral_mode == "GLOBAL" and self.ephemeral_global_owner_id and self.ephemeral_global_owner_id != self.local_client_id:
-                self.ephemeral_menu.config(state=ltk.DISABLED)
-            else:
-                self.ephemeral_menu.config(state=ltk.NORMAL)
-        except Exception:
-            pass
-    
-    def remove_ephemeral_messages(self, message_ids):
-        """Remove ephemeral messages from the chat display."""
-        try:
-            self.chat_display.config(state=ltk.NORMAL)
-            for message_id in message_ids:
-                # Find the tagged message range
-                tag_ranges = self.chat_display.tag_ranges(message_id)
-                if tag_ranges:
-                    # Delete the tagged text
-                    self.chat_display.delete(tag_ranges[0], tag_ranges[1])
-                
-                # Remove from tracking dict
-                self.ephemeral_messages.pop(message_id, None)
+        if self.ephemeral_mode == "GLOBAL" and self.ephemeral_global_owner_id and self.ephemeral_global_owner_id != self.local_client_id:
+            self.ephemeral_menu.config(state=ltk.DISABLED)
+        else:
+            self.ephemeral_menu.config(state=ltk.NORMAL)
             
-            self.chat_display.see(tk.END)
-            self.chat_display.config(state=ltk.DISABLED)
+    def remove_ephemeral_messages(self, message_ids: list[str]):
+        """Remove ephemeral messages from the chat display."""
+        self.chat_display.config(state=ltk.NORMAL)
+        for message_id in message_ids:
+            # Find the tagged message range
+            tag_ranges = self.chat_display.tag_ranges(message_id)
+            if tag_ranges:
+                # Delete the tagged text
+                self.chat_display.delete(tag_ranges[0], tag_ranges[1])
+            
+            # Remove from tracking dict
+            self.ephemeral_messages.pop(message_id, None)
         
-        except Exception:
-            # If removal fails, just clean up the tracking dict
-            for message_id in message_ids:
-                self.ephemeral_messages.pop(message_id, None)
+        self.chat_display.see(tk.END)
+        self.chat_display.config(state=ltk.DISABLED)
+        
     
     def prompt_voice_call(self):
         """
@@ -1949,7 +1978,7 @@ class ChatGUI:
                     return
                 
                 with wave.open(configs.RINGTONE_FILE, "rb") as w:
-                    p = pyaudio.PyAudio()
+                    p = self.pyaudio_obj if self.pyaudio_obj else pyaudio.PyAudio()
                     stream = p.open(format=p.get_format_from_width(w.getsampwidth()),
                                     channels=w.getnchannels(),
                                     rate=w.getframerate(),
@@ -1959,23 +1988,15 @@ class ChatGUI:
                         stream.write(data)
                     
                     stream.close()
-                    p.terminate()
                     if keep_ringing:
-                        # Auto-reject the call when ringtone playback finishes without user action
-                        try:
-                            self.on_tk_thread(on_reject)
-                        except Exception:
-                            try:
-                                on_reject()
-                            except Exception:
-                                pass
+                        on_reject()
+
             
             except Exception:
                 print("Failed to play ringtone.")
                 try:
                     if stream.is_active():
                         stream.close()
-                        p.terminate()
                 except Exception:
                     pass  # Stream is probably already closed
         
@@ -1999,30 +2020,55 @@ class ChatGUI:
 
 
 class GUISecureChatClient(SecureChatClient):
-    """Extended SecureChatClient that works with GUI."""
-    
-    def __init__(self, gui: "ChatGUI", host='localhost', port=16384):
+    def __init__(self, gui: "ChatGUI", host: str = 'localhost', port: int = 16384):
+        """
+        Extended SecureChatClient that works with GUI.
+
+        Additional guaranteed attributes:
+            display_images (bool): Whether to auto-display received images.
+            gui (ChatGUI): Reference to the GUI instance.
+            verification_complete (bool): Whether verification is complete.
+            verification_started (bool): Whether verification has started.
+            verification_pending (bool): Whether verification is pending user response.
+            voice_muted (bool): Whether the voice call is muted.
+
+        Additional unsafe attributes:
+            voice_data_queue (deque[bytes]): Queue for incoming voice data.
+            pending_file_requests (dict[str, FileRequest]): Pending file requests.
+            _pending_voice_init (dict[str, int]): Pending voice call initialisation parameters.
+        """
         super().__init__(host, port)
-        self.display_images: bool = self.protocol.config["auto_display_images"]
-        self.voice_data_queue: deque[bytes] = deque()
         self.gui: "ChatGUI" = gui
-        # Initialise verification flags and state properly
+        self.display_images: bool = self.protocol.config["auto_display_images"]
+        
+        # Verification flags and state
         self.verification_complete: bool = False
         self.verification_started: bool = False
         self.verification_pending: bool = False
-        # Initialise file transfer state
-        self.pending_file_requests: dict[Any, Any] = {}
-        # Voice call negotiation state
-        self._pending_voice_init: dict[str, int] | None = None
+        
+        # File transfer state
+        self.pending_file_requests: dict[str, shared.FileMetadata] = {}
+        
+        # Voice call
+        self._pending_voice_init: dict[str, int] = {}
         self.voice_muted: bool = False
+        self.voice_data_queue: deque[bytes] = deque()
     
     def connect(self) -> bool:
         # Call base connect (starts receive thread)
         ok = super().connect()
         if ok:
-            # Inform GUI (thread-safe dispatch if needed)
             self.gui.on_tk_thread(self.gui.on_connected)
         return ok
+    
+    def close_audio(self):
+        try:
+            if self.gui.audio_interface is not None:
+                self.gui.audio_interface.terminate()
+                self.gui.audio_interface = None
+        except Exception:
+            pass # We are exiting the program anyway
+            
     
     @staticmethod
     def _is_image_file(file_path: str) -> bool:
@@ -2060,17 +2106,15 @@ class GUISecureChatClient(SecureChatClient):
         evt = threading.Event()
         
         def ask():
-            try:
-                msg = (
-                    "Rekey requested by an UNVERIFIED peer.\n\n"
-                    "Proceeding may expose you to Man-in-the-Middle attacks if this peer is not who you expect.\n\n"
-                    "Do you want to commence the rekey?\n"
-                    "Yes = proceed with rekey, No = disconnect."
-                )
-                nonlocal decision
-                decision = messagebox.askyesno("Unverified Rekey Request", msg, icon='warning')
-            finally:
-                evt.set()
+            msg = (
+                "Rekey requested by an UNVERIFIED peer.\n\n"
+                "Proceeding may expose you to Man-in-the-Middle attacks if this peer is not who you expect.\n\n"
+                "Do you want to commence the rekey?\n"
+                "Yes = proceed with rekey, No = disconnect."
+            )
+            nonlocal decision
+            decision = messagebox.askyesno("Unverified Rekey Request", msg, icon='warning')
+            evt.set()
         
         self.gui.on_tk_thread(ask)
         evt.wait()
@@ -2102,40 +2146,39 @@ class GUISecureChatClient(SecureChatClient):
         }
         self.protocol.queue_message(("encrypt_json", to_send))
     
-    def handle_voice_call_init(self, message_data: str) -> None:
+    def handle_voice_call_init(self, decrypted_text: str) -> None:
         """
         Handle incoming voice call request.
         Store peer params and prompt the user to accept or reject the call (unless disabled).
         GUI exclusive feature
         """
+        # Parse and store initiator's params for negotiation
         try:
-            # Parse and store initiator's params for negotiation
-            try:
-                init_msg = json.loads(message_data)
-                self._pending_voice_init = {
-                    "rate": int(init_msg.get("rate", 44100)),
-                    "chunk_size": int(init_msg.get("chunk_size", int(init_msg.get("rate", 44100) * 0.01))),
-                    "audio_format": int(init_msg.get("audio_format", configs.VOICE_FORMAT)),
-                }
-            except Exception:
-                # If parsing fails, clear any previous state
-                self._pending_voice_init = None
-            
-            # Auto-reject if voice calls are disabled in settings
-            if not self.gui.allow_voice_calls:
-                self.protocol.queue_message(("encrypt_json", {"type": MessageType.VOICE_CALL_REJECT}))
-                self.gui.append_to_chat("Auto-rejected incoming voice call (disabled in settings).")
-                return
-            
-            # Warn if keys are unverified (potential MitM vulnerability)
-            if not self.protocol.peer_key_verified:
-                self.display_system_message("Warning: Incoming voice call over an unverified connection. This is vulnerable to MitM attacks.")
-            
-            # Prompt user in the GUI thread
-            self.gui.on_tk_thread(self.gui.prompt_voice_call)
+            init_msg = json.loads(decrypted_text)
+            rate = int(init_msg.get("rate", 44100))
+            self._pending_voice_init = {
+                "rate": rate,
+                "chunk_size": int(init_msg.get("chunk_size", int(rate * 0.01))),
+                "audio_format": int(init_msg.get("audio_format", configs.VOICE_FORMAT)),
+            }
+        except json.JSONDecodeError:
+            # If parsing fails, clear any previous state
+            self._pending_voice_init = {}
         
-        except Exception as e:
-            self.gui.append_to_chat(f"Error handling voice call init: {e}")
+        
+        
+        # Auto-reject if voice calls are disabled in settings
+        if not self.gui.allow_voice_calls:
+            self.protocol.queue_message(("encrypt_json", {"type": MessageType.VOICE_CALL_REJECT}))
+            self.gui.append_to_chat("Auto-rejected incoming voice call (disabled in settings).")
+            return
+        
+        # Warn if keys are unverified (potential MitM vulnerability)
+        if not self.protocol.peer_key_verified:
+            self.display_system_message("Warning: Incoming voice call over an unverified connection. This is vulnerable to MitM attacks.")
+        
+        # Prompt user in the GUI thread
+        self.gui.on_tk_thread(self.gui.prompt_voice_call)
     
     def on_user_response(self, accepted: bool, rate: int, chunk_size: int, audio_format: int):
         if accepted:
@@ -2185,63 +2228,61 @@ class GUISecureChatClient(SecureChatClient):
                 return int(fmt)
         return default_fmt
     
-    def handle_voice_call_accept(self, message_data: str):
+    def handle_voice_call_accept(self, decrypted_text: str):
         """
         Handle acceptance of a voice call request.
         Start the send and receive threads for voice data.
         Voice data bypasses the queue as it needs to be realtime
         """
         try:
-            message = json.loads(message_data)
+            message = json.loads(decrypted_text)
+        except json.JSONDecodeError:
+            self.display_system_message("Error: Failed to parse voice call accept message.")
+            return
             
-            # Determine peer params and compute agreed format
-            local_rate = int(configs.VOICE_RATE)
-            local_chunk = int(configs.VOICE_CHUNK)
-            local_max_fmt = int(configs.VOICE_FORMAT)
-            
-            # If we have a pending init stored, we're the callee starting locally;
-            # otherwise, this is the initiator receiving the peer's accept.
-            if self._pending_voice_init:
-                peer_rate = int(self._pending_voice_init.get("rate", 44100))
-                peer_max_fmt = int(self._pending_voice_init.get("audio_format", local_max_fmt))
-            else:
-                peer_rate = int(message.get("rate", 44100))
-                peer_max_fmt = int(message.get("audio_format", local_max_fmt))
-            
-            agreed_format = self._negotiate_audio_format(local_max_fmt, peer_max_fmt)
-            
-            self.protocol.send_dummy_messages = False
-            self.voice_call_active = True
-            self.voice_muted = False
-            
-            # Input stream uses local hardware params + agreed format
-            in_p = pyaudio.PyAudio()
-            in_stream = in_p.open(rate=local_rate, channels=1, format=agreed_format, input=True)
-            
-            # Output stream uses peer's params + agreed format
-            out_p = pyaudio.PyAudio()
-            out_stream = out_p.open(rate=peer_rate, channels=1, format=agreed_format, output=True)
-            
-            threading.Thread(target=self.send_voice_thread, args=(in_p, in_stream, local_chunk), daemon=True).start()
-            threading.Thread(target=self.receive_voice_thread, args=(out_p, out_stream), daemon=True).start()
-            
-            # Clear pending init after starting
-            self._pending_voice_init = None
-            
-            # Switch the GUI button to 'End Call'
-            self.gui.no_types_tk_thread(
-                    self.gui.voice_call_btn.config,
-                    text="End Call",
-                    state=ltk.NORMAL,
-                    command=self.end_call
-            )
-            # Show mute button when call becomes active
-            self.gui.on_tk_thread(self.gui.show_mute_button)
+        # Determine peer params and compute agreed format
+        local_rate = int(configs.VOICE_RATE)
+        local_chunk = int(configs.VOICE_CHUNK)
+        local_max_fmt = int(configs.VOICE_FORMAT)
         
-        except Exception as e:
-            self.display_error_message(f"Error handling voice call accept: {e}")
+        # If we have a pending init stored, we're the callee starting locally;
+        # otherwise, this is the initiator receiving the peer's accept.
+        if self._pending_voice_init:
+            peer_rate = int(self._pending_voice_init.get("rate", 44100))
+            peer_max_fmt = int(self._pending_voice_init.get("audio_format", local_max_fmt))
+        else:
+            peer_rate = int(message.get("rate", 44100))
+            peer_max_fmt = int(message.get("audio_format", local_max_fmt))
+        
+        agreed_format = self._negotiate_audio_format(local_max_fmt, peer_max_fmt)
+        
+        self.protocol.send_dummy_messages = False
+        self.voice_call_active = True
+        self.voice_muted = False
+        
+        # Input stream uses local hardware params + agreed format
+        in_stream = self.gui.pyaudio_obj.open(rate=local_rate, channels=1, format=agreed_format, input=True)
+        
+        # Output stream uses peer's params + agreed format
+        out_stream = self.gui.pyaudio_obj.open(rate=peer_rate, channels=1, format=agreed_format, output=True)
+        
+        threading.Thread(target=self.send_voice_thread, args=(in_stream, local_chunk), daemon=True).start()
+        threading.Thread(target=self.receive_voice_thread, args=[out_stream], daemon=True).start()
+        
+        # Clear pending init after starting
+        self._pending_voice_init = {}
+        
+        # Switch the GUI button to 'End Call'
+        self.gui.no_types_tk_thread(
+                self.gui.voice_call_btn.config,
+                text="End Call",
+                state=ltk.NORMAL,
+                command=self.end_call
+        )
+        # Show mute button when call becomes active
+        self.gui.on_tk_thread(self.gui.show_mute_button)
     
-    def send_voice_thread(self, p: pyaudio.PyAudio, stream: pyaudio.Stream, chunk_size: int):
+    def send_voice_thread(self, stream: pyaudio.Stream, chunk_size: int):
         try:
             while self.voice_call_active and self.connected:
                 chunk = stream.read(chunk_size, exception_on_overflow=False)
@@ -2250,7 +2291,6 @@ class GUISecureChatClient(SecureChatClient):
             else:
                 # Clean up on exit
                 stream.close()
-                p.terminate()
         
         except Exception as e:
             self.display_error_message(f"Voice send error: {e}")
@@ -2259,13 +2299,12 @@ class GUISecureChatClient(SecureChatClient):
             try:
                 if not stream.is_active():
                     stream.close()
-                p.terminate()
             
             except Exception:
                 # Stream already closed
                 pass
     
-    def receive_voice_thread(self, p: pyaudio.PyAudio, stream: pyaudio.Stream):
+    def receive_voice_thread(self, stream: pyaudio.Stream):
         try:
             while self.voice_call_active and self.connected:
                 if self.voice_data_queue:
@@ -2276,7 +2315,6 @@ class GUISecureChatClient(SecureChatClient):
             else:
                 # Clean up on exit
                 stream.close()
-                p.terminate()
         except Exception as e:
             self.display_error_message(f"Voice receive error: {e}")
         
@@ -2284,7 +2322,6 @@ class GUISecureChatClient(SecureChatClient):
             try:
                 if not stream.is_stopped():
                     stream.close()
-                p.terminate()
             except Exception:
                 # Already closed/terminated
                 pass
@@ -2313,7 +2350,7 @@ class GUISecureChatClient(SecureChatClient):
             self.voice_call_active = False
             self.protocol.send_dummy_messages = True
             # Clear any buffered audio and pending state
-            self._pending_voice_init = None
+            self._pending_voice_init = {}
             self.voice_data_queue.clear()
             # Notify peer
             if notify_peer:
@@ -2341,7 +2378,7 @@ class GUISecureChatClient(SecureChatClient):
             self.protocol.send_dummy_messages = True
             self.voice_data_queue.clear()
             # Clear pending negotiation state
-            self._pending_voice_init = None
+            self._pending_voice_init = {}
             # Update UI
             self.gui.no_types_tk_thread(
                     self.gui.voice_call_btn.config,
@@ -2363,75 +2400,71 @@ class GUISecureChatClient(SecureChatClient):
             # Update the GUI to show the message was delivered
             self.gui.on_tk_thread(self.gui.update_message_delivery_status, confirmed_counter)
         
-        except Exception as e:
-            self.display_error_message(f"Error handling delivery confirmation: {e}")
+        except json.JSONDecodeError:
+            self.display_error_message("Invalid delivery confirmation message format.")
+        except KeyError:
+            self.display_error_message("Missing 'confirmed_counter' field in delivery confirmation message.")
     
     def handle_ephemeral_mode_change(self, decrypted_message: str) -> None:
         """Override: apply peer's ephemeral mode changes to GUI state."""
         try:
             message = json.loads(decrypted_message)
-            if message.get("type") != MessageType.EPHEMERAL_MODE_CHANGE:
-                return
             mode = str(message.get("mode", "OFF")).upper()
             owner_id = message.get("owner_id")
-            
-            if not self.gui:
-                # No GUI attached; nothing to update visually
-                return
-            
-            def set_global():
-                self.gui.ephemeral_mode = "GLOBAL"
-                self.gui.ephemeral_global_owner_id = owner_id
-                self.gui.ephemeral_mode_var.set("GLOBAL")
-                self.gui.append_to_chat("Peer enabled GLOBAL ephemeral mode. Only the enabler can disable it.")
-                self.gui.update_ephemeral_ui()
-            
-            def set_off_from_owner():
-                # Switch OFF only when performed by the recorded owner
-                self.gui.ephemeral_mode = "OFF"
-                self.gui.ephemeral_global_owner_id = ""
-                self.gui.ephemeral_mode_var.set("OFF")
-                self.gui.append_to_chat("Peer disabled GLOBAL ephemeral mode.")
-                # Remove existing ephemeral messages locally
-                ids = list(self.gui.ephemeral_messages.keys())
-                if ids:
-                    self.gui.remove_ephemeral_messages(ids)
-                self.gui.update_ephemeral_ui()
-            
-            if mode == "GLOBAL":
-                self.gui.on_tk_thread(set_global)
-            elif mode == "OFF":
-                # Only honour OFF from the owner who enabled GLOBAL
-                if self.gui.ephemeral_mode == "GLOBAL" and self.gui.ephemeral_global_owner_id == owner_id:
-                    self.gui.on_tk_thread(set_off_from_owner)
-                else:
-                    self.gui.append_to_chat(
-                            "Peer attempted to disable GLOBAL ephemeral mode but is not the owner; ignoring.")
+        except json.JSONDecodeError:
+            self.display_error_message("Invalid ephemeral mode change message format.")
+            return
         
-        except Exception as e:
-            self.display_error_message(f"Error handling ephemeral mode change: {e}")
+        except KeyError:
+            self.display_error_message("Missing 'mode' or 'owner_id' field in ephemeral mode change message.")
+            return
+            
+        def set_global():
+            self.gui.ephemeral_mode = "GLOBAL"
+            self.gui.ephemeral_global_owner_id = owner_id
+            self.gui.ephemeral_mode_var.set("GLOBAL")
+            self.gui.append_to_chat("Peer enabled GLOBAL ephemeral mode. Only the enabler can disable it.")
+            self.gui.update_ephemeral_ui()
+        
+        def set_off_from_owner():
+            # Switch OFF only when performed by the recorded owner
+            self.gui.ephemeral_mode = "OFF"
+            self.gui.ephemeral_global_owner_id = ""
+            self.gui.ephemeral_mode_var.set("OFF")
+            self.gui.append_to_chat("Peer disabled GLOBAL ephemeral mode.")
+            # Remove existing ephemeral messages locally
+            ids = list(self.gui.ephemeral_messages.keys())
+            if ids:
+                self.gui.remove_ephemeral_messages(ids)
+            self.gui.update_ephemeral_ui()
+        
+        if mode == "GLOBAL":
+            self.gui.on_tk_thread(set_global)
+        elif mode == "OFF":
+            # Only honour OFF from the owner who enabled GLOBAL
+            if self.gui.ephemeral_mode == "GLOBAL" and self.gui.ephemeral_global_owner_id == owner_id:
+                self.gui.on_tk_thread(set_off_from_owner)
+            else:
+                self.gui.append_to_chat(
+                        "Peer attempted to disable GLOBAL ephemeral mode but is not the owner; ignoring.")
+        
     
     def handle_emergency_close(self) -> None:
         """Handle emergency close message from the other client - override to display in GUI."""
-        try:
-            # Display emergency close message in GUI
-            self.display_system_message("EMERGENCY CLOSE RECEIVED")
-            self.display_system_message("The other client has activated emergency close.")
-            self.display_system_message("Connection will be terminated immediately.")
-            
-            # Show popup notification
-            self.gui.on_tk_thread(messagebox.showwarning,
-                                "Emergency Close Activated",
-                                "The other client has activated emergency close.\nThe connection will be terminated immediately."
-                                )
-            
-            # Use the GUI's emergency close function to properly close everything
-            self.gui.emergency_close()
+        # Display emergency close message in GUI
+        self.display_system_message("EMERGENCY CLOSE RECEIVED")
+        self.display_system_message("The other client has activated emergency close.")
+        self.display_system_message("Connection will be terminated immediately.")
         
-        except Exception as e:
-            self.display_error_message(f"Error handling emergency close: {e}")
-            # Force disconnect
-            self.gui.emergency_close()
+        # Show popup notification
+        self.gui.on_tk_thread(messagebox.showwarning,
+                            "Emergency Close Activated",
+                            "The other client has activated emergency close.\nThe connection will be terminated immediately."
+                            )
+        
+        # Use the GUI's emergency close function to properly close everything
+        self.gui.emergency_close()
+        
     
     def handle_key_exchange_response(self, message_data: bytes) -> bool:
         """Handle key exchange response - override to send to GUI. """
@@ -2694,9 +2727,9 @@ class GUISecureChatClient(SecureChatClient):
         """Send file chunks to peer with GUI progress updates."""
         try:
             # Get transfer info including compression setting
-            transfer_info = self.pending_file_transfers[transfer_id]
-            total_chunks = transfer_info["metadata"]["total_chunks"]
-            compress = transfer_info.get("compress", True)
+            transfer_info: dict[str, shared.FileMetadata | bool | str] = self.pending_file_transfers[transfer_id]
+            total_chunks: int = transfer_info["metadata"]["total_chunks"]
+            compress: bool = bool(transfer_info.get("compress", True))
             
             chunk_generator = self.protocol.chunk_file(file_path, compress=compress)
             bytes_transferred = 0
