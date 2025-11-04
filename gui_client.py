@@ -2356,7 +2356,7 @@ class GUISecureChatClient(SecureChatClient):
             if notify_peer:
                 self.protocol.queue_message(("encrypt_json", {"type": MessageType.VOICE_CALL_END}))
             # Reset UI button back to 'Voice Call'
-            self.gui.no_types_tk_thread(
+            self.gui.no_types_tk_thread( # Type checker doesn't realise 'self' is implicitly passed
                     self.gui.voice_call_btn.config,
                     text="Voice Call",
                     state=ltk.NORMAL,
@@ -2365,7 +2365,8 @@ class GUISecureChatClient(SecureChatClient):
             # Hide mute button and reset mute state
             self.voice_muted = False
             self.gui.on_tk_thread(self.gui.hide_mute_button)
-            self.display_system_message("Voice call ended")
+            if notify_peer:
+                self.display_system_message("Voice call ended")
         except Exception as e:
             self.display_error_message(f"Error ending call: {e}")
     
@@ -2729,7 +2730,7 @@ class GUISecureChatClient(SecureChatClient):
             # Get transfer info including compression setting
             transfer_info: shared.FileTransfer = self.pending_file_transfers[transfer_id]
             total_chunks: int = transfer_info["metadata"]["total_chunks"]
-            compress: bool = bool(transfer_info.get("compress", True))
+            compress: bool = transfer_info["compress"]
             
             chunk_generator = self.protocol.chunk_file(file_path, compress=compress)
             bytes_transferred = 0

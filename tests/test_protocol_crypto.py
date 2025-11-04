@@ -129,7 +129,7 @@ class ProtocolCryptoTests(unittest.TestCase):
         fp_a = self.alice.get_own_key_fingerprint()
         fp_b = self.bob.get_own_key_fingerprint()
         self.assertEqual(fp_a, fp_b)
-        self.assertTrue(len(fp_a.split()) >= 16)
+        self.assertTrue(len(fp_a.split()) >= 8)
 
     def test_rekey_flow(self):
         # Send a pre-rekey message

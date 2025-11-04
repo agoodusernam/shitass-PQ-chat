@@ -133,10 +133,7 @@ class SecureChatClient:
             s = str(field)
         except Exception:
             s = repr(field)
-        try:
-            s_ascii = s.encode('ascii', errors='ignore').decode('ascii', errors='ignore')
-        except Exception:
-            s_ascii = s
+        s_ascii = s.encode('ascii', errors='ignore').decode('ascii', errors='ignore')
         if len(s_ascii) > 32:
             s_ascii = s_ascii[:32]
         return s_ascii or "?"
@@ -257,25 +254,19 @@ class SecureChatClient:
             running until the connection is lost or an error occurs. All exceptions
             are caught and logged to prevent the thread from crashing.
         """
-        try:
-            while self.connected:
-                try:
-                    message_data = receive_message(self.socket)
-                    self.handle_message(message_data)
-                
-                except ConnectionError:
-                    self.display_system_message("Connection to server lost.")
+        while self.connected:
+            try:
+                message_data = receive_message(self.socket)
+                self.handle_message(message_data)
+            
+            except ConnectionError:
+                self.display_system_message("Connection to server lost.")
+                break
+            except Exception as e:
+                if not self.connected:
                     break
-                except Exception as e:
-                    if not self.connected:
-                        break
-                    self.display_error_message(f"Error receiving message: {e}")
-                    break
-        
-        except Exception as e:
-            self.display_error_message(f"Receive thread error: {e}")
-        finally:
-            self.disconnect()
+                self.display_error_message(f"Error receiving message: {e}")
+                break
     
     def handle_message(self, message_data: bytes) -> None:
         """Handle different types of messages received from the server.
@@ -295,17 +286,16 @@ class SecureChatClient:
             All exceptions are caught and logged to prevent crashes.
         """
         # Rate-limit unverified peers to 5 messages/sec, unless in file transfer or voice call
-        if not self.protocol.peer_key_verified:
-            if not self.bypass_unverified_limits:
-                now = time.time()
-                if now - self._rl_window_start >= 1.0:
-                    self._rl_window_start = now
-                    self._rl_count = 0
-                if self._rl_count >= 5:
-                    # Drop excess messages
-                    self.display_error_message("Rate-limited unverified peer: drop message")
-                    return
-                self._rl_count += 1
+        if not self.protocol.peer_key_verified and not self.bypass_unverified_limits:
+            now = time.time()
+            if now - self._rl_window_start >= 1.0:
+                self._rl_window_start = now
+                self._rl_count = 0
+            if self._rl_count >= 5:
+                # Drop excess messages
+                self.display_error_message("Rate-limited unverified peer: drop message")
+                return
+            self._rl_count += 1
         
         if (not self.protocol.peer_key_verified and len(message_data) > 8192 and not
         self.bypass_unverified_limits):
@@ -315,8 +305,6 @@ class SecureChatClient:
         
         # First, try to parse as JSON (for control messages including keepalive)
         try:
-
-            
             message_json: dict[str, Any] = json.loads(message_data.decode('utf-8'))
             message_type = MessageType(int(message_json.get("type", -1)))
             if message_type == -1:
@@ -1240,30 +1228,28 @@ class SecureChatClient:
     
     def disconnect(self) -> None:
         """Disconnect from the server."""
+        # If the key exchange was complete there is a peer, notify them of disconnect
+        self.end_call(notify_peer=self.key_exchange_complete and self.connected)
+        self.protocol.stop_sender_thread()
+        self.close_audio()
+        
         if self.connected:
-            # If the key exchange was complete there is a peer, notify them of disconnect
-            self.end_call(notify_peer=self.key_exchange_complete)
-            self.protocol.stop_sender_thread()
-            self.close_audio()
-            
-            self.connected = False
-            
             shared.send_message(self.socket, json.dumps({"type": MessageType.CLIENT_DISCONNECT}).encode('utf-8'))
             
+        self.connected = False
+        try:
+            self.socket.close()
+        except Exception:
+            pass
+        
+        # Wait for receive thread to finish cleanly
+        if self.receive_thread and self.receive_thread.is_alive():
             try:
-                if self.socket:
-                    self.socket.close()
+                self.receive_thread.join(timeout=1.0)
             except Exception:
                 pass
-            
-            # Wait for receive thread to finish cleanly
-            if self.receive_thread and self.receive_thread.is_alive():
-                try:
-                    self.receive_thread.join(timeout=2.0)
-                except Exception:
-                    pass
-            
-            print("\nDisconnected from server.")
+        
+        print("\nDisconnected from server.")
     
     def end_call(self, notify_peer: bool = True) -> None:
         pass

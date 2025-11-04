@@ -43,7 +43,7 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
         self.running: bool = False
         self.client_counter: int = 0  # Counter for unique client IDs
         
-        super().__init__((host, port), SecureChatRequestHandler)  # type: ignore
+        super().__init__((host, port), SecureChatRequestHandler)
         
         print(f"Secure chat server started on {host}:{port}")
         print("Waiting for clients to connect...")
@@ -59,7 +59,8 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
             client_handler.client_id = client_id
             self.clients[client_id] = client_handler
             
-            print(f"[{datetime.datetime.now().strftime(format="%d.%m.%Y, %H:%S")}] Client {client_id} connected from {client_handler.client_address}")
+            print(f"[{datetime.datetime.now().strftime(format="%d.%m.%Y, %H:%S")}] Client {client_id} connected from " +
+                  f"{client_handler.client_address}")
         
         # If we now have exactly 2 clients, start key exchange
         if len(self.clients) == 2:
@@ -99,22 +100,12 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
             client1 = client_handlers[0]
             
             # Tell first client to start key exchange
-            try:
-                initiate_message = {
-                    "type":    MessageType.INITIATE_KEY_EXCHANGE,
-                    "message": "Starting key exchange..."
-                }
-                message_data = json.dumps(initiate_message).encode('utf-8')
-                send_message(client1.request, message_data)
-            except (OSError, ConnectionError) as e:
-                print(f"Key exchange initiation socket failure: {e}")
-                self.broadcast_error("Key exchange failed (socket error)")
-            except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                print(f"Key exchange initiation encoding failure: {e}")
-                self.broadcast_error("Key exchange failed (encoding error)")
-            except Exception as e:  # fallback unknown
-                print(f"Key exchange initiation failed (unexpected): {e}")
-                self.broadcast_error("Key exchange failed")
+            initiate_message = {
+                "type":    MessageType.INITIATE_KEY_EXCHANGE,
+                "message": "Starting key exchange..."
+            }
+            message_data = json.dumps(initiate_message).encode('utf-8')
+            send_message(client1.request, message_data)
     
     def route_message(self, sender_id: str, message_data: bytes):
         """Route encrypted message from sender to the other client."""

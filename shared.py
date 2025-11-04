@@ -30,21 +30,64 @@ import configs
 
 try:
     from kyber_py.ml_kem import ML_KEM_1024 # TODO: Switch to production ready library
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCMSIV
     from cryptography.hazmat.primitives.kdf.hkdf import HKDF
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
+    from cryptography.hazmat.primitives.hmac import HMAC
+    from cryptography.hazmat.primitives.constant_time import bytes_eq
+    from cryptography.hazmat.primitives.padding import PKCS7
 except ImportError as exc_:
     print("Required cryptographic libraries not found.")
     raise ImportError("Please install the required libraries with pip install -r requirements.txt") from exc_
 
 # Protocol constants
-PROTOCOL_VERSION: Final[str] = "4.1.0"
+PROTOCOL_VERSION: Final[str] = "5.0.2"
 # Protocol compatibility is denoted by version number
 # Breaking.Minor.Patch - only Breaking versions are checked for compatibility.
 # Breaking version changes introduce breaking changes that are not compatible with previous versions of the same major version.
 # Minor version changes may add features but remain compatible with previous minor versions of the same major version.
 # Patch versions are for bug fixes and minor improvements that do not affect compatibility.
+
+def xor_bytes(a: bytes, b: bytes) -> bytes:
+    """
+    XOR two byte objects
+    """
+    length = len(a) if len(a) > len(b) else len(b)
+    int_a = int.from_bytes(a, byteorder="big")
+    int_b = int.from_bytes(b, byteorder="big")
+    
+    xor_result = int_a ^ int_b
+    return xor_result.to_bytes(length, byteorder="big")
+
+
+class DoubleEncryptor:
+    """
+    Provides double encryption and decryption using AES-GCM-SIV and ChaCha20-Poly1305.
+    
+    Automatically adds and removes padding for the data
+    """
+    def __init__(self, key: bytes):
+        if not len(key) == 32:
+            raise ValueError("Key must be 32 bytes long")
+        
+        self.key = key
+        self.key_part1 = hashlib.sha256(self.key[:16]).digest()
+        self.key_part2 = hashlib.sha256(self.key[16:] + self.key_part1).digest()
+        self.aes = AESGCMSIV(self.key_part1)
+        self.chacha = ChaCha20Poly1305(self.key_part2)
+        
+    def encrypt(self, nonce: bytes, data: bytes, associated_data: bytes) -> bytes:
+        padder = PKCS7(512).padder()
+        padded_data = padder.update(data) + padder.finalize()
+        layer1 = self.aes.encrypt(nonce, padded_data, associated_data)
+        return self.chacha.encrypt(xor_bytes(nonce, self.key[:12]), layer1, associated_data)
+    
+    def decrypt(self, nonce: bytes, data: bytes, associated_data: bytes) -> bytes:
+        layer1 = self.chacha.decrypt(xor_bytes(nonce, self.key[:12]), data, associated_data)
+        unpadder = PKCS7(512).unpadder()
+        return unpadder.update(self.aes.decrypt(nonce, layer1, associated_data)) + unpadder.finalize()
 
 class MessageType(IntEnum):
     NONE = -1
@@ -170,18 +213,6 @@ def bytes_to_human_readable(size: int) -> str:
         return f"{size / 1024 ** 2:.1f} MB"
     
     return f"{size / 1024 ** 3:.1f} GB"
-
-
-def xor_bytes(a: bytes, b: bytes) -> bytes:
-    """
-    XOR two byte objects
-    """
-    length = len(a) if len(a) > len(b) else len(b)
-    int_a = int.from_bytes(a, byteorder="big")
-    int_b = int.from_bytes(b, byteorder="big")
-    
-    xor_result = int_a ^ int_b
-    return xor_result.to_bytes(length, byteorder="big")
 
 
 def debug_enabled():
@@ -623,7 +654,7 @@ class SecureChatProtocol:
     def derive_keys(self, shared_secret: bytes) -> bytes:
         """Derive encryption and MAC keys from shared secret using HKDF."""
         hkdf = HKDF(
-                algorithm=hashes.SHA3_256(),
+                algorithm=hashes.SHA256(),
                 length=64,
                 salt=b"ReallyCoolAndSecureSalt2",
                 info=b"key_derivation"
@@ -657,19 +688,19 @@ class SecureChatProtocol:
     def _derive_message_key(chain_key: bytes, counter: int) -> bytes:
         """Derive a message key from the chain key and counter."""
         hkdf = HKDF(
-                algorithm=hashes.SHA3_512(),
-                length=64,
+                algorithm=hashes.SHA3_256(),
+                length=32,
                 salt=b"ReallyCoolAndSecureSalt",
                 info=f"message_key_{counter}".encode()
         )
-        return hkdf.derive(chain_key)[:32]
+        return hkdf.derive(chain_key)
     
     @staticmethod
     def _ratchet_chain_key(chain_key: bytes, counter: int) -> bytes:
         """Advance the chain key (ratchet forward)."""
         hkdf = HKDF(
-                algorithm=hashes.SHA3_512(),
-                length=64,
+                algorithm=hashes.SHA3_256(),
+                length=32,
                 salt=b"ReallyCoolAndSecureSalt",
                 info=f"chain_key_{counter}".encode("utf-8")
         )
@@ -717,7 +748,7 @@ class SecureChatProtocol:
     def generate_key_fingerprint(self, public_key: bytes) -> str:
         """Generate a human-readable word-based fingerprint for a public key."""
         # Create SHA-256 hash of the public key
-        key_hash = hashlib.sha3_256(public_key).digest()
+        key_hash = hashlib.sha256(public_key).digest()
         
         # Load the wordlist
         wordlist = self._load_wordlist()
@@ -972,19 +1003,6 @@ class SecureChatProtocol:
         # Convert plaintext to bytes
         plaintext_bytes = plaintext.encode('utf-8')
         
-        # Add padding to prevent message size analysis
-        # Pad to next 512 Bytes
-        kib = 512
-        current_size = len(plaintext_bytes)
-        current_kib = (current_size + kib - 1) // kib
-        target_size = current_kib * kib
-        if target_size == current_size:
-            target_size += kib  # If already at boundary, go to next KiB
-        
-        padding_needed = target_size - current_size
-        # Use null bytes for padding (will be removed during decryption)
-        padded_plaintext = plaintext_bytes + b'\x00' * padding_needed
-        
         # Create AAD from message metadata for authentication
         nonce: bytes = os.urandom(12)
         aad_data: dict[str, MessageType | int | str] = {
@@ -996,8 +1014,7 @@ class SecureChatProtocol:
         aad: bytes = json.dumps(aad_data).encode('utf-8')
         
         # Encrypt with AES-GCM using the unique message key and AAD
-        aesgcm: AESGCM = AESGCM(message_key)
-        ciphertext: bytes = aesgcm.encrypt(nonce, padded_plaintext, aad)
+        ciphertext: bytes = DoubleEncryptor(message_key).encrypt(nonce, plaintext_bytes, aad)
         
         # delete the message key
         message_key = b'\x00' * len(message_key)
@@ -1012,8 +1029,7 @@ class SecureChatProtocol:
             "dh_public_key": base64.b64encode(eph_pub_bytes).decode('utf-8')
         }
         
-        verif_hasher = hashlib.sha3_512()
-        verif_hasher.update(self.encryption_key)
+        verif_hasher = HMAC(self.encryption_key, hashes.SHA512())
         # Include dh_public_key in verification to authenticate the ratchet key
         verif_hasher.update(json.dumps({
             "type":          encrypted_message["type"],
@@ -1023,7 +1039,7 @@ class SecureChatProtocol:
             "dh_public_key": encrypted_message["dh_public_key"],
         }).encode('utf-8'))
         
-        encrypted_message["verification"] = base64.b64encode(verif_hasher.digest()).decode('utf-8')
+        encrypted_message["verification"] = base64.b64encode(verif_hasher.finalize()).decode('utf-8')
         
         return json.dumps(encrypted_message).encode('utf-8')
     
@@ -1049,8 +1065,7 @@ class SecureChatProtocol:
         except KeyError as e:
             raise ValueError("Message missing field, message dropped") from e
         
-        verif_hasher = hashlib.sha3_512()
-        verif_hasher.update(self.encryption_key)
+        verif_hasher = HMAC(self.encryption_key, hashes.SHA512())
         # Include dh_public_key in verification to authenticate the ratchet key
         verif_hasher.update(json.dumps({
             "type":          message["type"],
@@ -1059,9 +1074,10 @@ class SecureChatProtocol:
             "ciphertext":    message["ciphertext"],
             "dh_public_key": peer_dh_pub_b64,
         }).encode('utf-8'))
-        actual_verification = verif_hasher.digest()
-        if actual_verification != expected_verification:
-            raise ValueError("Message verification failed - possible tampering or corruption")
+        actual_verification = verif_hasher.finalize()
+        if not bytes_eq(expected_verification, actual_verification):
+            raise ValueError("Message verification failed, message dropped")
+            
         
         # Check for replay attacks or old messages
         if counter <= self.peer_counter:
@@ -1096,19 +1112,12 @@ class SecureChatProtocol:
         aad = json.dumps(aad_data).encode('utf-8')
         
         # Decrypt with the derived message key and verify AAD
-        aesgcm = AESGCM(message_key)
         try:
-            decrypted_data = aesgcm.decrypt(nonce, ciphertext, aad)
+            decrypted_data = DoubleEncryptor(message_key).decrypt(nonce, ciphertext, aad)
         except InvalidTag:
             message_key = b'\x00' * len(message_key)
             raise ValueError("Message is probably legitimate but failed to decrypt, InvalidTag")
             
-        
-        # Remove padding (null bytes) that was added during encryption
-        # Find the first null byte and truncate there
-        null_index = decrypted_data.find(b'\x00')
-        if null_index != -1:
-            decrypted_data = decrypted_data[:null_index]
         
         try:
             decrypted_data = decrypted_data.decode('utf-8')
@@ -1337,7 +1346,7 @@ class SecureChatProtocol:
         header_json = json.dumps(header).encode('utf-8')
         
         # Encrypt header and chunk data in one operation
-        aesgcm = AESGCM(message_key)
+        encryptor = ChaCha20Poly1305(message_key)
         nonce = os.urandom(12)
         
         # Create AAD including eph pub to authenticate ratchet key
@@ -1352,7 +1361,7 @@ class SecureChatProtocol:
         # Combine header length + header + chunk data for encryption
         header_len = struct.pack('!H', len(header_json))  # 2 bytes for header length
         plaintext = header_len + header_json + chunk_data
-        ciphertext = aesgcm.encrypt(nonce, plaintext, aad)
+        ciphertext = encryptor.encrypt(nonce, plaintext, aad)
         
         # Securely delete the message key
         message_key = b'\x00' * len(message_key)
@@ -1500,9 +1509,9 @@ class SecureChatProtocol:
             aad = json.dumps(aad_data).encode('utf-8')
             
             # Decrypt the chunk payload with AAD verification
-            aesgcm = AESGCM(message_key)
+            encryptor = ChaCha20Poly1305(message_key)
             try:
-                plaintext = aesgcm.decrypt(nonce, ciphertext, aad)
+                plaintext = encryptor.decrypt(nonce, ciphertext, aad)
             except InvalidTag:
                 message_key = b'\x00' * len(message_key)
                 raise ValueError("File chunk decryption failed: InvalidTag")
@@ -1712,7 +1721,7 @@ class SecureChatProtocol:
             if compressed and final_file_path != temp_received_path and os.path.exists(final_file_path):
                 os.remove(final_file_path)
             raise ValueError(f"File processing failed (I/O or gzip): {e}") from e
-        except ValueError as e:
+        except ValueError:
             if os.path.exists(temp_received_path):
                 os.remove(temp_received_path)
             if compressed and final_file_path != temp_received_path and os.path.exists(final_file_path):
