@@ -20,7 +20,7 @@ from shared import (SecureChatProtocol, send_message, receive_message, MessageTy
 
 # noinspection PyBroadException
 class SecureChatClient:
-    def __init__(self, host: str = 'localhost', port: int = 16384):
+    def __init__(self) -> None:
         """
         The SecureChatClient handles client-side operations for a secure chat application.
 
@@ -30,18 +30,10 @@ class SecureChatClient:
         It maintains the state of the connection, user permissions, and ongoing
         operations such as file transfers and audio sessions.
         
-        Args:
-            host (str, optional): The server hostname or IP address to connect to. 
-                Defaults to 'localhost'.
-            port (int, optional): The server port number to connect to. 
-                Defaults to 16384.
-        
         A guaranteed attribute is an attribute that is guaranteed to exist and have a valid value.
         This means that the value of the attribute is always correct and can be safely used.
         
         Guaranteed Attributes:
-            host (str): The hostname or IP address of the server.
-            port (int): The port number of the server.
             protocol (SecureChatProtocol): The secure chat protocol instance.
             connected (bool): Whether the client is connected to the server.
             key_exchange_complete (bool): Whether the key exchange is complete.
@@ -57,6 +49,8 @@ class SecureChatClient:
         They will default to whatever an "empty" value would be.
         
         Unsafe Attributes:
+            host (str): The hostname or IP address of the server.
+            port (int): The port number of the server.
             socket (socket.socket): The socket instance.
             receive_thread (threading.Thread): The receiving thread.
             pending_file_transfers (dict[str, dict[str, FileMetadata | bool | str]]): A dictionary of pending file
@@ -69,8 +63,8 @@ class SecureChatClient:
             _rl_count (int): The number of messages received in the rate-limiting window.
         """
         # Connection configuration
-        self.host: str = host
-        self.port: int = port
+        self.host: str = "0.0.0.0"
+        self.port: int = 16384
         self.socket: socket.socket = socket.socket()
         
         # Protocol/crypto engine
@@ -116,7 +110,7 @@ class SecureChatClient:
         return bool(self.pending_file_transfers or self.active_file_metadata)
     
     @property
-    def bypass_unverified_limits(self) -> bool:
+    def bypass_rate_limits(self) -> bool:
         """Whether to bypass the rate-limiting and file size restrictions for unverified peers.
         Bypass during file transfer, voice call, or an in-progress rekey handshake to avoid
         dropping legitimate control bursts from unverified peers.
@@ -202,7 +196,7 @@ class SecureChatClient:
             "rate", "chunk_size", "audio_format", "audio_data"
         }
         
-    def connect(self) -> bool:
+    def connect(self, host: str, port: int) -> bool:
         """Connect to the chat server and start the message receiving thread.
         
         Establishes a TCP socket connection to the server, sets the connected state,
@@ -212,8 +206,9 @@ class SecureChatClient:
             bool: True if connection was successful, False otherwise.
         """
         try:
+            self.socket.close()
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.connect((self.host, self.port))
+            self.socket.connect((host, port))
             self.connected = True
             
             self.display_system_message(f"Connected to secure chat server at {self.host}:{self.port}")
@@ -285,91 +280,89 @@ class SecureChatClient:
             
             All exceptions are caught and logged to prevent crashes.
         """
-        # Rate-limit unverified peers to 5 messages/sec, unless in file transfer or voice call
-        if not self.protocol.peer_key_verified and not self.bypass_unverified_limits:
+        # Rate-limit peers to 5 messages/sec, unless in file transfer or voice call
+        if not self.bypass_rate_limits:
             now = time.time()
             if now - self._rl_window_start >= 1.0:
                 self._rl_window_start = now
                 self._rl_count = 0
             if self._rl_count >= 5:
                 # Drop excess messages
-                self.display_error_message("Rate-limited unverified peer: drop message")
+                self.display_error_message("Rate-limited peer: dropped message")
                 return
             self._rl_count += 1
-        
-        if (not self.protocol.peer_key_verified and len(message_data) > 8192 and not
-        self.bypass_unverified_limits):
+
+        if len(message_data) > 8192 and not self.bypass_rate_limits:
             # Prevent potential DoS with large messages before key verification
             self.display_error_message("Received overly large message without key verification. Dropping.")
             return
         
         # First, try to parse as JSON (for control messages including keepalive)
         try:
-            message_json: dict[str, Any] = json.loads(message_data.decode('utf-8'))
+            message_json: dict[Any, Any] = json.loads(message_data.decode('utf-8'))
             message_type = MessageType(int(message_json.get("type", -1)))
-            if message_type == -1:
-                self.display_error_message("Received message with invalid type.")
-                return
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+            # If JSON parsing failed, check if this might be a binary file chunk message
+            self.handle_maybe_binary_chunk(message_data)
+            return
             
-            # Validate unexpected fields when peer is unverified (outer JSON)
-            allowed = self._allowed_outer_fields(message_type)
-            unexpected = self._first_unexpected_field(message_json, allowed)
-            if unexpected:
-                self.display_error_message(f"Dropped message from unverified peer due to unexpected field '{unexpected}'.")
-                return
-            
-            match message_type:
-                case MessageType.KEY_EXCHANGE_INIT:
-                    self.handle_key_exchange_init(message_data)
-                case MessageType.KEY_EXCHANGE_RESPONSE:
-                    self.handle_key_exchange_response(message_data)
-                case MessageType.ENCRYPTED_MESSAGE:
-                    if self.key_exchange_complete:
-                        self.handle_encrypted_message(message_data)
-                    else:
-                        self.display_error_message("\nReceived encrypted message before key exchange complete")
-                case MessageType.ERROR:
-                    self.display_error_message(f"{message_json.get('error', 'Unknown error')}")
-                case MessageType.KEY_VERIFICATION:
-                    self.handle_key_verification_message(message_data)
-                case MessageType.KEY_EXCHANGE_RESET:
-                    self.handle_key_exchange_reset(message_data)
-                case MessageType.KEEP_ALIVE:
-                    self.handle_keepalive()
-                case MessageType.KEY_EXCHANGE_COMPLETE:
-                    self.handle_key_exchange_complete()
-                case MessageType.INITIATE_KEY_EXCHANGE:
-                    self.initiate_key_exchange()
-                case MessageType.SERVER_FULL:
-                    self.handle_server_full()
-                case MessageType.SERVER_VERSION_INFO:
-                    self.handle_server_version_info(message_data)
-                case MessageType.SERVER_DISCONNECT:
-                    reason = message_json.get('reason', 'Server initiated disconnect')
-                    self.on_server_disconnect(reason)
-                case _:
-                    self.display_error_message(f"Unknown message type: {message_type}")
-            return  # Successfully processed as JSON message
+        if message_type == -1:
+            self.display_error_message("Received message with invalid type.")
+            return
         
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            # Not a JSON message, try binary file chunk processing
-            pass
+        # Validate unexpected fields when peer is unverified (outer JSON)
+        allowed = self._allowed_outer_fields(message_type)
+        unexpected = self._first_unexpected_field(message_json, allowed)
+        if unexpected:
+            self.display_error_message(f"Dropped message from unverified peer due to unexpected field '{unexpected}'.")
+            return
         
-        # If JSON parsing failed, check if this might be a binary file chunk message
-        # Binary file chunks use a compact binary frame and are not UTF-8 decodable
-        if len(message_data) >= 48 and self.key_exchange_complete:
-            try:
-                # Try to process as binary file chunk
-                result = self.protocol.process_file_chunk(message_data)
-                self.handle_file_chunk_binary(result)
-                return
-            except Exception:
-                # Not a binary file chunk either
-                pass
+        match message_type:
+            case MessageType.KEY_EXCHANGE_INIT:
+                self.handle_key_exchange_init(message_data)
+            case MessageType.KEY_EXCHANGE_RESPONSE:
+                self.handle_key_exchange_response(message_data)
+            case MessageType.ENCRYPTED_MESSAGE:
+                if self.key_exchange_complete:
+                    self.handle_encrypted_message(message_data)
+                else:
+                    self.display_error_message("\nReceived encrypted message before key exchange complete")
+            case MessageType.ERROR:
+                self.display_error_message(f"{message_json.get('error', 'Unknown error')}")
+            case MessageType.KEY_VERIFICATION:
+                self.handle_key_verification_message(message_data)
+            case MessageType.KEY_EXCHANGE_RESET:
+                self.handle_key_exchange_reset(message_data)
+            case MessageType.KEEP_ALIVE:
+                self.handle_keepalive()
+            case MessageType.KEY_EXCHANGE_COMPLETE:
+                self.handle_key_exchange_complete()
+            case MessageType.INITIATE_KEY_EXCHANGE:
+                self.initiate_key_exchange()
+            case MessageType.SERVER_FULL:
+                self.handle_server_full()
+            case MessageType.SERVER_VERSION_INFO:
+                self.handle_server_version_info(message_data)
+            case MessageType.SERVER_DISCONNECT:
+                reason = message_json.get('reason', 'Server initiated disconnect')
+                self.on_server_disconnect(reason)
+            case _:
+                self.display_error_message(f"Unknown message type: {message_type}")
+        return
         
-        # If we reach here, the message could not be processed
-        self.display_error_message("Received a message that could not be decoded.")
     
+    def handle_maybe_binary_chunk(self, message_data: bytes) -> None:
+        if not (len(message_data) >= 48 and self.key_exchange_complete):
+            self.display_error_message("Received message that could not be decoded.")
+            return
+        try:
+            # Try to process as binary file chunk
+            result = self.protocol.process_file_chunk(message_data)
+            self.handle_file_chunk_binary(result)
+            return
+        except ValueError:
+            # Not a binary file chunk either
+            return
     
     def handle_keepalive(self) -> None:
         """Handle keepalive messages from the server."""
@@ -455,9 +448,8 @@ class SecureChatClient:
                     
                 self.display_system_message("Key exchange completed successfully.")
                 return True
-            else:
-                self.display_system_message("Received key exchange response but no private key found")
-                return False
+            self.display_system_message("Received key exchange response but no private key found")
+            return False
         
         except Exception as e:
             self.display_error_message(f"Key exchange response error: {e}")
@@ -470,72 +462,63 @@ class SecureChatClient:
     
     def start_key_verification(self) -> None:
         """Start the key verification process."""
-        try:
-            
-            # Display session fingerprint (same for both users)
-            print("\nSession fingerprint:")
-            print("-" * 40)
-            session_fingerprint = self.protocol.get_own_key_fingerprint()
-            print(session_fingerprint)
-            
-            print("\nINSTRUCTIONS:")
-            print("1. Compare the fingerprint above with the other person through a")
-            print("   secure channel (phone call, in-person, secure messaging)")
-            print("2. Both users should see the SAME fingerprint")
-            print("3. Only confirm if you both see identical fingerprints!")
-            print("4. If the fingerprints don't match, there may be a Man-in-the-Middle attack.")
-            
-            # Prompt for verification
-            while True:
-                try:
-                    response = input("\nDo the fingerprints match? (yes/no): ").lower().strip()
-                    if response in ['yes', 'y']:
-                        self.confirm_key_verification(True)
-                        break
-                    if response in ['no', 'n']:
-                        self.confirm_key_verification(False)
-                    
-                    else:
-                        print("Please enter 'yes', 'y' or 'no', 'n'")
-                except (EOFError, KeyboardInterrupt):
-                    print("\nVerification cancelled. Connection will be insecure.")
-                    self.confirm_key_verification(False)
-                    break
         
-        except Exception as e:
-            print(f"Error during key verification: {e}")
-            self.confirm_key_verification(False)
+        # Display session fingerprint (same for both users)
+        print("\nSession fingerprint:")
+        print("-" * 40)
+        session_fingerprint = self.protocol.get_own_key_fingerprint()
+        print(session_fingerprint)
+        
+        print("\nINSTRUCTIONS:")
+        print("1. Compare the fingerprint above with the other person through a")
+        print("   secure channel (phone call, in-person, secure messaging)")
+        print("2. Both users should see the SAME fingerprint")
+        print("3. Only confirm if you both see identical fingerprints!")
+        print("4. If the fingerprints don't match, there may be a Man-in-the-Middle attack.")
+        
+        # Prompt for verification
+        while True:
+            try:
+                response = input("\nDo the fingerprints match? (yes/no): ").lower().strip()
+                if response in ['yes', 'y']:
+                    self.confirm_key_verification(True)
+                    break
+                if response in ['no', 'n']:
+                    self.confirm_key_verification(False)
+                
+                else:
+                    print("Please enter 'yes', 'y' or 'no', 'n'")
+            except (EOFError, KeyboardInterrupt):
+                print("\nVerification cancelled. Connection will be insecure.")
+                self.confirm_key_verification(False)
+                break
     
     def confirm_key_verification(self, verified: bool) -> None:
         """Confirm the key verification result."""
-        try:
-            # Update local verification status
-            self.protocol.peer_key_verified = verified
-            
-            # Send verification status to peer
-            verification_message = self.protocol.create_key_verification_message(verified)
-            send_message(self.socket, verification_message)
-            
-            if verified:
-                print("\n✓ Key verification successful!")
-            
-            else:
-                print("\nKey verification failed or declined")
-                print("Communication will proceed but may not be secure.")
-            
-            self.verification_complete = True
-            
-            # Start the sender thread for message queuing
-            self.protocol.start_sender_thread(self.socket)
-            
-            print("\nYou can now start chatting!")
-            print("Type your messages and press Enter to send.")
-            print("Type '/quit' to exit.")
-            print("Type '/verify' to re-verify keys at any time.\n")
-            print("Type '/rekey' to initiate a rekey for fresh session keys.\n")
+        # Update local verification status
+        self.protocol.peer_key_verified = verified
         
-        except Exception as e:
-            print(f"Error confirming verification: {e}")
+        # Send verification status to peer
+        verification_message = self.protocol.create_key_verification_message(verified)
+        send_message(self.socket, verification_message)
+        
+        if verified:
+            print("\n✓ Key verification successful!")
+        
+        else:
+            print("\nKey verification failed or declined")
+            print("Communication will proceed but may not be secure.")
+        
+        self.verification_complete = True
+        
+        # Start the sender thread for message queuing
+        self.protocol.start_sender_thread(self.socket)
+        
+        print("\nYou can now start chatting!")
+        print("Type your messages and press Enter to send.")
+        print("Type '/quit' to exit.")
+        print("Type '/verify' to re-verify keys at any time.\n")
+        print("Type '/rekey' to initiate a rekey for fresh session keys.\n")
     
     def handle_key_verification_message(self, message_data: bytes) -> None:
         """Handle key verification message from peer."""
@@ -742,7 +725,7 @@ class SecureChatClient:
         
         # Check verification status and warn user
         if not self.protocol.encryption_ready:
-            print(f"Cannot send message, encryption isn't ready")
+            print("Cannot send message, encryption isn't ready")
             return False
         
         if not self.protocol.peer_key_verified:
@@ -992,14 +975,6 @@ class SecureChatClient:
             self.display_error_message(f"Error handling nickname change: {e}")
     
     def handle_file_chunk_binary(self, chunk_info: dict) -> None:
-        """Handle incoming file chunk (optimized binary format)."""
-        try:
-            self._process_file_chunk_common(chunk_info)
-        
-        except Exception as e:
-            print(f"Error handling binary file chunk: {e}")
-    
-    def _process_file_chunk_common(self, chunk_info: dict) -> None:
         """Common file chunk processing logic for both JSON and binary formats."""
         transfer_id = chunk_info["transfer_id"]
         
@@ -1052,7 +1027,6 @@ class SecureChatClient:
                 compression_text = "compressed" if compressed else "uncompressed"
                 print(f"File received successfully ({compression_text}): {output_path}")
                 
-                # Send the completion message via queue (loop will encrypt)
                 self.protocol.queue_message(("encrypt_json", {
                     "type":        MessageType.FILE_COMPLETE,
                     "transfer_id": transfer_id,
@@ -1286,9 +1260,9 @@ def main() -> None:
         print("Using default port: 16384")
     
     # Create and connect client
-    client = SecureChatClient(host, port)
+    client = SecureChatClient()
     
-    if client.connect():
+    if client.connect(host, port):
         try:
             client.start_chat()
         except KeyboardInterrupt:

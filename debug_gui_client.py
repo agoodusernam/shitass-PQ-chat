@@ -10,7 +10,7 @@ import time
 import tkinter as tk
 from tkinter import scrolledtext, messagebox, filedialog
 
-from tkinterdnd2 import TkinterDnD, DND_FILES
+from tkinterdnd2 import TkinterDnD, DND_FILES  # type: ignore
 
 # Import base classes
 from gui_client import ChatGUI, GUISecureChatClient, ltk
@@ -343,9 +343,8 @@ class DebugChatGUI(ChatGUI):
         # Toggle: attach cryptographic info to messages
         self.attach_crypto_info_to_messages: bool = False
         
-        # Call parent constructor
         super().__init__(root)
-        self.client: DebugGUISecureChatClient | None = None
+        self.client: DebugGUISecureChatClient = DebugGUISecureChatClient(self)
         self.root.geometry("1400x700")
         
         # Add debug-specific UI elements
@@ -2016,8 +2015,8 @@ class DebugChatGUI(ChatGUI):
         self.update_status("Connecting")
         
         def worker():
-            self.client = DebugGUISecureChatClient(self, host, port)
-            if not self.client.connect():
+            self.client = DebugGUISecureChatClient(self)
+            if not self.client.connect(host, port):
                 self.on_tk_thread(self.append_to_chat, "Connection failed.")
                 self.on_tk_thread(self.update_status, "Not Connected")
         
@@ -2035,8 +2034,8 @@ class DebugChatGUI(ChatGUI):
 class DebugGUISecureChatClient(GUISecureChatClient):
     """Debug version of GUISecureChatClient - extends base with debug features."""
     
-    def __init__(self, gui: DebugChatGUI, host: str = 'localhost', port: int = 16384):
-        super().__init__(gui, host, port)
+    def __init__(self, gui: DebugChatGUI):
+        super().__init__(gui)
         self.gui: DebugChatGUI = gui
         
         # Protocol version tracking
@@ -2072,12 +2071,12 @@ class DebugGUISecureChatClient(GUISecureChatClient):
             if direction == "send":
                 before = info.get("send_ck_before", "")
                 after = info.get("send_ck_after", "")
-                header = f"→ Crypto (sent)"
+                header = "→ Crypto (sent)"
                 chain = f"- send_chain_key: {before[:16]} -> {after[:16]}"
             else:
                 before = info.get("recv_ck_before", "")
                 after = info.get("recv_ck_after", "")
-                header = f"← Crypto (recv)"
+                header = "← Crypto (recv)"
                 chain = f"- recv_chain_key: {before[:16]} -> {after[:16]}"
             # Prepare type and size lines
             pt_name = info.get("plaintext_type_name") or "TEXT"
@@ -2112,8 +2111,7 @@ class DebugGUISecureChatClient(GUISecureChatClient):
                 f"   - message_key: {msg_key[:16]}..." if msg_key else "",
             ] + dh_lines
             # Filter out None/empty entries to keep it clean
-            parts = [p for p in parts if p]
-            return "\n".join(parts)
+            return "\n".join([p for p in parts if p])
         except Exception:
             return ""
     
@@ -2244,10 +2242,10 @@ class DebugGUISecureChatClient(GUISecureChatClient):
         
         super()._send_delivery_confirmation(confirmed_counter)
     
-    def send_message(self, text: str) -> bool | None:
+    def send_message(self, text: str) -> bool:
         """Encrypt and send a chat message with optional simulated latency and packet loss."""
         if not self.socket:
-            return None
+            return False
         
         try:
             # Simulate packet loss
@@ -2255,7 +2253,7 @@ class DebugGUISecureChatClient(GUISecureChatClient):
                 if random.randint(1, 100) <= self.packet_loss_percentage:
                     self.gui.append_to_chat("DEBUG: Packet loss simulated " +
                                             f"({self.packet_loss_percentage}%)", is_message=False)
-                    return None
+                    return False
             
             # Simulate network latency if configured
             if self.simulated_latency > 0:
@@ -2276,10 +2274,10 @@ class DebugGUISecureChatClient(GUISecureChatClient):
         
         except Exception as e:
             self.gui.append_to_chat(f"Error sending message: {e}")
-            return None
+            return False
 
 
-def main():
+def main() -> None:
     """Main function to run the GUI chat client."""
     root = TkinterDnD.Tk()
     root.title("Secure Chat Client (DEBUG)")

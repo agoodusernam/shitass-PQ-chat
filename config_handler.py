@@ -54,7 +54,7 @@ class ConfigHandler:
     A class to handle reading and writing configuration files.
     """
     
-    def __init__(self):
+    def __init__(self) -> None:
         self.config_file = "config.json"
         self.config: ConfigDict = create_default_config()
         self.init_config: dict[str, Any] = {}
@@ -64,7 +64,7 @@ class ConfigHandler:
         
         self.validate_config()
     
-    def validate_config(self):
+    def validate_config(self) -> None:
         for key, value in self.init_config.items():
             if not isinstance(key, str):
                 raise ValueError(f"Config key '{key}' is not a string")
@@ -80,7 +80,7 @@ class ConfigHandler:
                 if not isinstance(value, expected_type):
                     raise ValueError(f"Config value for key '{key}' must be of type {expected_type.__name__}")
                 
-                if not key in self.config.keys():
+                if key not in self.config.keys():
                     raise ValueError(f"Unknown config key '{key}'")
                 
                 self.config[key] = value  # type: ignore
@@ -96,7 +96,7 @@ class ConfigHandler:
     def __getitem__(self, key: ConfigKey) -> bool | str:
         if not isinstance(key, str):
             raise TypeError("Config keys must be strings")
-        return self.config[key]
+        return self.config[key]  # type: ignore
     
     @overload
     def __setitem__(self, key: BoolKeys, value: bool) -> None:
@@ -109,10 +109,10 @@ class ConfigHandler:
     def __setitem__(self, key: ConfigKey, value: bool | str) -> None:
         if key not in self.config:
             raise KeyError(f"Unknown config key '{key}'")
-        expected_type = type(self.config[key])
+        expected_type = type(self.config[key])  # type: ignore
         if not isinstance(value, expected_type):
             raise TypeError(f"Config value for key '{key}' must be of type {expected_type.__name__}")
-        self.config[key] = value
+        self.config[key] = value  # type: ignore
     
     def save(self) -> tuple[bool, str]:
         try:

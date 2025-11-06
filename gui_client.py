@@ -11,29 +11,31 @@ import tkinter as tk
 import uuid
 import wave
 from collections import deque
-from tkinter import scrolledtext, messagebox, filedialog, StringVar
-from typing import Callable, Any, Literal, ParamSpec
+from tkinter import StringVar, filedialog, messagebox, scrolledtext
+from typing import Any, Callable, Literal, ParamSpec
 
 import config_handler
 import config_manager
-
-assert config_manager  # remove unused import warning
 import configs
 import shared
+from client import SecureChatClient
+from shared import MessageType, bytes_to_human_readable
+
+assert config_manager  # remove unused import warning
 
 try:
-    from PIL import Image, ImageTk, ImageGrab
+    from PIL import Image, ImageGrab, ImageTk
     
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
-    Image = None
-    ImageTk = None
-    ImageGrab = None
+    Image = None  # type: ignore
+    ImageTk = None  # type: ignore
+    ImageGrab = None  # type: ignore
 
 # Plyer for system notifications
 try:
-    from plyer import notification
+    from plyer import notification  # type: ignore
     
     PLYER_AVAILABLE = True
 except ImportError:
@@ -47,11 +49,11 @@ try:
     SPELLCHECKER_AVAILABLE = True
 except ImportError:
     SPELLCHECKER_AVAILABLE = False
-    SpellChecker = None
+    SpellChecker = None  # type: ignore
 
 # tkinterdnd2 for drag-and-drop file support
 try:
-    from tkinterdnd2 import DND_FILES, TkinterDnD
+    from tkinterdnd2 import DND_FILES, TkinterDnD  # type: ignore
     
     TKINTERDND2_AVAILABLE = True
 except ImportError:
@@ -65,7 +67,7 @@ try:
     PYAUDIO_AVAILABLE = True
 except ImportError:
     # fake class so type hinting works even if pyaudio is not installed
-    class pyaudio:
+    class pyaudio:  # type: ignore
         paUInt8 = 0
         paInt8 = 1
         paInt16 = 2
@@ -93,33 +95,27 @@ except ImportError:
             
     PYAUDIO_AVAILABLE = False
 
-from client import SecureChatClient
-from shared import bytes_to_human_readable, MessageType
-
 P = ParamSpec('P')
-
 
 class Ltk:
     """
     Literal types for Tkinter constants because type checking YAY
     """
-    
-    def __init__(self):
-        self.END: Literal["end"] = "end"
-        self.W: Literal["w"] = "w"
-        self.X: Literal["x"] = "x"
-        self.Y: Literal["y"] = "y"
-        self.BOTH: Literal["both"] = "both"
-        self.RIGHT: Literal["right"] = "right"
-        self.LEFT: Literal["left"] = "left"
-        self.DISABLED: Literal["disabled"] = "disabled"
-        self.NORMAL: Literal["normal"] = "normal"
-        self.ACTIVE: Literal["active"] = "active"
-        self.FLAT: Literal["flat"] = "flat"
-        self.HORIZONTAL: Literal["horizontal"] = "horizontal"
-        self.VERTICAL: Literal["vertical"] = "vertical"
-        self.WORD: Literal["word"] = "word"
-        self.NONE: Literal["none"] = "none"
+    END: Literal["end"] = "end"
+    W: Literal["w"] = "w"
+    X: Literal["x"] = "x"
+    Y: Literal["y"] = "y"
+    BOTH: Literal["both"] = "both"
+    RIGHT: Literal["right"] = "right"
+    LEFT: Literal["left"] = "left"
+    DISABLED: Literal["disabled"] = "disabled"
+    NORMAL: Literal["normal"] = "normal"
+    ACTIVE: Literal["active"] = "active"
+    FLAT: Literal["flat"] = "flat"
+    HORIZONTAL: Literal["horizontal"] = "horizontal"
+    VERTICAL: Literal["vertical"] = "vertical"
+    WORD: Literal["word"] = "word"
+    NONE: Literal["none"] = "none"
 
 
 ltk: Ltk = Ltk()
@@ -183,7 +179,6 @@ def display_image(image: Image.Image, root: tk.Tk):
     
     label: tk.Label = tk.Label(window, image=photo) # type: ignore
     # Keep a reference to the image to prevent it from being garbage collected
-    label.image = photo
     label.pack()
 
 
@@ -217,9 +212,10 @@ class FileTransferWindow:
         if theme_colours is not None:
             theme_colors = theme_colours
         if not isinstance(theme_colors, dict):
-            theme_colors: dict[str, str] = {}
+            theme_colors: dict[str, str] = {}  # type: ignore
         self.parent_root = parent_root
-        self.window: tk.Toplevel | None = None
+        self.window: tk.Toplevel = tk.Toplevel(self.parent_root)
+        self.window.withdraw()
         self.speed_label: tk.Label | None = None
         self.transfer_list: scrolledtext.ScrolledText | None = None
         
@@ -247,8 +243,7 @@ class FileTransferWindow:
     
     def create_window(self):
         """Create the file transfer window if it doesn't exist."""
-        if self.window is None or not self.window.winfo_exists():
-            self.window = tk.Toplevel(self.parent_root)
+        if self.window is None or not self.window.winfo_exists() or not self.window.state() == 'withdrawn':
             self.window.title("File Transfer Progress")
             self.window.geometry("550x400")
             self.window.configure(bg=self.BG_COLOR)
@@ -407,7 +402,7 @@ class ChatGUI:
         self.root.configure(bg=self.BG_COLOR)
         
         # Chat client instance
-        self.client: GUISecureChatClient | None = None
+        self.client: GUISecureChatClient = GUISecureChatClient(self)
         self.connected: bool = False
         self.peer_nickname: str = "Other user"
         self.config: config_handler.ConfigHandler = config_handler.ConfigHandler()
@@ -988,7 +983,7 @@ class ChatGUI:
         return
     
     # noinspection PyAttributeOutsideInit
-    def open_config_dialog(self):
+    def open_config_dialog(self) -> None:
         """Open a small configuration window with common settings."""
         try:
             if hasattr(self, "config_window") and self.config_window and self.config_window.winfo_exists():
@@ -998,7 +993,7 @@ class ChatGUI:
         except Exception:
             pass
         
-        self.config_window = tk.Toplevel(self.root)
+        self.config_window: tk.Toplevel = tk.Toplevel(self.root)
         self.config_window.title("Configuration")
         try:
             self.config_window.configure(bg=self.BG_COLOR)
@@ -1021,10 +1016,7 @@ class ChatGUI:
         self.var_nickname_change_allowed = tk.BooleanVar(
                 value=self.client.nickname_change_allowed if self.client else False)
         # New: Peer nickname StringVar for manual setting
-        try:
-            current_peer_nick: str = (self.client.peer_nickname if self.client else self.peer_nickname)
-        except Exception:
-            current_peer_nick: str = self.peer_nickname
+        current_peer_nick: str = self.client.peer_nickname
         self.var_peer_nickname: tk.StringVar = tk.StringVar(value=current_peer_nick)
         
         # Checkbuttons
@@ -1198,8 +1190,7 @@ class ChatGUI:
         self.update_status("Connecting")
         
         def worker():
-            self.client = GUISecureChatClient(self, host, port)
-            if not self.client.connect():
+            if not self.client.connect(host, port):
                 self.on_tk_thread(self.append_to_chat, "Connection failed.")
                 self.on_tk_thread(self.update_status, "Not Connected")
         
@@ -1398,7 +1389,7 @@ class ChatGUI:
         # Prevent the default newline insertion on Return key press
         if event and event.keysym == "Return":
             # Allow Shift+Return to insert a newline for multi-line messages in the future
-            if event.state & 0x0001:  # Check if Shift key is not pressed
+            if isinstance(event.state, int) and event.state & 0x0001:  # Check if Shift key is not pressed
                 return None  # Do not send, allow newline
         
         if not self.connected or not self.client:
@@ -1514,10 +1505,11 @@ class ChatGUI:
         # Send the message
         try:
             # Get the message counter before sending (it will be incremented during send)
+            next_message_counter: int
             if self.client:
                 next_message_counter = self.client.protocol.message_counter + 1
             else:
-                next_message_counter = None
+                next_message_counter = 0
             
             if self.client.send_message(message):
                 # Display the sent message with delivery tracking
@@ -1710,6 +1702,7 @@ class ChatGUI:
         """Show context menu with spelling suggestions on right-click."""
         if not SPELLCHECKER_AVAILABLE:
             return
+        assert isinstance(self.spell_checker, SpellChecker)
         
         try:
             # Get the position of the click
@@ -1744,7 +1737,7 @@ class ChatGUI:
             # Get suggestions
             candidates: set[str] | None = self.spell_checker.candidates(word)
             if candidates:
-                suggestions: list[str] = list(self.spell_checker.candidates(word))[:5]  # Limit to 5 suggestions
+                suggestions: list[str] = list(candidates)[:5]  # Limit to 5 suggestions
             else:
                 suggestions = []
             
@@ -1754,15 +1747,15 @@ class ChatGUI:
                         continue
                     context_menu.add_command(
                             label=suggestion,
-                            command=lambda s=suggestion, start=word_start, end=word_end: self.replace_word(start, end,
-                                                                                                           s)
+                            command=lambda s=suggestion, start=word_start, end=word_end: # type: ignore
+                            self.replace_word(start, end,s)
                     )
                 context_menu.add_separator()
             
             # Add "Add to dictionary" option
             context_menu.add_command(
                     label="Add to dictionary",
-                    command=lambda w=word: self.add_to_dictionary(w)
+                    command=lambda w=word: self.add_to_dictionary(w) # type: ignore
             )
             
             # Show the menu
@@ -1784,6 +1777,7 @@ class ChatGUI:
     
     def add_to_dictionary(self, word: str):
         """Add a word to the personal dictionary."""
+        assert isinstance(self.spell_checker, SpellChecker)
         try:
             self.spell_checker.word_frequency.load_words([word])
             # Trigger spellcheck to remove red underline
@@ -1802,8 +1796,8 @@ class ChatGUI:
                     self.client.socket.close()
             # Close the application immediately
             self.on_tk_thread(self.root.quit)
-            sys.exit(0)
-        except Exception as e:
+            sys.exit(1)
+        except Exception:
             # Even if there's an error, still close the application
             os._exit(1)
     
@@ -1813,7 +1807,7 @@ class ChatGUI:
             self.client.disconnect()
         self.root.destroy()
     
-    def _cleanup_thread(self):
+    def _cleanup_thread(self) -> None:
         while True:
             if (self.ephemeral_mode in ("LOCAL", "GLOBAL")) and self.ephemeral_messages:
                 current_time = time.time()
@@ -1851,7 +1845,7 @@ class ChatGUI:
                     self.ephemeral_mode == "GLOBAL" and self.ephemeral_global_owner_id == self.local_client_id)
             previous_owner = self.ephemeral_global_owner_id
             self.ephemeral_mode = "LOCAL"
-            self.ephemeral_global_owner_id = None
+            self.ephemeral_global_owner_id = ""
             self._append_to_chat("Local ephemeral mode enabled - your messages will disappear after 30 seconds")
             # Broadcast OFF if we were the global owner
             if was_global_owner and self.connected and self.client and self.client.key_exchange_complete:
@@ -1881,7 +1875,7 @@ class ChatGUI:
                     self.ephemeral_mode == "GLOBAL" and self.ephemeral_global_owner_id == self.local_client_id)
             self.ephemeral_mode = "OFF"
             previous_owner = self.ephemeral_global_owner_id
-            self.ephemeral_global_owner_id = None
+            self.ephemeral_global_owner_id = ""
             self._append_to_chat("Ephemeral mode disabled.")
             # Remove all existing ephemeral messages locally
             all_message_ids = list(self.ephemeral_messages.keys())
@@ -2020,7 +2014,7 @@ class ChatGUI:
 
 
 class GUISecureChatClient(SecureChatClient):
-    def __init__(self, gui: "ChatGUI", host: str = 'localhost', port: int = 16384):
+    def __init__(self, gui: "ChatGUI"):
         """
         Extended SecureChatClient that works with GUI.
 
@@ -2037,7 +2031,7 @@ class GUISecureChatClient(SecureChatClient):
             pending_file_requests (dict[str, FileRequest]): Pending file requests.
             _pending_voice_init (dict[str, int]): Pending voice call initialisation parameters.
         """
-        super().__init__(host, port)
+        super().__init__()
         self.gui: "ChatGUI" = gui
         self.display_images: bool = self.protocol.config["auto_display_images"]
         
@@ -2054,9 +2048,9 @@ class GUISecureChatClient(SecureChatClient):
         self.voice_muted: bool = False
         self.voice_data_queue: deque[bytes] = deque()
     
-    def connect(self) -> bool:
+    def connect(self, host: str, port: int) -> bool:
         # Call base connect (starts receive thread)
-        ok = super().connect()
+        ok = super().connect(host, port)
         if ok:
             self.gui.on_tk_thread(self.gui.on_connected)
         return ok
@@ -2328,7 +2322,7 @@ class GUISecureChatClient(SecureChatClient):
     
     def handle_voice_call_reject(self):
         """Handle rejection of a voice call request."""
-        self.gui.append_to_chat(f"Voice call rejected")
+        self.gui.append_to_chat("Voice call rejected")
         self.gui.voice_call_btn.config(state=ltk.NORMAL)
     
     def handle_voice_call_data(self, decrypted_text: str) -> None:
@@ -2490,7 +2484,7 @@ class GUISecureChatClient(SecureChatClient):
     def handle_key_exchange_reset(self, message_data: bytes):
         """Handle key exchange reset message - override to provide GUI feedback."""
         try:
-            message = json.loads(message_data.decode('utf-8'))
+            message = json.loads(message_data)
             reset_message = message.get("message", "Key exchange reset")
             self.end_call(notify_peer=False)
             
@@ -2879,7 +2873,7 @@ def load_theme_colors() -> dict[str, str]:
         return default_colors
 
 
-def main():
+def main() -> None:
     """Main function to run the GUI chat client."""
     if TKINTERDND2_AVAILABLE:
         import tkinterdnd2

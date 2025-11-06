@@ -15,7 +15,7 @@ import threading
 import time
 import typing
 from collections import deque
-from enum import IntEnum
+from enum import IntEnum, unique
 from typing import Final, Any, SupportsIndex, SupportsBytes, TypedDict, NotRequired
 from collections.abc import Generator, Buffer
 import binascii
@@ -24,12 +24,12 @@ from cryptography.exceptions import InvalidTag
 
 import config_handler
 import config_manager
-
-assert config_manager  # silence unused import warning
 import configs
+assert config_manager  # silence unused import warning
+
 
 try:
-    from kyber_py.ml_kem import ML_KEM_1024 # TODO: Switch to production ready library
+    from kyber_py.ml_kem import ML_KEM_1024 # type: ignore # TODO: Switch to production ready library
     from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
     from cryptography.hazmat.primitives.ciphers.aead import AESGCMSIV
     from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -72,23 +72,44 @@ class DoubleEncryptor:
         if not len(key) == 32:
             raise ValueError("Key must be 32 bytes long")
         
-        self.key = key
-        self.key_part1 = hashlib.sha256(self.key[:16]).digest()
-        self.key_part2 = hashlib.sha256(self.key[16:] + self.key_part1).digest()
-        self.aes = AESGCMSIV(self.key_part1)
-        self.chacha = ChaCha20Poly1305(self.key_part2)
+        self._key = key
+        self._key_part1 = hashlib.sha256(self._key[:16]).digest()
+        self._key_part2 = hashlib.sha256(self._key[16:]).digest()
+        self._aes = AESGCMSIV(self._key_part1)
+        self._chacha = ChaCha20Poly1305(self._key_part2)
         
-    def encrypt(self, nonce: bytes, data: bytes, associated_data: bytes) -> bytes:
+    def encrypt(self, nonce: bytes, data: bytes, associated_data: typing.Optional[bytes]) -> bytes:
         padder = PKCS7(512).padder()
         padded_data = padder.update(data) + padder.finalize()
-        layer1 = self.aes.encrypt(nonce, padded_data, associated_data)
-        return self.chacha.encrypt(xor_bytes(nonce, self.key[:12]), layer1, associated_data)
+        
+        new_nonce = xor_bytes(nonce, self._key[:12])
+        layer1 = self._aes.encrypt(new_nonce, padded_data, associated_data)
+        ct = self._chacha.encrypt(xor_bytes(new_nonce, self._key[-12:]), layer1, associated_data)
+        return ct
     
     def decrypt(self, nonce: bytes, data: bytes, associated_data: bytes) -> bytes:
-        layer1 = self.chacha.decrypt(xor_bytes(nonce, self.key[:12]), data, associated_data)
+        if len(nonce) != 12:
+            raise ValueError("Nonce must be 12 bytes long")
+        
+        new_nonce = xor_bytes(nonce, self._key[:12])
+        layer1 = self._chacha.decrypt(xor_bytes(new_nonce, self._key[-12:]), data, associated_data)
+        padded_data = self._aes.decrypt(new_nonce, layer1, associated_data)
         unpadder = PKCS7(512).unpadder()
-        return unpadder.update(self.aes.decrypt(nonce, layer1, associated_data)) + unpadder.finalize()
+        return unpadder.update(padded_data) + unpadder.finalize()
 
+    def __del__(self):
+        # This is not particularly secure, but it's better than nothing
+        self._key = b"\x00" * 32
+        self._key_part1 = b"\x00" * 32
+        self._key_part2 = b"\x00" * 32
+        del self._key
+        del self._key_part1
+        del self._key_part2
+        
+        del self._aes
+        del self._chacha
+
+@unique
 class MessageType(IntEnum):
     NONE = -1
     # Key Exchange
@@ -152,14 +173,6 @@ INCOMPRESSIBLE_EXTENSIONS: Final[set[str]] = {
 }
 
 
-def is_likely_incompressible(file_path: str) -> bool:
-    """Return True if the file extension suggests gzip won't help.
-    This is a heuristic based on common already-compressed formats.
-    """
-    _, ext = os.path.splitext(file_path)
-    return ext.lower() in INCOMPRESSIBLE_EXTENSIONS
-
-
 def decide_compression(file_path: str, user_pref: bool = True) -> bool:
     """
     Decide whether to compress a file before sending.
@@ -168,7 +181,8 @@ def decide_compression(file_path: str, user_pref: bool = True) -> bool:
     """
     if not user_pref:
         return False
-    return not is_likely_incompressible(file_path)
+    _, ext = os.path.splitext(file_path)
+    return ext.lower() not in INCOMPRESSIBLE_EXTENSIONS
 
 
 class FileMetadata(TypedDict):
@@ -291,8 +305,8 @@ class SecureChatProtocol:
         """
         Initialise the secure chat protocol with the default cryptographic state.
         
-        Sets up all necessary state variables for the ML-KEM-1024 key exchange,
-        AES-GCM encryption, perfect forward secrecy, replay protection, and
+        Sets up all necessary state variables for the ML-KEM-1024 + X25519 key exchange,
+        AES-GCM-SIV + ChaCha20Poly1305 encryption, perfect forward secrecy, replay protection, and
         file transfer functionality.
         
         A guaranteed attribute is an attribute that is guaranteed to exist and have a valid value.
@@ -638,6 +652,7 @@ class SecureChatProtocol:
     
     def _send_prepared_item(self, to_send: bytes, post_action: str | None) -> None:
         """Send prepared bytes and perform any post-send actions."""
+        assert self.socket is not None
         success, err_msg = send_message(self.socket, to_send)
         if not success:
             print(f"Failed to send message: {err_msg}")
@@ -827,7 +842,7 @@ class SecureChatProtocol:
     def process_key_verification_message(data: bytes) -> bool:
         """Process a key verification message from peer."""
         try:
-            message = json.loads(data.decode('utf-8'))
+            message = json.loads(data)
             return message.get("verified", False)
         except (UnicodeDecodeError, json.JSONDecodeError) as e:
             raise ValueError(f"Key verification message decoding failed: {e}") from e
@@ -864,20 +879,20 @@ class SecureChatProtocol:
                   warning_message is None if protocol versions match
         """
         try:
-            message = json.loads(data.decode('utf-8'))
+            message = json.loads(data)
             peer_version = str(message["version"])
             self.peer_version = peer_version
             kem_public_key = base64.b64decode(message["public_key"], validate=True)
             peer_dh_pub_b64 = message["dh_public_key"]
             peer_dh_pub_bytes = base64.b64decode(peer_dh_pub_b64, validate=True)
         except UnicodeDecodeError as e:
-            raise ValueError(f"Key exchange init message contains invalid UTF-8 characters") from e
+            raise ValueError("Key exchange init message contains invalid UTF-8 characters") from e
         except json.JSONDecodeError as e:
-            raise ValueError(f"Key exchange init message could not be parsed") from e
+            raise ValueError("Key exchange init message could not be parsed") from e
         except KeyError as e:
-            raise ValueError(f"Key exchange init message is missing required fields") from e
+            raise ValueError("Key exchange init message is missing required fields") from e
         except binascii.Error as e:
-            raise ValueError(f"Key exchange init message contains invalid base64-encoded data") from e
+            raise ValueError("Key exchange init message contains invalid base64-encoded data") from e
         
         # Check protocol version
         version_warning = ""
@@ -926,9 +941,12 @@ class SecureChatProtocol:
         Returns:
             tuple: (combined_shared_secret, warning_message)
                   warning_message is None if protocol versions match
+        
+        Raises:
+            DecodeError: Something was wrong with the received data
         """
         try:
-            message = json.loads(data.decode('utf-8'))
+            message = json.loads(data)
             ciphertext = base64.b64decode(message["ciphertext"], validate=True)
             self.peer_public_key = base64.b64decode(message["public_key"], validate=True)
             peer_dh_pub_b64 = message["dh_public_key"]
@@ -937,6 +955,8 @@ class SecureChatProtocol:
             raise DecodeError("Key exchange response decode error, UnicodeDecodeError")
         except json.JSONDecodeError:
             raise DecodeError("Key exchange response decode error, json.JSONDecodeError")
+        except KeyError:
+            raise DecodeError("Key exchange response decode error, KeyError")
             
         peer_version = message.get("version", None)
         
@@ -1004,7 +1024,8 @@ class SecureChatProtocol:
         plaintext_bytes = plaintext.encode('utf-8')
         
         # Create AAD from message metadata for authentication
-        nonce: bytes = os.urandom(12)
+        encryptor = DoubleEncryptor(message_key)
+        nonce = os.urandom(12)
         aad_data: dict[str, MessageType | int | str] = {
             "type":          MessageType.ENCRYPTED_MESSAGE,
             "counter":       self.message_counter,
@@ -1014,7 +1035,7 @@ class SecureChatProtocol:
         aad: bytes = json.dumps(aad_data).encode('utf-8')
         
         # Encrypt with AES-GCM using the unique message key and AAD
-        ciphertext: bytes = DoubleEncryptor(message_key).encrypt(nonce, plaintext_bytes, aad)
+        ciphertext = encryptor.encrypt(nonce, plaintext_bytes, aad)
         
         # delete the message key
         message_key = b'\x00' * len(message_key)
@@ -1053,7 +1074,7 @@ class SecureChatProtocol:
         if not self.shared_key or not self.receive_chain_key:
             raise ValueError("No shared key or receive chain key established")
         try:
-            message: dict[str, Any] = json.loads(data.decode('utf-8'))
+            message: dict[str, Any] = json.loads(data)
             nonce: bytes = base64.b64decode(message["nonce"])
             ciphertext: bytes = base64.b64decode(message["ciphertext"])
             counter: int = message["counter"]
@@ -1120,7 +1141,7 @@ class SecureChatProtocol:
             
         
         try:
-            decrypted_data = decrypted_data.decode('utf-8')
+            decrypted_data_str = decrypted_data.decode('utf-8')
         except UnicodeDecodeError:
             message_key = b'\x00' * len(message_key)
             raise ValueError("Message is probably legitimate but failed to decode, UnicodeDecodeError")
@@ -1135,7 +1156,7 @@ class SecureChatProtocol:
         message_key = b'\x00' * len(message_key)
         del message_key
         
-        return decrypted_data
+        return decrypted_data_str
     
     # Rekey methods
     def activate_pending_keys(self) -> None:
@@ -1346,7 +1367,7 @@ class SecureChatProtocol:
         header_json = json.dumps(header).encode('utf-8')
         
         # Encrypt header and chunk data in one operation
-        encryptor = ChaCha20Poly1305(message_key)
+        encryptor = DoubleEncryptor(message_key)
         nonce = os.urandom(12)
         
         # Create AAD including eph pub to authenticate ratchet key
@@ -1362,6 +1383,7 @@ class SecureChatProtocol:
         header_len = struct.pack('!H', len(header_json))  # 2 bytes for header length
         plaintext = header_len + header_json + chunk_data
         ciphertext = encryptor.encrypt(nonce, plaintext, aad)
+        del encryptor
         
         # Securely delete the message key
         message_key = b'\x00' * len(message_key)
@@ -1461,100 +1483,102 @@ class SecureChatProtocol:
             raise ValueError(f"File metadata missing field: {e}") from e
     
     def process_file_chunk(self, encrypted_data: bytes) -> dict:
-        """Process an optimized file chunk message with binary format and DH double ratchet.
+        """Process an optimised file chunk message with binary format and DH double ratchet.
         Expects frame: [4-byte counter][12-byte nonce][32-byte eph_pub][ciphertext].
         """
         if not self.shared_key or not self.receive_chain_key:
             raise ValueError("No shared key or receive chain key established")
+        if len(encrypted_data) < 4 + 12 + 32:
+            raise ValueError("Invalid chunk message format")
         
         try:
             # Extract counter, nonce, peer ephemeral, and ciphertext from the message
-            if len(encrypted_data) < 4 + 12 + 32:
-                raise ValueError("Invalid chunk message format")
-            
-            counter = struct.unpack('!I', encrypted_data[:4])[0]
-            nonce = encrypted_data[4:16]
-            peer_eph_pub = encrypted_data[16:48]
-            ciphertext = encrypted_data[48:]
-            
-            # Check for replay attacks or very old messages
-            if counter <= self.peer_counter:
-                raise ValueError(
-                        f"Replay attack or out-of-order message detected. Expected > {self.peer_counter}, got {counter}")
-            
-            # Advance the chain key to the correct state for this message (symmetric ratchet)
-            temp_chain_key = self.receive_chain_key
-            for i in range(self.peer_counter + 1, counter):
-                temp_chain_key = self._ratchet_chain_key(temp_chain_key, i)
-            
-            # DH mix: use our receive private key for message-phase ratchet
-            if not self.msg_recv_private:
-                raise ValueError("Local DH private key not initialized for file chunk ratchet")
-            dh_shared = self.msg_recv_private.exchange(X25519PublicKey.from_public_bytes(peer_eph_pub))
-            mixed_chain_key = self._mix_dh_with_chain(temp_chain_key, dh_shared, counter, "m")
-            
-            # Derive the message key for the current message
-            message_key = self._derive_message_key(mixed_chain_key, counter)
-            
-            # Calculate what the new chain key state WOULD be (symmetric ratchet only)
-            new_chain_key = self._ratchet_chain_key(temp_chain_key, counter)
-            
-            # Create AAD including eph pub to authenticate ratchet key
-            aad_data = {
-                "type":          MessageType.FILE_CHUNK,
-                "counter":       counter,
-                "nonce":         base64.b64encode(nonce).decode('utf-8'),
-                "dh_public_key": base64.b64encode(peer_eph_pub).decode('utf-8'),
-            }
-            aad = json.dumps(aad_data).encode('utf-8')
-            
-            # Decrypt the chunk payload with AAD verification
-            encryptor = ChaCha20Poly1305(message_key)
-            try:
-                plaintext = encryptor.decrypt(nonce, ciphertext, aad)
-            except InvalidTag:
-                message_key = b'\x00' * len(message_key)
-                raise ValueError("File chunk decryption failed: InvalidTag")
-            
-            # Parse the decrypted header and extract chunk data
-            if len(plaintext) < 2:
-                raise ValueError("Invalid decrypted data: too short")
-            
-            header_len = struct.unpack('!H', plaintext[:2])[0]
-            if len(plaintext) < 2 + header_len:
-                raise ValueError("Invalid decrypted data: header length mismatch")
-            
-            header_json = plaintext[2:2 + header_len]
-            chunk_data = plaintext[2 + header_len:]
-            header = json.loads(header_json.decode('utf-8'))
-            
-            if header["type"] != MessageType.FILE_CHUNK:
-                raise ValueError("Invalid message type in decrypted chunk")
-            
-            # Decryption successful, update the state
-            self.receive_chain_key = new_chain_key
-            self.peer_counter = counter
-            # Store peer's latest eph public key for completeness
-            self.msg_peer_base_public = peer_eph_pub
-            
-            # Securely delete the message key
+            counter = int(struct.unpack('!I', encrypted_data[:4])[0])
+        except struct.error:
+            raise ValueError("Invalid chunk message format")
+        except ValueError:
+            raise ValueError("Invalid counter in chunk message")
+        
+        nonce = encrypted_data[4:16]
+        peer_eph_pub = encrypted_data[16:48]
+        ciphertext = encrypted_data[48:]
+        
+        # Check for replay attacks or very old messages
+        if counter <= self.peer_counter:
+            raise ValueError("Replay attack or out-of-order message detected. Expected > " +
+                             f"{self.peer_counter}, got {counter}")
+        
+        # Advance the chain key to the correct state for this message (symmetric ratchet)
+        temp_chain_key = self.receive_chain_key
+        for i in range(self.peer_counter + 1, counter):
+            temp_chain_key = self._ratchet_chain_key(temp_chain_key, i)
+        
+        # DH mix: use our receive private key for message-phase ratchet
+        if not self.msg_recv_private:
+            raise ValueError("Local DH private key not initialized for file chunk ratchet")
+        dh_shared = self.msg_recv_private.exchange(X25519PublicKey.from_public_bytes(peer_eph_pub))
+        mixed_chain_key = self._mix_dh_with_chain(temp_chain_key, dh_shared, counter, "m")
+        
+        # Derive the message key for the current message
+        message_key = self._derive_message_key(mixed_chain_key, counter)
+        
+        # Calculate what the new chain key state WOULD be (symmetric ratchet only)
+        new_chain_key = self._ratchet_chain_key(temp_chain_key, counter)
+        
+        # Create AAD including eph pub to authenticate ratchet key
+        aad_data = {
+            "type":          MessageType.FILE_CHUNK,
+            "counter":       counter,
+            "nonce":         base64.b64encode(nonce).decode('utf-8'),
+            "dh_public_key": base64.b64encode(peer_eph_pub).decode('utf-8'),
+        }
+        aad = json.dumps(aad_data).encode('utf-8')
+        
+        # Decrypt the chunk payload with AAD verification
+        encryptor = DoubleEncryptor(message_key)
+        try:
+            plaintext = encryptor.decrypt(nonce, ciphertext, aad)
+        except InvalidTag:
             message_key = b'\x00' * len(message_key)
-            del message_key
-            
-            return {
-                "transfer_id": header["transfer_id"],
-                "chunk_index": header["chunk_index"],
-                "chunk_data":  chunk_data
-            }
-        except (UnicodeDecodeError, json.JSONDecodeError) as e:
-            raise ValueError(f"File chunk JSON decode failed: {e}") from e
-        except KeyError as e:
-            raise ValueError(f"File chunk missing field: {e}") from e
-        except (binascii.Error, struct.error, ValueError) as e:
-            # ValueError may come from base64 decode or other parsing errors
-            raise ValueError(f"File chunk structural decode error: {e}") from e
-        except Exception as e:
-            raise ValueError(f"File chunk processing failed (unexpected): {e}")
+            raise ValueError("File chunk decryption failed: InvalidTag")
+        
+        # Parse the decrypted header and extract chunk data
+        if len(plaintext) < 2:
+            raise ValueError("Invalid decrypted data: too short")
+        
+        try:
+            header_len = struct.unpack('!H', plaintext[:2])[0]
+        except struct.error:
+            raise ValueError("Invalid decrypted data: header length")
+        
+        if len(plaintext) < 2 + header_len:
+            raise ValueError("Invalid decrypted data: header length mismatch")
+        
+        header_json = plaintext[2:2 + header_len]
+        chunk_data = plaintext[2 + header_len:]
+        try:
+            header = json.loads(header_json)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            raise ValueError("Invalid decrypted data: header JSON decode failed")
+        
+        if header["type"] != MessageType.FILE_CHUNK:
+            raise ValueError("Invalid message type in decrypted chunk")
+        
+        # Decryption successful, update the state
+        self.receive_chain_key = new_chain_key
+        self.peer_counter = counter
+        # Store peer's latest eph public key for completeness
+        self.msg_peer_base_public = peer_eph_pub
+        
+        # Securely delete the message key
+        message_key = b'\x00' * len(message_key)
+        del message_key
+        
+        return {
+            "transfer_id": header["transfer_id"],
+            "chunk_index": header["chunk_index"],
+            "chunk_data":  chunk_data
+        }
     
     def add_file_chunk(self, transfer_id: str, chunk_index: int, chunk_data: bytes, total_chunks: int) -> bool:
         """Add a received file chunk and return True if file is complete.
@@ -1640,106 +1664,111 @@ class SecureChatProtocol:
     def reassemble_file(self, transfer_id: str, output_path: str, expected_hash: str, compressed: bool = True) -> bool:
         """
         Finalise file transfer, optionally decompress, and verify integrity.
-        
-        Args:
-            transfer_id: The transfer ID
-            output_path: Final output path for the file
-            expected_hash: Expected BLAKE2b hash of the original file
-            compressed: Whether the received data is compressed (default: True)
         """
+        temp_received_path = self._close_and_get_temp_path(transfer_id)
+    
+        final_file_path = temp_received_path
+        # Always remove the received temp file on error; also remove decompressed temp if created
+        cleanup_on_error: list[str] = [temp_received_path]
+    
+        try:
+            if compressed:
+                final_file_path = self._decompress_gzip_file(temp_received_path)
+                cleanup_on_error.append(final_file_path)
+    
+            # Verify file integrity
+            if self._hash_file_hexdigest(final_file_path) != expected_hash:
+                raise ValueError("File integrity check failed")
+    
+            # Move the final file to the output path
+            self._atomic_move_or_copy(final_file_path, output_path)
+    
+            # Clean up the original received file if it was a compressed container
+            if compressed and os.path.exists(temp_received_path):
+                self._safe_remove(temp_received_path)
+    
+        except Exception as e:
+            self._cleanup_paths(cleanup_on_error)
+            if isinstance(e, (OSError, IOError, gzip.BadGzipFile)):
+                raise ValueError(f"File processing failed (I/O or gzip): {e}") from e
+            if isinstance(e, ValueError):
+                raise
+            raise ValueError(f"File processing failed (unexpected): {e}") from e
+    
+        # Clean up tracking data
+        del self.received_chunks[transfer_id]
+        del self.temp_file_paths[transfer_id]
+    
+        return True
+    
+    def _close_and_get_temp_path(self, transfer_id: str) -> str:
+        """Ensure transfer exists, close any open handle, and return the temp file path."""
         if transfer_id not in self.received_chunks or transfer_id not in self.temp_file_paths:
             raise ValueError(f"No data found for transfer {transfer_id}")
-        
-        # Ensure any open file handle is closed before proceeding
+    
         if transfer_id in self.open_file_handles:
             try:
                 self.open_file_handles[transfer_id].close()
             except Exception:
-                # Ignore errors on close, file handles will be closed on program exit anyway
                 pass
             del self.open_file_handles[transfer_id]
-        
+    
         temp_received_path = self.temp_file_paths[transfer_id]
-        
         if not os.path.exists(temp_received_path):
             raise ValueError(f"Temporary file not found: {temp_received_path}")
-        
-        final_file_path = temp_received_path
-        
+        return temp_received_path
+    
+    @staticmethod
+    def _decompress_gzip_file(src: str) -> str:
+        """Stream-decompress `src` gzip file to `src`.decompressed and return the new path."""
+        dst = src + ".decompressed"
+        with open(src, 'rb') as compressed_file:
+            with gzip.GzipFile(fileobj=compressed_file, mode='rb') as gzip_file:
+                with open(dst, 'wb') as decompressed_file:
+                    while chunk := gzip_file.read(16384):
+                        decompressed_file.write(chunk)
+        return dst
+    
+    @staticmethod
+    def _hash_file_hexdigest(path: str) -> str:
+        """Return BLAKE2b(32) hex digest of the file at `path`."""
+        file_hash = hashlib.blake2b(digest_size=32)
+        with open(path, 'rb') as f:
+            while chunk := f.read(16384):
+                file_hash.update(chunk)
+        return file_hash.hexdigest()
+    
+    @staticmethod
+    def _atomic_move_or_copy(src: str, dst: str) -> None:
+        """Move `src` to `dst` or copy+remove on cross-device/permission issues."""
         try:
-            if compressed:
-                # Create a temporary path for the decompressed file
-                temp_decompressed_path = temp_received_path + ".decompressed"
-                
-                # Decompress the file
-                with open(temp_received_path, 'rb') as compressed_file:
-                    with gzip.GzipFile(fileobj=compressed_file, mode='rb') as gzip_file:
-                        with open(temp_decompressed_path, 'wb') as decompressed_file:
-                            # Decompress in chunks to avoid memory issues
-                            while chunk := gzip_file.read(16384):
-                                decompressed_file.write(chunk)
-                
-                final_file_path = temp_decompressed_path
-            
-            # Calculate hash of the final file
-            file_hash = hashlib.blake2b(digest_size=32)
-            with open(final_file_path, 'rb') as f:
-                while chunk := f.read(16384):  # Read in small chunks to avoid memory issues
-                    file_hash.update(chunk)
-            
-            # Verify file integrity
-            if file_hash.hexdigest() != expected_hash:
-                # Clean up temporary files
-                os.remove(temp_received_path)
-                if compressed and os.path.exists(final_file_path):
-                    os.remove(final_file_path)
-                raise ValueError("File integrity check failed")
-            
-            # Move the final file to the output path
+            if os.path.exists(dst):
+                os.remove(dst)
+            os.rename(src, dst)
+        except (OSError, PermissionError) as e:
             try:
-                # If the output file already exists, remove it first
-                if os.path.exists(output_path):
-                    os.remove(output_path)
-                
-                # Move the final file to the output path
-                os.rename(final_file_path, output_path)
-            except (OSError, PermissionError) as e:
-                # If moving fails, try copying instead
+                shutil.copy2(src, dst)
+                os.remove(src)
+            except (OSError, PermissionError) as copy_error:
+                raise ValueError(f"Failed to move file: {e}, copy error: {copy_error}") from e
+    
+    @staticmethod
+    def _safe_remove(path: str) -> None:
+        """Remove a file path, ignoring errors."""
+        try:
+            os.remove(path)
+        except (FileNotFoundError, PermissionError, OSError):
+            pass
+    
+    @staticmethod
+    def _cleanup_paths(paths: list[str]) -> None:
+        """Best-effort removal of a list of paths."""
+        for p in paths:
+            if p and os.path.exists(p):
                 try:
-                    shutil.copy2(final_file_path, output_path)
-                    os.remove(final_file_path)
-                except (OSError, PermissionError) as copy_error:
-                    raise ValueError(f"Failed to move file: {e}, copy error: {copy_error}") from e
-            # Clean up the temporary received file (if different from final file)
-            if compressed and os.path.exists(temp_received_path):
-                os.remove(temp_received_path)
-        
-        except (OSError, IOError, gzip.BadGzipFile) as e:
-            # Clean up any temporary files on error
-            if os.path.exists(temp_received_path):
-                os.remove(temp_received_path)
-            if compressed and final_file_path != temp_received_path and os.path.exists(final_file_path):
-                os.remove(final_file_path)
-            raise ValueError(f"File processing failed (I/O or gzip): {e}") from e
-        except ValueError:
-            if os.path.exists(temp_received_path):
-                os.remove(temp_received_path)
-            if compressed and final_file_path != temp_received_path and os.path.exists(final_file_path):
-                os.remove(final_file_path)
-            raise
-        except Exception as e:
-            if os.path.exists(temp_received_path):
-                os.remove(temp_received_path)
-            if compressed and final_file_path != temp_received_path and os.path.exists(final_file_path):
-                os.remove(final_file_path)
-            raise ValueError(f"File processing failed (unexpected): {e}") from e
-        
-        # Clean up tracking data
-        del self.received_chunks[transfer_id]
-        del self.temp_file_paths[transfer_id]
-        
-        return True
-
+                    os.remove(p)
+                except Exception:
+                    pass
 
 def create_error_message(error_text: str) -> bytes:
     """Create an error message"""

@@ -24,6 +24,9 @@ Notes:
   - All timings use perf_counter_ns for high resolution.
   - Warmup iterations are excluded from statistics to allow JIT-like warm cache effects to stabilize.
   - No external dependencies required beyond those already in requirements.txt.
+
+This was generated purely with AI.
+I didn't feel like doing it manually, and it's not that important
 """
 from __future__ import annotations
 

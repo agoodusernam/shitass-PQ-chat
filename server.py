@@ -8,14 +8,14 @@ import socketserver
 import threading
 import json
 import time
-from typing import Final, Self
+from typing import Final
 import datetime
 
 from shared import send_message, receive_message, create_reset_message, MessageType, PROTOCOL_VERSION
 import config_manager
+import configs
 
 assert config_manager  # Remove unused import warning
-import configs
 
 SERVER_VERSION: Final[int] = 6
 
@@ -317,7 +317,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         except Exception as e:
             print(f"Failed to notify key exchange completion: {e}")
     
-    def get_other_client(self) -> Self | None:
+    def get_other_client(self) -> "SecureChatRequestHandler | None":
         """Get the other connected client."""
         with self.server.clients_lock:
             for client_id, client_handler in self.server.clients.items():
