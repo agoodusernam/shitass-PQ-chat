@@ -61,6 +61,13 @@ def xor_bytes(a: bytes, b: bytes) -> bytes:
     xor_result = int_a ^ int_b
     return xor_result.to_bytes(length, byteorder="little")
 
+def sanitize_str(field: str) -> str:
+    """Return ASCII-only str truncated to 32 chars; fallback to '?' if empty."""
+    s_ascii = field.encode('ascii', errors='ignore').decode('ascii', errors='ignore')
+    if len(s_ascii) > 32:
+        s_ascii = s_ascii[:32]
+    return s_ascii or "?"
+
 
 class DoubleEncryptor:
     """
@@ -103,11 +110,7 @@ class DoubleEncryptor:
     def __del__(self):
         # This is not particularly secure, but it's better than nothing
         self._key = b"\x00" * 32
-        self._key_part1 = b"\x00" * 32
-        self._key_part2 = b"\x00" * 32
         del self._key
-        del self._key_part1
-        del self._key_part2
         
         del self._aes
         del self._chacha
@@ -1477,8 +1480,8 @@ class SecureChatProtocol:
                 "compressed":     message.get("compressed", True),
                 "processed_size": message.get("processed_size", message.get("compressed_size", 0))
             }
-        except KeyError as e:
-            raise ValueError(f"File metadata missing field: {e}") from e
+        except KeyError:
+            raise KeyError("Invalid file metadata message")
     
     def process_file_chunk(self, encrypted_data: bytes) -> dict:
         """Process an optimised file chunk message with binary format and DH double ratchet.
@@ -1758,15 +1761,11 @@ class SecureChatProtocol:
         except (FileNotFoundError, PermissionError, OSError):
             pass
     
-    @staticmethod
-    def _cleanup_paths(paths: list[str]) -> None:
+    def _cleanup_paths(self, paths: list[str]) -> None:
         """Best-effort removal of a list of paths."""
         for p in paths:
             if p and os.path.exists(p):
-                try:
-                    os.remove(p)
-                except Exception:
-                    pass
+                self._safe_remove(p)
 
 def create_error_message(error_text: str) -> bytes:
     """Create an error message"""

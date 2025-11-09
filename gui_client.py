@@ -20,13 +20,13 @@ import config_manager
 import configs
 import shared
 from client import SecureChatClient
-from shared import MessageType, bytes_to_human_readable, FileMetadata
+from shared import FileMetadata, MessageType, bytes_to_human_readable
 
 assert config_manager  # remove unused import warning
 
 try:
-    from PIL import Image, ImageGrab, ImageTk
     import PIL
+    from PIL import Image, ImageGrab, ImageTk
     
     PIL_AVAILABLE = True
 except ImportError:
@@ -72,10 +72,10 @@ except ImportError:
     # fake class so type hinting works even if pyaudio is not installed
     class pyaudio:  # type: ignore
         paUInt8 = 0
-        paInt8 = 1
-        paInt16 = 2
-        paInt24 = 3
-        paInt32 = 4
+        paInt8 = 0
+        paInt16 = 0
+        paInt24 = 0
+        paInt32 = 0
         
         class PyAudio:
             def open(self, **_):
@@ -1834,7 +1834,7 @@ class ChatGUI:
         GUI exclusive feature
         """
         if not os.path.exists(configs.RINGTONE_FILE):
-            print("Ringtone file not found.")
+            self.client.display_error_message("Ringtone file not found.")
             return
         keep_ringing = True
         
@@ -1978,7 +1978,7 @@ class GUISecureChatClient(SecureChatClient):
         else:
             self.gui.append_to_chat(f"{self.peer_nickname}: {message}", is_message=True)
     
-    def display_error_message(self, message: str) -> None:
+    def display_error_message(self, message: str | Exception) -> None:
         self.gui.append_to_chat(f"Error: {message}")
     
     def display_system_message(self, message: str) -> None:
@@ -2170,12 +2170,10 @@ class GUISecureChatClient(SecureChatClient):
             chunk = stream.read(chunk_size, exception_on_overflow=False)
             if not self.voice_muted:
                 self.send_voice_data(chunk)
-        else:
-            # Clean up on exit
-            stream.close()
+                
+        stream.close()
         
         
-    
     def receive_voice_thread(self, stream: pyaudio.Stream):
         while self.voice_call_active and self.connected:
             if self.voice_data_queue:
@@ -2183,9 +2181,7 @@ class GUISecureChatClient(SecureChatClient):
                 stream.write(chunk)
             else:
                 time.sleep(0.005)
-        else:
-            # Clean up on exit
-            stream.close()
+        stream.close()
     
     def handle_voice_call_reject(self):
         """Handle rejection of a voice call request."""
@@ -2471,7 +2467,7 @@ class GUISecureChatClient(SecureChatClient):
             return
         
         self.display_system_message("Received rejection for unknown file transfer: "
-                                    f"{self._sanitize_str(transfer_id[:32])}")
+                                    f"{shared.sanitize_str(transfer_id[:32])}")
 
     def handle_file_chunk_binary(self, chunk_info: dict):
         """Handle incoming file chunk (optimised binary format) with GUI progress updates."""
@@ -2630,7 +2626,7 @@ class GUISecureChatClient(SecureChatClient):
         else:
             self.gui.on_tk_thread(self.gui.file_transfer_window.add_transfer_message,
                                   "Received completion for unknown file transfer: " +
-                                  f"{self._sanitize_str(transfer_id[:32])}")
+                                  f"{shared.sanitize_str(transfer_id[:32])}")
         
     
     def _send_file_chunks(self, transfer_id: str, file_path: str):

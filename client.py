@@ -120,20 +120,13 @@ class SecureChatClient:
     
     def close_audio(self):
         pass
-        
+    
     @staticmethod
-    def _sanitize_str(field: str) -> str:
-        """Return ASCII-only field name truncated to 32 chars; fallback to '?' if empty."""
-        s_ascii = field.encode('ascii', errors='ignore').decode('ascii', errors='ignore')
-        if len(s_ascii) > 32:
-            s_ascii = s_ascii[:32]
-        return s_ascii or "?"
-        
-    def _first_unexpected_field(self, obj: dict[str, Any], allowed: set[str]) -> str | None:
+    def _first_unexpected_field(obj: dict[str, Any], allowed: set[str]) -> str | None:
         """Return the first key not in allowed or None if all keys allowed."""
         for k in obj.keys():
             if k not in allowed:
-                return self._sanitize_str(k)
+                return shared.sanitize_str(k)
         return None
     
     @staticmethod
@@ -563,8 +556,8 @@ class SecureChatClient:
         except (binascii.Error, json.JSONDecodeError, UnicodeDecodeError):
             self.display_error_message("Received message that could not be decoded.")
             return
-            
-            # Validate unexpected fields when peer is unverified (inner JSON)
+        
+        # Validate unexpected fields when peer is unverified (inner JSON)
         if not self.protocol.peer_key_verified:
             allowed_inner = self._allowed_unverified_inner_fields()
             unexpected_inner = self._first_unexpected_field(message_obj, allowed_inner)
@@ -678,13 +671,10 @@ class SecureChatClient:
         if not self.key_exchange_complete:
             self.display_error_message("Cannot rekey - key exchange not complete")
             return
-        try:
-            payload = self.protocol.create_rekey_init()
-            # Send REKEY init under old key
-            self.protocol.queue_message(("encrypt_json", payload))
-            self.display_system_message("Rekey initiated.")
-        except Exception as e:
-            self.display_error_message(f"Failed to initiate rekey: {e}")
+        payload = self.protocol.create_rekey_init()
+        # Send REKEY init under old key
+        self.protocol.queue_message(("encrypt_json", payload))
+        self.display_system_message("Rekey initiated.")
     
     def send_message(self, text: str) -> bool:
         """Encrypt and queue a chat message for sending."""
@@ -752,65 +742,66 @@ class SecureChatClient:
         """Handle incoming file metadata."""
         try:
             metadata = self.protocol.process_file_metadata(decrypted_message)
-            transfer_id = metadata["transfer_id"]
-            if not self.allow_file_transfers:
-                print("File transfers are disabled. Ignoring incoming file.")
-                self.protocol.queue_message(("encrypt_json", {
-                    "type":        MessageType.FILE_REJECT,
-                    "transfer_id": transfer_id,
-                    "reason":      "User disabled file transfers",
-                }))
-                return
-            
-            # Warn if keys are unverified (potential MitM vulnerability)
-            if not self.protocol.peer_key_verified:
-                self.display_system_message("Warning: Incoming file request over an unverified connection. This is vulnerable to MitM attacks.")
-            
-            # Store metadata for potential acceptance
-            self.active_file_metadata[transfer_id] = metadata
-            
-            # Prompt user for acceptance
-            print("\nIncoming file transfer:")
-            print(f"  Filename: {metadata['filename']}")
-            print(f"  Size: {metadata['file_size']} bytes")
-            print(f"  Chunks: {metadata['total_chunks']}")
-            
-            while True:
-                try:
-                    response = input("Accept file? (yes/no): ").lower().strip()
-                    if response in ['yes', 'y']:
-                        # Send acceptance via queue (loop will encrypt)
-                        self.protocol.queue_message(("encrypt_json", {
-                            "type":        MessageType.FILE_ACCEPT,
-                            "transfer_id": transfer_id,
-                        }))
-                        print("File transfer accepted. Waiting for file...")
-                        self.protocol.send_dummy_messages = False
-                    
-                    elif response in ['no', 'n']:
-                        # Send rejection via queue (loop will encrypt)
-                        self.protocol.queue_message(("encrypt_json", {
-                            "type":        MessageType.FILE_REJECT,
-                            "transfer_id": transfer_id,
-                            "reason":      "User declined",
-                        }))
-                        print("File transfer rejected.")
-                        del self.active_file_metadata[transfer_id]
-                    else:
-                        print("Please enter 'yes' or 'no'")
-                except (EOFError, KeyboardInterrupt):
-                    # Send rejection on interrupt via queue
+        except KeyError as e:
+            self.display_error_message(e)
+            return
+        transfer_id = metadata["transfer_id"]
+        if not self.allow_file_transfers:
+            print("File transfers are disabled. Ignoring incoming file.")
+            self.protocol.queue_message(("encrypt_json", {
+                "type":        MessageType.FILE_REJECT,
+                "transfer_id": transfer_id,
+                "reason":      "User disabled file transfers",
+            }))
+            return
+        
+        # Warn if keys are unverified (potential MitM vulnerability)
+        if not self.protocol.peer_key_verified:
+            self.display_system_message("Warning: Incoming file request over an unverified connection. " +
+                                        "This is vulnerable to MitM attacks.")
+        
+        # Store metadata for potential acceptance
+        self.active_file_metadata[transfer_id] = metadata
+        
+        # Prompt user for acceptance
+        print("\nIncoming file transfer:")
+        print(f"  Filename: {metadata['filename']}")
+        print(f"  Size: {metadata['file_size']} bytes")
+        print(f"  Chunks: {metadata['total_chunks']}")
+        
+        while True:
+            try:
+                response = input("Accept file? (yes/no): ").lower().strip()
+                if response in ['yes', 'y']:
+                    # Send acceptance via queue (loop will encrypt)
+                    self.protocol.queue_message(("encrypt_json", {
+                        "type":        MessageType.FILE_ACCEPT,
+                        "transfer_id": transfer_id,
+                    }))
+                    print("File transfer accepted. Waiting for file...")
+                    self.protocol.send_dummy_messages = False
+                
+                elif response in ['no', 'n']:
+                    # Send rejection via queue (loop will encrypt)
                     self.protocol.queue_message(("encrypt_json", {
                         "type":        MessageType.FILE_REJECT,
                         "transfer_id": transfer_id,
-                        "reason":      "User canceled",
+                        "reason":      "User declined",
                     }))
                     print("File transfer rejected.")
                     del self.active_file_metadata[transfer_id]
-                    break
-        
-        except Exception as e:
-            print(f"Error handling file metadata: {e}")
+                else:
+                    print("Please enter 'yes' or 'no'")
+            except (EOFError, KeyboardInterrupt):
+                # Send rejection on interrupt via queue
+                self.protocol.queue_message(("encrypt_json", {
+                    "type":        MessageType.FILE_REJECT,
+                    "transfer_id": transfer_id,
+                    "reason":      "User canceled",
+                }))
+                print("File transfer rejected.")
+                del self.active_file_metadata[transfer_id]
+                break
     
     def handle_file_accept(self, decrypted_message: str) -> None:
         """Handle file acceptance from peer."""
@@ -962,8 +953,7 @@ class SecureChatClient:
         if (progress - self._last_progress_shown[transfer_id] >= 10 or
                 is_complete or
                 received_chunks == 1):  # Always show first chunk
-            print(
-                    f"Receiving {metadata['filename']}: {progress:.1f}% ({received_chunks}/{metadata['total_chunks']} chunks)")
+            print(f"Receiving {metadata['filename']}: {progress:.1f}% ({received_chunks}/{metadata['total_chunks']} chunks)")
             self._last_progress_shown[transfer_id] = progress
         
         if is_complete:
