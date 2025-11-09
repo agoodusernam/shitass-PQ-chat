@@ -2247,34 +2247,28 @@ class DebugGUISecureChatClient(GUISecureChatClient):
         if not self.socket:
             return False
         
-        try:
-            # Simulate packet loss
-            if self.packet_loss_percentage > 0:
-                if random.randint(1, 100) <= self.packet_loss_percentage:
-                    self.gui.append_to_chat("DEBUG: Packet loss simulated " +
-                                            f"({self.packet_loss_percentage}%)", is_message=False)
-                    return False
-            
-            # Simulate network latency if configured
-            if self.simulated_latency > 0:
-                time.sleep(self.simulated_latency)
-            
-            # Compute expected counter for this outgoing message (before queuing)
-            expected_counter = self.protocol.message_counter + 1
-            
-            # Call the parent method to send the message
-            result = super().send_message(text)
-            
-            # Schedule appending crypto info once encryption completes
-            if result and self.attach_crypto_info_to_messages and self.gui:
-                self.gui.root.after(50, self._append_outgoing_crypto_info, expected_counter) # type: ignore
-
-            
-            return result
+        # Simulate packet loss
+        if self.packet_loss_percentage > 0:
+            if random.randint(1, 100) <= self.packet_loss_percentage:
+                self.gui.append_to_chat("DEBUG: Packet loss simulated " +
+                                        f"({self.packet_loss_percentage}%)", is_message=False)
+                return False
         
-        except Exception as e:
-            self.gui.append_to_chat(f"Error sending message: {e}")
-            return False
+        # Simulate network latency if configured
+        if self.simulated_latency > 0:
+            time.sleep(self.simulated_latency)
+        
+        # Compute expected counter for this outgoing message (before queuing)
+        expected_counter = self.protocol.message_counter + 1
+        
+        # Call the parent method to send the message
+        result = super().send_message(text)
+        
+        # Schedule appending crypto info once encryption completes
+        if result and self.attach_crypto_info_to_messages and self.gui:
+            self.gui.root.after(50, self._append_outgoing_crypto_info, expected_counter) # type: ignore
+        
+        return result
 
 
 def main() -> None:

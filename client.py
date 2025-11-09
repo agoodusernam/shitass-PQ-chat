@@ -2,6 +2,7 @@
 Secure Chat Client with End-to-End Encryption
 It uses KRYSTALS KYBER protocol + X25519 for secure key exchange and message encryption.
 """
+import binascii
 # pylint: disable=trailing-whitespace, broad-exception-caught
 import socket
 import string
@@ -121,36 +122,30 @@ class SecureChatClient:
         pass
         
     @staticmethod
-    def _sanitize_field_name(field: str) -> str:
+    def _sanitize_str(field: str) -> str:
         """Return ASCII-only field name truncated to 32 chars; fallback to '?' if empty."""
-        try:
-            s = str(field)
-        except Exception:
-            s = repr(field)
-        s_ascii = s.encode('ascii', errors='ignore').decode('ascii', errors='ignore')
+        s_ascii = field.encode('ascii', errors='ignore').decode('ascii', errors='ignore')
         if len(s_ascii) > 32:
             s_ascii = s_ascii[:32]
         return s_ascii or "?"
         
     def _first_unexpected_field(self, obj: dict[str, Any], allowed: set[str]) -> str | None:
         """Return the first key not in allowed or None if all keys allowed."""
-        try:
-            for k in obj.keys():
-                if k not in allowed:
-                    return self._sanitize_field_name(k)
-        except Exception:
-            return None
+        for k in obj.keys():
+            if k not in allowed:
+                return self._sanitize_str(k)
         return None
     
     @staticmethod
     def _allowed_outer_fields(msg_type: Any) -> set[str]:
         """Whitelist of allowed top-level fields for pre-verification JSON messages."""
         base = {"type", "protocol_version", "version"}
-        try:
-            mt = MessageType(msg_type)
-        except Exception:
-            # Unknown type: only allow base
-            return base
+        mt = MessageType(msg_type)
+        
+        server_control: list[MessageType] = [MessageType.KEEP_ALIVE, MessageType.KEY_EXCHANGE_COMPLETE,
+                                             MessageType.INITIATE_KEY_EXCHANGE, MessageType.SERVER_FULL,
+                                             MessageType.SERVER_VERSION_INFO, MessageType.SERVER_DISCONNECT,
+                                             MessageType.ERROR]
         
         match mt:
             case MessageType.KEY_EXCHANGE_INIT:
@@ -163,15 +158,8 @@ class SecureChatClient:
                 return base | {"verified"}
             case MessageType.KEY_EXCHANGE_RESET:
                 return base | {"message"}
-        if mt in (
-            MessageType.KEEP_ALIVE,
-            MessageType.KEY_EXCHANGE_COMPLETE,
-            MessageType.INITIATE_KEY_EXCHANGE,
-            MessageType.SERVER_FULL,
-            MessageType.SERVER_VERSION_INFO,
-            MessageType.SERVER_DISCONNECT,
-            MessageType.ERROR,
-        ):
+        
+        if mt in server_control:
             # Allow common server control fields
             return base | {"reason", "message", "timestamp"}
         return base
@@ -303,10 +291,12 @@ class SecureChatClient:
             message_type = MessageType(int(message_json.get("type", -1)))
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
             # If JSON parsing failed, check if this might be a binary file chunk message
-            self.handle_maybe_binary_chunk(message_data)
+            success = self.handle_maybe_binary_chunk(message_data)
+            if not success:
+                self.display_error_message("Received message that could not be decoded.")
             return
             
-        if message_type == -1:
+        if message_type == MessageType.NONE:
             self.display_error_message("Received message with invalid type.")
             return
         
@@ -351,18 +341,17 @@ class SecureChatClient:
         return
         
     
-    def handle_maybe_binary_chunk(self, message_data: bytes) -> None:
+    def handle_maybe_binary_chunk(self, message_data: bytes) -> bool:
         if not (len(message_data) >= 48 and self.key_exchange_complete):
-            self.display_error_message("Received message that could not be decoded.")
-            return
+            return False
         try:
             # Try to process as binary file chunk
             result = self.protocol.process_file_chunk(message_data)
             self.handle_file_chunk_binary(result)
-            return
+            return True
         except ValueError:
             # Not a binary file chunk either
-            return
+            return False
     
     def handle_keepalive(self) -> None:
         """Handle keepalive messages from the server."""
@@ -374,17 +363,11 @@ class SecureChatClient:
         send_message(self.socket, response_data)
     
     def handle_delivery_confirmation(self, message: str) -> None:
-        """Handle delivery confirmation messages from the peer.
-        
-        Args:
-            message (str): The decrypted delivery confirmation message.
         """
-        try:
-            confirmed_counter = json.loads(message).get("confirmed_counter")
-            print(f"\n✓ Message {confirmed_counter} delivered")
-        
-        except Exception as e:
-            self.display_error_message(f"Error handling delivery confirmation: {e}")
+        Handle delivery confirmation messages from the other client.
+        GUI exclusive
+        """
+        pass
     
     def initiate_key_exchange(self) -> None:
         """Initiate the key exchange process as the first client.
@@ -438,22 +421,18 @@ class SecureChatClient:
     
     def handle_key_exchange_response(self, message_data: bytes) -> bool:
         """Handle key exchange response from another client."""
-        try:
-            if self.private_key:
-                _, version_warning = self.protocol.process_key_exchange_response(message_data, self.private_key)
+        if self.private_key:
+            _, version_warning = self.protocol.process_key_exchange_response(message_data, self.private_key)
+            
+            # Display version warning if present
+            if version_warning:
+                self.display_regular_message(f"{version_warning}")
                 
-                # Display version warning if present
-                if version_warning:
-                    self.display_regular_message(f"{version_warning}")
-                    
-                self.display_system_message("Key exchange completed successfully.")
-                return True
-            self.display_system_message("Received key exchange response but no private key found")
-            return False
-        
-        except Exception as e:
-            self.display_error_message(f"Key exchange response error: {e}")
-            return False
+            self.display_system_message("Key exchange completed successfully.")
+            return True
+        self.display_system_message("Received key exchange response but no private key found")
+        return False
+    
     
     def handle_key_exchange_complete(self) -> None:
         """Handle key exchange completion notification."""
@@ -489,7 +468,7 @@ class SecureChatClient:
                 else:
                     print("Please enter 'yes', 'y' or 'no', 'n'")
             except (EOFError, KeyboardInterrupt):
-                print("\nVerification cancelled. Connection will be insecure.")
+                print("\nVerification cancelled. Connection may be insecure.")
                 self.confirm_key_verification(False)
                 break
     
@@ -524,14 +503,15 @@ class SecureChatClient:
         """Handle key verification message from peer."""
         try:
             peer_verified = self.protocol.process_key_verification_message(message_data)
+        except shared.DecodeError as e:
+            self.display_error_message(e)
+            return
             
-            if peer_verified:
-                self.display_system_message("Peer has verified your key successfully.")
-            else:
-                self.display_system_message("Peer has NOT verified your key.")
         
-        except Exception as e:
-            self.display_error_message(f"Error handling verification message: {e}")
+        if peer_verified:
+            self.display_system_message("Peer has verified your key successfully.")
+        else:
+            self.display_system_message("Peer has NOT verified your key.")
     
     def display_regular_message(self, message: str, prefix: str = "") -> None:
         """Display a regular chat message."""
@@ -540,41 +520,38 @@ class SecureChatClient:
         else:
             print(f"\n{self.peer_nickname}: {message}")
     
-    def display_error_message(self, message: str) -> None:
-        print(f"\nError: {message}")
+    def display_error_message(self, message: str | Exception) -> None:
+        print(f"Error: {message}")
         
     def display_system_message(self, message: str) -> None:
         """Display a system message."""
-        print(f"\n[SYSTEM]: {message}")
+        print(f"[SYSTEM]: {message}")
     
     def prompt_rekey_from_unverified(self) -> bool:
         """Prompt the user whether to proceed with a rekey from an unverified peer.
         Returns True to proceed with rekey, False to disconnect.
         """
-        try:
-            print("\nWARNING: Rekey requested by an UNVERIFIED peer.")
-            print("Proceeding may expose you to Man-in-the-Middle attacks if this peer is not who you expect.")
-            while True:
-                try:
-                    resp = input("Do you want to commence the rekey? (yes = proceed, no = disconnect): ").strip().lower()
-                    if resp in ("yes", "y"):  # proceed with rekey
-                        return True
-                    if resp in ("no", "n"):   # disconnect
-                        return False
-                    print("Please answer 'yes'/'y' or 'no'/'n'.")
-                except (EOFError, KeyboardInterrupt):
-                    print("\nNo response provided. Defaulting to disconnect.")
+        self.display_system_message("WARNING: Rekey requested by an UNVERIFIED peer.")
+        self.display_system_message("Proceeding may expose you to Man-in-the-Middle attacks " +
+                                    "if this peer is not who you expect.")
+        while True:
+            try:
+                resp = input("Do you want to commence the rekey? (yes = proceed, no = disconnect): ").strip().lower()
+                if resp in ("yes", "y"):  # proceed with rekey
+                    return True
+                if resp in ("no", "n"):   # disconnect
                     return False
-        except Exception:
-            # On any unexpected error, be conservative and disconnect
-            return False
+                print("Please answer 'yes'/'y' or 'no'/'n'.")
+            except (EOFError, KeyboardInterrupt):
+                print("\nNo response provided. Defaulting to disconnect.")
+                return False
     
     def handle_encrypted_message(self, message_data: bytes) -> None:
         """Handle encrypted chat messages."""
         try:
             decrypted_text = self.protocol.decrypt_message(message_data)
         except ValueError as e:
-            self.display_error_message(str(e))
+            self.display_error_message(e)
             return
         
         # Get the message counter that was just processed for delivery confirmation
@@ -583,65 +560,64 @@ class SecureChatClient:
         # Attempt to parse the decrypted text as a JSON message
         try:
             message_obj: dict[str, Any] = json.loads(decrypted_text)
+        except (binascii.Error, json.JSONDecodeError, UnicodeDecodeError):
+            self.display_error_message("Received message that could not be decoded.")
+            return
             
             # Validate unexpected fields when peer is unverified (inner JSON)
-            if not self.protocol.peer_key_verified:
-                allowed_inner = self._allowed_unverified_inner_fields()
-                unexpected_inner = self._first_unexpected_field(message_obj, allowed_inner)
-                if unexpected_inner:
-                    self.display_error_message(f"Dropped decrypted message from unverified peer due to unexpected field '{unexpected_inner}'.")
-                    return
-            
-            message_type: int | None = message_obj.get("type")
-            if message_type is None:
-                self.display_error_message("Dropped message without inside type.")
+        if not self.protocol.peer_key_verified:
+            allowed_inner = self._allowed_unverified_inner_fields()
+            unexpected_inner = self._first_unexpected_field(message_obj, allowed_inner)
+            if unexpected_inner:
+                self.display_error_message(f"Dropped decrypted message from unverified peer due to unexpected field '{unexpected_inner}'.")
                 return
-            
-            match message_type:
-                case MessageType.TEXT_MESSAGE:
-                    text = str(message_obj.get("text", ""))
-                    if not self.protocol.peer_key_verified:
-                        text = "".join(ch for ch in text if ch in string.printable)
-                    self.display_regular_message(text)
-                    self._send_delivery_confirmation(received_message_counter)
-                case MessageType.EMERGENCY_CLOSE:
-                    self.handle_emergency_close()
-                case MessageType.DUMMY_MESSAGE:
-                    pass
-                case MessageType.FILE_METADATA:
-                    self.handle_file_metadata(decrypted_text)
-                case MessageType.FILE_ACCEPT:
-                    self.handle_file_accept(decrypted_text)
-                case MessageType.FILE_REJECT:
-                    self.handle_file_reject(decrypted_text)
-                case MessageType.FILE_COMPLETE:
-                    self.handle_file_complete(decrypted_text)
-                case MessageType.DELIVERY_CONFIRMATION:
-                    if self.key_exchange_complete:
-                        self.handle_delivery_confirmation(decrypted_text)
-                case MessageType.EPHEMERAL_MODE_CHANGE:
-                    self.handle_ephemeral_mode_change(decrypted_text)
-                case MessageType.REKEY:
-                    self.handle_rekey(decrypted_text)
-                case MessageType.VOICE_CALL_INIT:
-                    self.handle_voice_call_init(decrypted_text)
-                case MessageType.VOICE_CALL_ACCEPT:
-                    self.handle_voice_call_accept(decrypted_text)
-                case MessageType.VOICE_CALL_REJECT:
-                    self.handle_voice_call_reject()
-                case MessageType.VOICE_CALL_DATA:
-                    self.handle_voice_call_data(decrypted_text)
-                case MessageType.VOICE_CALL_END:
-                    self.handle_voice_call_end()
-                case MessageType.NICKNAME_CHANGE:
-                    self.handle_nickname_change(decrypted_text)
-                case _:
-                    self.display_error_message(f"Dropped message with unknown inside type: {message_type}")
-                    return
         
-        except (json.JSONDecodeError, TypeError):
-            self.display_error_message("Dropped message without inside type (not JSON).")
+        message_type = MessageType(message_obj.get("type", -1))
+        if message_type == MessageType.NONE:
+            self.display_error_message("Received message with invalid type.")
             return
+        
+        match message_type:
+            case MessageType.TEXT_MESSAGE:
+                text = str(message_obj.get("text", ""))
+                if not self.protocol.peer_key_verified:
+                    text = "".join(ch for ch in text if ch in string.printable)
+                self.display_regular_message(text)
+                self._send_delivery_confirmation(received_message_counter)
+            case MessageType.EMERGENCY_CLOSE:
+                self.handle_emergency_close()
+            case MessageType.DUMMY_MESSAGE:
+                pass
+            case MessageType.FILE_METADATA:
+                self.handle_file_metadata(decrypted_text)
+            case MessageType.FILE_ACCEPT:
+                self.handle_file_accept(decrypted_text)
+            case MessageType.FILE_REJECT:
+                self.handle_file_reject(decrypted_text)
+            case MessageType.FILE_COMPLETE:
+                self.handle_file_complete(decrypted_text)
+            case MessageType.DELIVERY_CONFIRMATION:
+                if self.key_exchange_complete:
+                    self.handle_delivery_confirmation(decrypted_text)
+            case MessageType.EPHEMERAL_MODE_CHANGE:
+                self.handle_ephemeral_mode_change(decrypted_text)
+            case MessageType.REKEY:
+                self.handle_rekey(decrypted_text)
+            case MessageType.VOICE_CALL_INIT:
+                self.handle_voice_call_init(decrypted_text)
+            case MessageType.VOICE_CALL_ACCEPT:
+                self.handle_voice_call_accept(decrypted_text)
+            case MessageType.VOICE_CALL_REJECT:
+                self.handle_voice_call_reject()
+            case MessageType.VOICE_CALL_DATA:
+                self.handle_voice_call_data(decrypted_text)
+            case MessageType.VOICE_CALL_END:
+                self.handle_voice_call_end()
+            case MessageType.NICKNAME_CHANGE:
+                self.handle_nickname_change(decrypted_text)
+            case _:
+                self.display_error_message(f"Dropped message with unknown inside type: {message_type}")
+                return
     
     
     def _send_delivery_confirmation(self, confirmed_counter: int) -> None:
@@ -657,53 +633,46 @@ class SecureChatClient:
     
     def handle_key_exchange_reset(self, message_data: bytes) -> None:
         """Handle key exchange reset message when the other client disconnects."""
-        try:
-            message = json.loads(message_data.decode('utf-8'))
-            reset_message = message.get("message", "Key exchange reset")
-            
-            # Reset client state
-            self.key_exchange_complete = False
-            self.verification_complete = False
-            self.protocol.reset_key_exchange()
-            
-            # Clear any pending file transfers
-            self.pending_file_transfers.clear()
-            self.active_file_metadata.clear()
-            
-            # Notify user
-            print(f"\n{'=' * 50}")
-            print("KEY EXCHANGE RESET")
-            print(f"Reason: {reset_message}")
-            print("The secure session has been terminated.")
-            print("Waiting for a new client to connect...")
-            print("A new key exchange will start automatically.")
-            print(f"{'=' * 50}")
+        message = json.loads(message_data.decode('utf-8'))
+        reset_message = message.get("message", "Key exchange reset")
         
-        except Exception as e:
-            print(f"Error handling key exchange reset: {e}")
+        # Reset client state
+        self.key_exchange_complete = False
+        self.verification_complete = False
+        self.protocol.reset_key_exchange()
+        
+        # Clear any pending file transfers
+        self.pending_file_transfers.clear()
+        self.active_file_metadata.clear()
+        
+        # Notify user
+        print(f"\n{'=' * 50}")
+        print("KEY EXCHANGE RESET")
+        print(f"Reason: {reset_message}")
+        print("The secure session has been terminated.")
+        print("Waiting for a new client to connect...")
+        print("A new key exchange will start automatically.")
+        print(f"{'=' * 50}")
+        
     
     def handle_emergency_close(self) -> None:
         """Handle emergency close message from the other client."""
-        try:
-            print(f"\n{'=' * 50}")
-            print("EMERGENCY CLOSE RECEIVED")
-            print("The other client has activated emergency close.")
-            print("Connection will be terminated immediately.")
-            print(f"{'=' * 50}")
-            
-            # Immediately disconnect
-            self.disconnect()
-            self.key_exchange_complete = False
-            self.verification_complete = False
-            self.protocol.reset_key_exchange()
-            
-            # Clear any pending file transfers
-            self.pending_file_transfers.clear()
-            self.active_file_metadata.clear()
+        print(f"\n{'=' * 50}")
+        print("EMERGENCY CLOSE RECEIVED")
+        print("The other client has activated emergency close.")
+        print("Connection will be terminated immediately.")
+        print(f"{'=' * 50}")
         
-        except Exception as e:
-            print(f"Error handling emergency close: {e}")
-    
+        # Immediately disconnect
+        self.disconnect()
+        self.key_exchange_complete = False
+        self.verification_complete = False
+        self.protocol.reset_key_exchange()
+        
+        # Clear any pending file transfers
+        self.pending_file_transfers.clear()
+        self.active_file_metadata.clear()
+        
     def initiate_rekey(self) -> None:
         """Initiate a rekey to establish fresh session keys using the existing secure channel."""
         if not self.key_exchange_complete:
@@ -731,14 +700,9 @@ class SecureChatClient:
         if not self.protocol.peer_key_verified:
             print("Sending message to unverified peer")
         
-        try:
-            # Queue plaintext; sender loop will handle encryption
-            self.protocol.queue_message(("encrypt_text", text))
-            return True
-        
-        except Exception as e:
-            print(f"Failed to send message: {e}")
-            return False
+        # Queue plaintext; sender loop will handle encryption
+        self.protocol.queue_message(("encrypt_text", text))
+        return True
     
     def send_file(self, file_path: str, compress: bool = True) -> None:
         """Send a file to the other client."""
@@ -777,18 +741,12 @@ class SecureChatClient:
     
     def handle_ephemeral_mode_change(self, decrypted_message: str) -> None:
         """Handle incoming ephemeral mode change from peer (console feedback)."""
-        try:
-            message = json.loads(decrypted_message)
-            if message.get("type") != MessageType.EPHEMERAL_MODE_CHANGE:
-                return
-            mode = str(message.get("mode", "OFF")).upper()
-            if mode == "GLOBAL":
-                print("\nPeer enabled GLOBAL ephemeral mode. Only the enabler can disable it.")
-            elif mode == "OFF":
-                print("\nPeer disabled GLOBAL ephemeral mode.")
-        
-        except Exception as e:
-            print(f"\nError handling ephemeral mode change: {e}")
+        message = json.loads(decrypted_message)
+        mode = str(message.get("mode", "OFF")).upper()
+        if mode == "GLOBAL":
+            print("\nPeer enabled GLOBAL ephemeral mode. Only the enabler can disable it.")
+        elif mode == "OFF":
+            print("\nPeer disabled GLOBAL ephemeral mode.")
     
     def handle_file_metadata(self, decrypted_message: str) -> None:
         """Handle incoming file metadata."""
@@ -886,93 +844,93 @@ class SecureChatClient:
     
     def handle_file_reject(self, decrypted_message: str) -> None:
         """Handle file rejection from peer."""
+        message = json.loads(decrypted_message)
         try:
-            message = json.loads(decrypted_message)
             transfer_id = message["transfer_id"]
-            reason = message.get("reason", "Unknown reason")
-            
-            if transfer_id in self.pending_file_transfers:
-                filename = self.pending_file_transfers[transfer_id]["metadata"]["filename"]
-                print(f"File transfer rejected: {filename} - {reason}")
-                # Clean up transfer tracking
-                self.protocol.stop_sending_transfer(transfer_id)
-                del self.pending_file_transfers[transfer_id]
+        except KeyError:
+            print("Received rejection without transfer ID")
+            return
+        reason = message.get("reason", "Unknown reason")
         
-        except Exception as e:
-            print(f"Error handling file rejection: {e}")
+        if transfer_id in self.pending_file_transfers:
+            filename = self.pending_file_transfers[transfer_id]["metadata"]["filename"]
+            print(f"File transfer rejected: {filename} - {reason}")
+            # Clean up transfer tracking
+            self.protocol.stop_sending_transfer(transfer_id)
+            del self.pending_file_transfers[transfer_id]
+        else:
+            print("Received rejection for unknown file transfer")
     
     def handle_rekey(self, decrypted_text: str) -> None:
         try:
             inner = json.loads(decrypted_text)
-            action = inner.get("action")
-            if action == "init":
-                # If the peer is unverified, ask the user whether to proceed or disconnect
-                if not self.protocol.peer_key_verified:
-                    proceed = self.prompt_rekey_from_unverified()
-                    if not proceed:
-                        self.display_system_message("Disconnecting as requested: rekey received from an unverified peer.")
-                        self.disconnect()
-                        return
-                self.display_system_message("Rekey initiated by peer.")
-                response = self.protocol.process_rekey_init(inner)
-                # Send response under old key
-                self.protocol.queue_message(("encrypt_json", response))
-            elif action == "response":
-                commit = self.protocol.process_rekey_response(inner)
-                # Send commit under old key; do not switch yet (wait for ack)
-                self.protocol.queue_message(("encrypt_json", commit))
-            elif action == "commit":
-                ack = self.protocol.process_rekey_commit(inner)
-                # Send ack under old key, then switch to new keys
-                self.protocol.queue_message(("encrypt_json_then_switch", ack))
-                self.display_system_message("Rekey completed successfully.")
-                self.display_system_message("You are now using fresh encryption keys.")
-            elif action == "commit_ack":
-                # Initiator: switch to new keys upon receiving ack
-                self.protocol.activate_pending_keys()
-                self.display_system_message("Rekey completed successfully.")
-                self.display_system_message("You are now using fresh encryption keys.")                          
-            else:
-                self.display_error_message("Received unknown rekey action")
-        except Exception as rekey_err:
-            self.display_error_message(f"Error handling rekey message: {rekey_err}")
+            action = inner.get["action"]
+        except (json.JSONDecodeError, KeyError):
+            self.display_error_message("Dropped rekey message without action. Invalid JSON.")
+            return
+        if action == "init":
+            # If the peer is unverified, ask the user whether to proceed or disconnect
+            if not self.protocol.peer_key_verified:
+                proceed = self.prompt_rekey_from_unverified()
+                if not proceed:
+                    self.display_system_message("Disconnecting as requested: rekey received from an unverified peer.")
+                    self.disconnect()
+                    return
+            self.display_system_message("Rekey initiated by peer.")
+            response = self.protocol.process_rekey_init(inner)
+            # Send response under old key
+            self.protocol.queue_message(("encrypt_json", response))
+        elif action == "response":
+            commit = self.protocol.process_rekey_response(inner)
+            # Send commit under old key; do not switch yet (wait for ack)
+            self.protocol.queue_message(("encrypt_json", commit))
+        elif action == "commit":
+            ack = self.protocol.process_rekey_commit(inner)
+            # Send ack under old key, then switch to new keys
+            self.protocol.queue_message(("encrypt_json_then_switch", ack))
+            self.display_system_message("Rekey completed successfully.")
+            self.display_system_message("You are now using fresh encryption keys.")
+        elif action == "commit_ack":
+            # Initiator: switch to new keys upon receiving ack
+            self.protocol.activate_pending_keys()
+            self.display_system_message("Rekey completed successfully.")
+            self.display_system_message("You are now using fresh encryption keys.")
+        else:
+            self.display_error_message("Received unknown rekey action")
     
     def handle_voice_call_init(self, decrypted_text: str) -> None:
         """Handle incoming voice call initiation (console feedback)."""
-        print("Voice calls not supported on the terminal client.")
+        self.protocol.queue_message(("encrypt_json", {"type": MessageType.VOICE_CALL_REJECT}))
+        self.display_system_message("Incoming voice call rejected: voice calls not supported on terminal client.")
     
     def handle_voice_call_accept(self, decrypted_text: str) -> None:
         """Handle incoming voice call acceptance (console feedback)."""
-        print("Voice calls not supported on the terminal client.")
+        pass
     
     def handle_voice_call_reject(self) -> None:
         """Handle incoming voice call rejection (console feedback)."""
-        print("Voice calls not supported on the terminal client.")
+        pass
     
     def handle_voice_call_data(self, decrypted_text: str) -> None:
         """Handle incoming voice call data (console feedback)."""
-        print("Voice calls not supported on the terminal client.")
+        pass
     
     def handle_voice_call_end(self) -> None:
         """Handle incoming voice call end (console feedback)."""
-        print("Voice calls not supported on the terminal client.")
+        pass
     
     def handle_nickname_change(self, decrypted_text: str) -> None:
         """Handle incoming nickname change from peer."""
-        try:
-            # Disable nickname changes when keys are unverified
-            if not self.protocol.peer_key_verified:
-                self.display_system_message("Ignored nickname change from peer: connection is unverified")
-                return
-            if not self.nickname_change_allowed:
-                self.display_system_message("Peer attempted to change nickname")
-                return
-            message = json.loads(decrypted_text)
-            self.peer_nickname = str(message.get("nickname", "Other User"))[:32]
-            self.display_system_message(f"Peer changed nickname to: {self.peer_nickname}")
-        
-        except Exception as e:
-            self.display_error_message(f"Error handling nickname change: {e}")
+        # Disable nickname changes when keys are unverified
+        if not self.protocol.peer_key_verified:
+            self.display_system_message("Ignored nickname change from peer: connection is unverified")
+            return
+        if not self.nickname_change_allowed:
+            self.display_system_message("Peer attempted to change nickname")
+            return
+        message = json.loads(decrypted_text)
+        self.peer_nickname = str(message.get("nickname", "Other User"))[:32]
+        self.display_system_message(f"Peer changed nickname to: {self.peer_nickname}")
     
     def handle_file_chunk_binary(self, chunk_info: dict) -> None:
         """Common file chunk processing logic for both JSON and binary formats."""
@@ -1044,19 +1002,21 @@ class SecureChatClient:
     
     def handle_file_complete(self, decrypted_message: str) -> None:
         """Handle file transfer completion notification."""
+        message = json.loads(decrypted_message)
         try:
-            message = json.loads(decrypted_message)
             transfer_id = message["transfer_id"]
+        except KeyError:
+            self.display_error_message("Dropped file complete message without transfer ID. Invalid JSON.")
+            return
+        
+        if transfer_id in self.pending_file_transfers:
+            filename = self.pending_file_transfers[transfer_id]["metadata"]["filename"]
+            self.display_system_message(f"File transfer completed: {filename}")
+            del self.pending_file_transfers[transfer_id]
+            self.protocol.send_dummy_messages = True
+        else:
+            self.display_error_message(f"Received file complete for unknown transfer ID: {transfer_id}")
             
-            if transfer_id in self.pending_file_transfers:
-                filename = self.pending_file_transfers[transfer_id]["metadata"]["filename"]
-                print(f"File transfer completed: {filename}")
-                del self.pending_file_transfers[transfer_id]
-                self.protocol.send_dummy_messages = True
-        
-        
-        except Exception as e:
-            print(f"Error handling file completion: {e}")
     
     def handle_server_full(self) -> None:
         """Handle server full notification."""
@@ -1066,37 +1026,30 @@ class SecureChatClient:
     
     def handle_server_version_info(self, message_data: bytes) -> None:
         """Handle server version information."""
-        try:
-            message = json.loads(message_data.decode('utf-8'))
-            
-            # Store server protocol version information
-            self.server_protocol_version = message.get("protocol_version")
-            
-            print(f"\nServer Protocol Version: v{self.server_protocol_version}")
-            
-            # Check compatibility
-            if self.server_protocol_version != PROTOCOL_VERSION:
-                print(
-                        f"Protocol version mismatch: Client v{PROTOCOL_VERSION}, Server v{self.server_protocol_version}")
-                # Use local compatibility matrix since server no longer sends it
-                major_server = self.server_protocol_version.split('.')[0]
-                major_client = PROTOCOL_VERSION.split('.')[0]
-                if major_server == major_client:
-                    print("Versions are compatible for communication")
-                else:
-                    print("Versions may not be compatible - communication issues possible")
-            else:
-                print("Protocol versions match")
+        message = json.loads(message_data)
         
-        except Exception as e:
-            print(f"Error handling server version info: {e}")
+        # Store server protocol version information
+        self.server_protocol_version = message.get("protocol_version", "0.0.0.0")
+        if self.server_protocol_version == "0.0.0.0":
+            self.display_error_message("Server returned invalid protocol version information, communication may " +
+                                       "still work but may be unreliable or have missing features.")
+        
+        self.display_system_message(f"Server Protocol Version: v{self.server_protocol_version}")
+        
+        # Check compatibility
+        if self.server_protocol_version != PROTOCOL_VERSION:
+            self.display_system_message(f"Protocol version mismatch: Client v{PROTOCOL_VERSION}, " +
+                                        f"Server v{self.server_protocol_version}")
+            # Use local compatibility matrix since server no longer sends it
+            major_server = self.server_protocol_version.split('.')[0]
+            major_client = PROTOCOL_VERSION.split('.')[0]
+            if major_server != major_client:
+                self.display_error_message("Versions may not be compatible - communication issues possible")
     
     def on_server_disconnect(self, reason: str) -> None:
         """Hook: called when server notifies of server-initiated disconnect."""
-        try:
-            print(f"\nServer disconnected: {reason}")
-        finally:
-            self.disconnect()
+        self.display_system_message(f"\nServer disconnected: {reason}")
+        self.disconnect()
     
     def _send_file_chunks(self, transfer_id: str, file_path: str) -> None:
         """Send file chunks to peer."""
@@ -1104,7 +1057,7 @@ class SecureChatClient:
             # Get transfer info including compression setting
             transfer_info = self.pending_file_transfers[transfer_id]
             total_chunks = int(transfer_info["metadata"]["total_chunks"])
-            compress = transfer_info.get("compress", True)  # Default to compressed for backward compatibility
+            compress = transfer_info.get("compress", True)
             
             chunk_generator = self.protocol.chunk_file(file_path, compress=compress)
             

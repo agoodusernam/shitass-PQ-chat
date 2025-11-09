@@ -21,6 +21,7 @@ from collections.abc import Generator, Buffer
 import binascii
 
 from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.kdf.concatkdf import ConcatKDFHash
 
 import config_handler
 import config_manager
@@ -30,8 +31,7 @@ assert config_manager  # silence unused import warning
 
 try:
     from kyber_py.ml_kem import ML_KEM_1024 # type: ignore # TODO: Switch to production ready library
-    from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCMSIV
+    from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305, AESGCMSIV
     from cryptography.hazmat.primitives.kdf.hkdf import HKDF
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
@@ -55,11 +55,11 @@ def xor_bytes(a: bytes, b: bytes) -> bytes:
     XOR two byte objects
     """
     length = len(a) if len(a) > len(b) else len(b)
-    int_a = int.from_bytes(a, byteorder="big")
-    int_b = int.from_bytes(b, byteorder="big")
+    int_a = int.from_bytes(a, byteorder="little")
+    int_b = int.from_bytes(b, byteorder="little")
     
     xor_result = int_a ^ int_b
-    return xor_result.to_bytes(length, byteorder="big")
+    return xor_result.to_bytes(length, byteorder="little")
 
 
 class DoubleEncryptor:
@@ -68,17 +68,23 @@ class DoubleEncryptor:
     
     Automatically adds and removes padding for the data
     """
+
     def __init__(self, key: bytes):
-        if not len(key) == 32:
-            raise ValueError("Key must be 32 bytes long")
-        
         self._key = key
-        self._key_part1 = hashlib.sha256(self._key[:16]).digest()
-        self._key_part2 = hashlib.sha256(self._key[16:]).digest()
-        self._aes = AESGCMSIV(self._key_part1)
-        self._chacha = ChaCha20Poly1305(self._key_part2)
+        key_salt_part1 = hashlib.sha512(self._key[:16]).digest()
+        key1_hkdf = ConcatKDFHash(
+            algorithm=hashes.SHA512(), length=32, otherinfo=key_salt_part1
+        )
+
+        key_salt_part2 = hashlib.sha3_512(self._key[16:]).digest()
+        key2_hkdf = ConcatKDFHash(
+            algorithm=hashes.SHA512(), length=32, otherinfo=key_salt_part2
+        )
+
+        self._aes = AESGCMSIV(key1_hkdf.derive(self._key[16:]))
+        self._chacha = ChaCha20Poly1305(key2_hkdf.derive(self._key[:16]))
         
-    def encrypt(self, nonce: bytes, data: bytes, associated_data: typing.Optional[bytes]) -> bytes:
+    def encrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None) -> bytes:
         padder = PKCS7(512).padder()
         padded_data = padder.update(data) + padder.finalize()
         
@@ -87,10 +93,7 @@ class DoubleEncryptor:
         ct = self._chacha.encrypt(xor_bytes(new_nonce, self._key[-12:]), layer1, associated_data)
         return ct
     
-    def decrypt(self, nonce: bytes, data: bytes, associated_data: bytes) -> bytes:
-        if len(nonce) != 12:
-            raise ValueError("Nonce must be 12 bytes long")
-        
+    def decrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None) -> bytes:
         new_nonce = xor_bytes(nonce, self._key[:12])
         layer1 = self._chacha.decrypt(xor_bytes(new_nonce, self._key[-12:]), data, associated_data)
         padded_data = self._aes.decrypt(new_nonce, layer1, associated_data)
@@ -158,6 +161,10 @@ class MessageType(IntEnum):
     KEY_VERIFICATION = 62
     NICKNAME_CHANGE = 63
     REKEY = 64
+    
+    @classmethod
+    def _missing_(cls, value):
+        return cls.NONE
 
 
 # File transfer constants
@@ -669,10 +676,10 @@ class SecureChatProtocol:
     def derive_keys(self, shared_secret: bytes) -> bytes:
         """Derive encryption and MAC keys from shared secret using HKDF."""
         hkdf = HKDF(
-                algorithm=hashes.SHA256(),
-                length=64,
+                algorithm=hashes.SHA512(),
+                length=32,
                 salt=b"ReallyCoolAndSecureSalt2",
-                info=b"key_derivation"
+                info=b"derive_root_encryption_mac_keys"
         )
         derived = hkdf.derive(shared_secret)
         
@@ -703,9 +710,9 @@ class SecureChatProtocol:
     def _derive_message_key(chain_key: bytes, counter: int) -> bytes:
         """Derive a message key from the chain key and counter."""
         hkdf = HKDF(
-                algorithm=hashes.SHA3_256(),
+                algorithm=hashes.SHA512(),
                 length=32,
-                salt=b"ReallyCoolAndSecureSalt",
+                salt=counter.to_bytes(8, byteorder="little"),
                 info=f"message_key_{counter}".encode()
         )
         return hkdf.derive(chain_key)
@@ -714,9 +721,9 @@ class SecureChatProtocol:
     def _ratchet_chain_key(chain_key: bytes, counter: int) -> bytes:
         """Advance the chain key (ratchet forward)."""
         hkdf = HKDF(
-                algorithm=hashes.SHA3_256(),
+                algorithm=hashes.SHA512(),
                 length=32,
-                salt=b"ReallyCoolAndSecureSalt",
+                salt=counter.to_bytes(8, byteorder="little"),
                 info=f"chain_key_{counter}".encode("utf-8")
         )
         return hkdf.derive(chain_key)
@@ -730,7 +737,7 @@ class SecureChatProtocol:
             dir_bytes = direction
         info = b"dr_mix_" + dir_bytes + b"_" + str(counter).encode('utf-8')
         hkdf = HKDF(
-                algorithm=hashes.SHA3_512(),
+                algorithm=hashes.SHA512(),
                 length=64,
                 salt=chain_key,
                 info=info
@@ -743,12 +750,12 @@ class SecureChatProtocol:
         # Derive encryption and MAC keys
         hkdf_keys = HKDF(
                 algorithm=hashes.SHA3_512(),
-                length=64,
+                length=32,
                 salt=b"ReallyCoolAndSecureSalt",
                 info=b"key_derivation"
         )
         derived = hkdf_keys.derive(shared_secret)
-        enc_key = derived[:32]
+        enc_key = derived
         
         # Derive root chain key
         hkdf_chain = HKDF(
@@ -844,8 +851,8 @@ class SecureChatProtocol:
         try:
             message = json.loads(data)
             return message.get("verified", False)
-        except (UnicodeDecodeError, json.JSONDecodeError) as e:
-            raise ValueError(f"Key verification message decoding failed: {e}") from e
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise DecodeError("Received invalid key verification message")
     
     def create_key_exchange_init(self, public_key: bytes) -> bytes:
         """Create initial key exchange message with X25519 DH public key."""
@@ -900,7 +907,6 @@ class SecureChatProtocol:
             version_warning = (
                 f"WARNING: Protocol version mismatch. Local: {PROTOCOL_VERSION}, Peer: {peer_version}. " +
                 "Communication may not work properly.")
-        if debug_enabled(): peer_dh_pub_bytes = xor_bytes(peer_dh_pub_bytes, os.urandom(len(peer_dh_pub_bytes)))
         # Store peer's KEM public key for verification
         self.peer_public_key = kem_public_key
         # Store peer's DH public key for fingerprinting/verification context
@@ -918,11 +924,8 @@ class SecureChatProtocol:
         
         # Perform KEM encapsulation to obtain KEM shared secret and ciphertext to send back
         kem_shared_secret, ciphertext = ML_KEM_1024.encaps(kem_public_key)
-        if debug_enabled(): kem_shared_secret = xor_bytes(kem_shared_secret, os.urandom(len(kem_shared_secret)))
         
         # Combine secrets using XOR
-        if len(kem_shared_secret) != len(dh_shared_secret):
-            raise ValueError("Shared secret length mismatch between KEM and DH")
         combined_shared = xor_bytes(kem_shared_secret, dh_shared_secret)
         
         # Derive keys from combined shared secret
@@ -966,7 +969,6 @@ class SecureChatProtocol:
                                f"{peer_version}. Communication may not work properly.")
         
         
-        if debug_enabled(): peer_dh_pub_bytes = xor_bytes(peer_dh_pub_bytes, os.urandom(len(peer_dh_pub_bytes)))
         # Store peer's DH public key for fingerprinting/verification context
         self.peer_dh_public_key_bytes = peer_dh_pub_bytes
         if not self.dh_private_key:
@@ -975,7 +977,6 @@ class SecureChatProtocol:
         dh_shared_secret = self.dh_private_key.exchange(peer_dh_pub)
         
         kem_shared_secret = ML_KEM_1024.decaps(private_key, ciphertext)
-        if debug_enabled(): kem_shared_secret = xor_bytes(kem_shared_secret, os.urandom(len(kem_shared_secret)))
         combined_shared = xor_bytes(kem_shared_secret, dh_shared_secret)
         
         # Derive keys from combined shared secret
@@ -1056,7 +1057,6 @@ class SecureChatProtocol:
             "type":          encrypted_message["type"],
             "counter":       encrypted_message["counter"],
             "nonce":         encrypted_message["nonce"],
-            "ciphertext":    encrypted_message["ciphertext"],
             "dh_public_key": encrypted_message["dh_public_key"],
         }).encode('utf-8'))
         
@@ -1092,7 +1092,6 @@ class SecureChatProtocol:
             "type":          message["type"],
             "counter":       counter,
             "nonce":         message["nonce"],
-            "ciphertext":    message["ciphertext"],
             "dh_public_key": peer_dh_pub_b64,
         }).encode('utf-8'))
         actual_verification = verif_hasher.finalize()
@@ -1200,9 +1199,10 @@ class SecureChatProtocol:
         """Process a REKEY init payload; derive pending keys and return REKEY response payload.
         This must be called on the responder, and the response must be sent under the old key.
         """
-        peer_ephemeral_pub = base64.b64decode(message.get("public_key", ""))
-        if not peer_ephemeral_pub:
-            raise ValueError("Missing public key in REKEY init")
+        try:
+            peer_ephemeral_pub = base64.b64decode(message["public_key"], validate=True)
+        except (binascii.Error, KeyError):
+            raise DecodeError("REKEY init decode error, binascii.Error")
         # Produce new shared secret and ciphertext for the initiator
         shared_secret, ciphertext = ML_KEM_1024.encaps(peer_ephemeral_pub)
         # Store pending derived keys without touching active ones
@@ -1299,7 +1299,7 @@ class SecureChatProtocol:
             total_processed_size = file_size if not effective_compress else int(file_size * 0.85)
         
         # Generate unique transfer ID
-        transfer_id: str = hashlib.sha3_512(f"{file_name}{file_size}{file_hash.hexdigest()}".encode()).hexdigest()[:16]
+        transfer_id: str = hashlib.sha256(f"{file_name}{file_size}{file_hash.hexdigest()}".encode()).hexdigest()[:16]
         
         metadata: FileMetadata = {
             "transfer_id":    transfer_id,
@@ -1477,8 +1477,6 @@ class SecureChatProtocol:
                 "compressed":     message.get("compressed", True),
                 "processed_size": message.get("processed_size", message.get("compressed_size", 0))
             }
-        except (json.JSONDecodeError, UnicodeDecodeError) as e:
-            raise ValueError(f"File metadata JSON decode failed: {e}") from e
         except KeyError as e:
             raise ValueError(f"File metadata missing field: {e}") from e
     
