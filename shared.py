@@ -17,6 +17,7 @@ from collections import deque
 from enum import IntEnum, unique
 from typing import Final, Any, SupportsIndex, SupportsBytes, TypedDict, NotRequired
 from collections.abc import Generator, Buffer
+from collections import OrderedDict
 import binascii
 
 from cryptography.exceptions import InvalidTag
@@ -42,7 +43,7 @@ except ImportError as exc_:
     raise ImportError("Please install the required libraries with pip install -r requirements.txt") from exc_
 
 # Protocol constants
-PROTOCOL_VERSION: Final[str] = "6.0.0"
+PROTOCOL_VERSION: Final[str] = "6.0.1"
 # Protocol compatibility is denoted by version number
 # Breaking.Minor.Patch - only Breaking versions are checked for compatibility.
 # Breaking version changes introduce breaking changes that are not compatible with previous versions of the same major version.
@@ -166,33 +167,45 @@ class MessageType(IntEnum):
         return cls.NONE
 
 
-class CounterDict(dict):
+class LRUCache:
     """
-    Dictionary-like class with a maximum capacity. Automatically removes the smallest key
-    when the maximum capacity is exceeded.
+    Implements a Least Recently Used (LRU) Cache.
 
-    The purpose of this class is to behave like a dictionary while imposing a limit on the
-    number of entries. When the size exceeds the maximum allowed entries, the key with the
-    smallest value is discarded to make room for the new entry.
-    
-    :ivar max_length: Specifies the maximum number of elements the dictionary can have.
-    :type max_length: int
+    This class provides a mechanism to store a fixed amount of key-value pairs
+    with a limited capacity, evicting the least recently used items in order to
+    maintain the constraint. The cache ensures that the most frequently accessed
+    items are retained in memory, making it useful for scenarios where caching
+    is needed and the data set exceeds available memory.
+
+    :ivar cache: Stores the key-value pairs in an ordered manner, enabling quick
+        access and management of least recently used items.
+    :type cache: collections.OrderedDict[int, bytes]
+    :ivar capacity: The maximum number of items that the cache can store at any
+        given time.
+    :type capacity: int
     """
-    def __init__(self, max_length: int) -> None:
-        super().__init__()
-        self.max_length: int = max_length
+    def __init__(self, capacity: int):
+        self.cache: OrderedDict[int, bytes] = OrderedDict()
+        self.capacity = capacity
+
+    def __getitem__(self, key: int) -> bytes | None:
+        if key not in self.cache:
+            return None
+        else:
+            self.cache.move_to_end(key)
+            return self.cache[key]
 
     def __setitem__(self, key: int, value: bytes) -> None:
-        if len(self) >= self.max_length:
-            smallest_key = min(self.keys())
-            del self[smallest_key]
+        self.cache[key] = value
+        self.cache.move_to_end(key)
+        if len(self.cache) > self.capacity:
+            self.cache.popitem(last = False)
             
-        super().__setitem__(key, value)
-    
-    def __getitem__(self, key: int) -> bytes | None:
-        try:
-            return super().__getitem__(key)
-        except KeyError:
+    def pop(self, key: int) -> bytes | None:
+        if key in self.cache:
+            value = self.cache.pop(key)
+            return value
+        else:
             return None
 
 
@@ -351,6 +364,8 @@ class SecureChatProtocol:
             
             send_dummy_messages (bool): Indicates whether dummy messages should be sent.
             
+            skipped_counters: (LRUCache): A dictionary of skipped counters and their ratchet state.
+            
             rekey_in_progress (bool): Indicates whether a rekey is in progress.
         
         Unsafe attributes are attributes that may not have a valid value.
@@ -418,7 +433,7 @@ class SecureChatProtocol:
         # Message-phase Double Ratchet
         self.msg_recv_private: X25519PrivateKey | None = None
         self.msg_peer_base_public: bytes = bytes()
-        self.skipped_counters: CounterDict = CounterDict(1000)
+        self.skipped_counters: LRUCache = LRUCache(1000)
         
         # Rekey state
         self.rekey_in_progress: bool = False
@@ -1174,7 +1189,7 @@ class SecureChatProtocol:
             raise ValueError("Local DH private key not initialized for message ratchet")
         
         dh_shared = self.msg_recv_private.exchange(X25519PublicKey.from_public_bytes(peer_dh_pub_bytes))
-
+        
         mixed_chain_key = self._mix_dh_with_chain(temp_chain_key, dh_shared, counter)
         
         # Derive the message key for the current message from the mixed chain
