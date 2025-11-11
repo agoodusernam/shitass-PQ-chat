@@ -9,7 +9,6 @@ import hashlib
 import shutil
 import gzip
 import io
-import sys
 import tempfile
 import threading
 import time
@@ -32,7 +31,7 @@ assert config_manager  # silence unused import warning
 try:
     from kyber_py.ml_kem import ML_KEM_1024 # type: ignore # TODO: Switch to production ready library
     from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305, AESGCMSIV
-    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF, HKDFExpand
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
     from cryptography.hazmat.primitives.hmac import HMAC
@@ -50,43 +49,40 @@ PROTOCOL_VERSION: Final[str] = "5.0.2"
 # Minor version changes may add features but remain compatible with previous minor versions of the same major version.
 # Patch versions are for bug fixes and minor improvements that do not affect compatibility.
 
-def xor_bytes(a: bytes, b: bytes) -> bytes:
-    """
-    XOR two byte objects
-    """
-    length = len(a) if len(a) > len(b) else len(b)
-    int_a = int.from_bytes(a, byteorder="little")
-    int_b = int.from_bytes(b, byteorder="little")
-    
-    xor_result = int_a ^ int_b
-    return xor_result.to_bytes(length, byteorder="little")
+# File transfer constants
+SEND_CHUNK_SIZE: Final[int] = 1024 * 1024  # 1 MiB chunks for sending
 
-def sanitize_str(field: str) -> str:
-    """Return ASCII-only str truncated to 32 chars; fallback to '?' if empty."""
-    s_ascii = field.encode('ascii', errors='ignore').decode('ascii', errors='ignore')
-    if len(s_ascii) > 32:
-        s_ascii = s_ascii[:32]
-    return s_ascii or "?"
-
+# Incompressible file types where compression is wasteful
+INCOMPRESSIBLE_EXTENSIONS: Final[set[str]] = {
+    ".zip", ".gz", ".tgz", ".bz2", ".xz", ".zst", ".lz4", ".7z", ".rar", ".hc", ".bin",
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".svgz",
+    ".mp3", ".ogg", ".flac", ".aac", ".wav",
+    ".mp4", ".mov", ".avi", ".mkv", ".webm", ".mpeg", ".mpg",
+    ".pdf", ".dmg", ".apk", ".jar"
+}
 
 class DoubleEncryptor:
     """
     Provides double encryption and decryption using AES-GCM-SIV and ChaCha20-Poly1305.
     
-    Automatically adds and removes padding for the data
+    Automatically adds and removes padding for the data.
+    
+    Rationale:
+        ChaCha20 is usually considered stronger than AES against certain side-channel attacks, and post quantum attacks.
+        AES has been vetted and more thoroughly analysed over the years and is hardware-accelerated on many platforms.
+        If either AES or ChaCha20 is broken, any messages will still be secure.
+        These ciphers also assume the nonce is public knowledge. Here, the nonce is not public knowledge.
+        This increases the security margin further, even if AES is broken completely with a private nonce and
+        ChaCha20 is broken but only with a public nonce, or vice versa, messages are still secure.
+    
+        Padding to the next 512 bytes prevents (or at least severely hinders) message size analysis.
+        From the outside, messages with 1 character or 512 characters look indistinguishable.
     """
-
     def __init__(self, key: bytes):
         self._key = key
-        key_salt_part1 = hashlib.sha512(self._key[:16]).digest()
-        key1_hkdf = ConcatKDFHash(
-            algorithm=hashes.SHA512(), length=32, otherinfo=key_salt_part1
-        )
+        key1_hkdf = ConcatKDFHash(algorithm=hashes.SHA512(), length=32, otherinfo=b"AES_key_kdf")
 
-        key_salt_part2 = hashlib.sha3_512(self._key[16:]).digest()
-        key2_hkdf = ConcatKDFHash(
-            algorithm=hashes.SHA512(), length=32, otherinfo=key_salt_part2
-        )
+        key2_hkdf = HKDFExpand(algorithm=hashes.SHA3_512(), length=32, info=b"ChaCha_key_hkdf")
 
         self._aes = AESGCMSIV(key1_hkdf.derive(self._key[16:]))
         self._chacha = ChaCha20Poly1305(key2_hkdf.derive(self._key[:16]))
@@ -170,29 +166,34 @@ class MessageType(IntEnum):
         return cls.NONE
 
 
-# File transfer constants
-SEND_CHUNK_SIZE: Final[int] = 1024 * 1024  # 1 MiB chunks for sending
-
-# Incompressible file types where compression is wasteful
-INCOMPRESSIBLE_EXTENSIONS: Final[set[str]] = {
-    ".zip", ".gz", ".tgz", ".bz2", ".xz", ".zst", ".lz4", ".7z", ".rar", ".hc", ".bin",
-    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".svgz",
-    ".mp3", ".ogg", ".flac", ".aac", ".wav",
-    ".mp4", ".mov", ".avi", ".mkv", ".webm", ".mpeg", ".mpg",
-    ".pdf", ".dmg", ".apk", ".jar"
-}
-
-
-def decide_compression(file_path: str, user_pref: bool = True) -> bool:
+class CounterDict(dict):
     """
-    Decide whether to compress a file before sending.
-    Compression is enabled only if the user prefers it AND the file is not of a
-    type that's typically incompressible.
+    Dictionary-like class with a maximum capacity. Automatically removes the smallest key
+    when the maximum capacity is exceeded.
+
+    The purpose of this class is to behave like a dictionary while imposing a limit on the
+    number of entries. When the size exceeds the maximum allowed entries, the key with the
+    smallest value is discarded to make room for the new entry.
+    
+    :ivar max_length: Specifies the maximum number of elements the dictionary can have.
+    :type max_length: int
     """
-    if not user_pref:
-        return False
-    _, ext = os.path.splitext(file_path)
-    return ext.lower() not in INCOMPRESSIBLE_EXTENSIONS
+    def __init__(self, max_length: int) -> None:
+        super().__init__()
+        self.max_length: int = max_length
+
+    def __setitem__(self, key: int, value: bytes) -> None:
+        if len(self) >= self.max_length:
+            smallest_key = min(self.keys())
+            del self[smallest_key]
+            
+        super().__setitem__(key, value)
+    
+    def __getitem__(self, key: int) -> bytes | None:
+        try:
+            return super().__getitem__(key)
+        except KeyError:
+            return None
 
 
 class FileMetadata(TypedDict):
@@ -217,56 +218,10 @@ class FileTransfer(TypedDict):
     metadata:  FileMetadata
     compress:  bool
 
-
-def bytes_to_human_readable(size: int) -> str:
-    """
-    Convert a byte count to a human-readable format with appropriate units.
-    
-    Args:
-        size (int): The number of bytes to convert.
-        
-    Returns:
-        str: A formatted string with the size and appropriate unit (B, KB, MB, or GB).
-        
-    """
-    if size < 1024:
-        return f"{size} B"
-    if size < 1024 ** 2:
-        return f"{size / 1024:.1f} KB"
-    if size < 1024 ** 3:
-        return f"{size / 1024 ** 2:.1f} MB"
-    
-    return f"{size / 1024 ** 3:.1f} GB"
-
-
-def debug_enabled():
-    try:
-        if sys.gettrace() is not None:
-            return True
-    except AttributeError:
-        pass
-    
-    try:
-        if sys.monitoring.get_tool(sys.monitoring.DEBUGGER_ID) is not None:
-            return True
-    except AttributeError:
-        pass
-    
-    return False
-
-
-class DecodeError(Exception):
-    pass
-
-
-class EncodeError(Exception):
-    pass
-
-
 class StreamingGzipCompressor:
     """
     A streaming gzip compressor that yields compressed chunks as they're ready.
-    
+
     Takes no arguments.
     """
     
@@ -277,9 +232,9 @@ class StreamingGzipCompressor:
     def compress_chunk(self, data: bytes) -> bytes:
         """
         Compress a chunk of data and return any available compressed output.
-        
+
         :param data: The data to compress.
-        
+
         :return: A compressed chunk of data, or an empty bytes object if no data is available.
         """
         if data:
@@ -304,6 +259,62 @@ class StreamingGzipCompressor:
         self.buffer.close()
         
         return final_data
+
+
+class DecodeError(Exception):
+    pass
+
+def decide_compression(file_path: str, user_pref: bool = True) -> bool:
+    """
+    Decide whether to compress a file before sending.
+    Compression is enabled only if the user prefers it AND the file is not of a
+    type that's typically incompressible.
+    """
+    if not user_pref:
+        return False
+    _, ext = os.path.splitext(file_path)
+    return ext.lower() not in INCOMPRESSIBLE_EXTENSIONS
+
+
+
+def bytes_to_human_readable(size: int) -> str:
+    """
+    Convert a byte count to a human-readable format with appropriate units.
+    
+    Args:
+        size (int): The number of bytes to convert.
+        
+    Returns:
+        str: A formatted string with the size and appropriate unit (B, KB, MB, or GB).
+        
+    """
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024 ** 2:
+        return f"{size / 1024:.1f} KB"
+    if size < 1024 ** 3:
+        return f"{size / 1024 ** 2:.1f} MB"
+    
+    return f"{size / 1024 ** 3:.1f} GB"
+
+
+def xor_bytes(a: bytes, b: bytes) -> bytes:
+    """
+    XOR two byte objects
+    """
+    length = len(a) if len(a) > len(b) else len(b)
+    int_a = int.from_bytes(a, byteorder="little")
+    int_b = int.from_bytes(b, byteorder="little")
+    
+    xor_result = int_a ^ int_b
+    return xor_result.to_bytes(length, byteorder="little")
+
+def sanitize_str(field: str) -> str:
+    """Return ASCII-only str truncated to 32 chars; fallback to '?' if empty."""
+    s_ascii = field.encode('ascii', errors='ignore').decode('ascii', errors='ignore')
+    if len(s_ascii) > 32:
+        s_ascii = s_ascii[:32]
+    return s_ascii or "?"
 
 
 class SecureChatProtocol:
@@ -407,6 +418,7 @@ class SecureChatProtocol:
         # Message-phase Double Ratchet
         self.msg_recv_private: X25519PrivateKey | None = None
         self.msg_peer_base_public: bytes = bytes()
+        self.skipped_counters: CounterDict = CounterDict(1000)
         
         # Rekey state
         self.rekey_in_progress: bool = False
@@ -678,31 +690,41 @@ class SecureChatProtocol:
     
     def derive_keys(self, shared_secret: bytes) -> bytes:
         """Derive encryption and MAC keys from shared secret using HKDF."""
+        # Sort public keys lexicographically for deterministic order
+        keys = sorted([self.own_public_key, self.peer_public_key])
+        combined_keys = keys[0] + keys[1]
+        salt = hashlib.sha512(combined_keys + b"encryption_key_salt").digest()[:32]
+        
         hkdf = HKDF(
                 algorithm=hashes.SHA512(),
                 length=32,
-                salt=b"ReallyCoolAndSecureSalt2",
+                salt=salt,
                 info=b"derive_root_encryption_mac_keys"
         )
         derived = hkdf.derive(shared_secret)
-        
+    
         # Initialize chain keys for perfect forward secrecy
         self._initialize_chain_keys(shared_secret)
-        
-        return derived
     
+        return derived
+
     def _initialize_chain_keys(self, shared_secret: bytes) -> None:
         """Initialize separate chain keys for sending and receiving."""
+        # Sort public keys lexicographically for deterministic order
+        keys = sorted([self.own_public_key, self.peer_public_key])
+        combined_keys = keys[0] + keys[1]
+        salt = hashlib.sha512(combined_keys + b"chain_key_salt").digest()[:32]
+        
         # Derive a root chain key that both parties will use as the starting point
         chain_hkdf = HKDF(
                 algorithm=hashes.SHA3_512(),
                 length=64,
-                salt=b"ReallyCoolAndSecureSalt1",
+                salt=salt,
                 info=b"chain_key_root"
         )
-        
+    
         root_chain_key = chain_hkdf.derive(shared_secret)
-        
+    
         # Both send and receive chain keys start with the same value
         # They will diverge as messages are sent and received
         self.send_chain_key = root_chain_key
@@ -732,13 +754,9 @@ class SecureChatProtocol:
         return hkdf.derive(chain_key)
     
     @staticmethod
-    def _mix_dh_with_chain(chain_key: bytes, dh_shared: bytes, counter: int, direction: str | bytes) -> bytes:
+    def _mix_dh_with_chain(chain_key: bytes, dh_shared: bytes, counter: int) -> bytes:
         """Mix DH shared secret into the chain key using HKDF with the chain key as salt."""
-        if isinstance(direction, str):
-            dir_bytes = direction.encode('utf-8')
-        else:
-            dir_bytes = direction
-        info = b"dr_mix_" + dir_bytes + b"_" + str(counter).encode('utf-8')
+        info = b"dr_mix" + b"_" + str(counter).encode('utf-8')
         hkdf = HKDF(
                 algorithm=hashes.SHA512(),
                 length=64,
@@ -748,23 +766,33 @@ class SecureChatProtocol:
         return hkdf.derive(dh_shared)
     
     @staticmethod
-    def _derive_keys_and_chain(shared_secret: bytes) -> tuple[bytes, bytes]:
+    def _derive_keys_and_chain(shared_secret: bytes, own_pub: bytes = b"", peer_pub: bytes = b"") -> tuple[bytes, bytes]:
         """Derive encryption key, MAC key, and root chain key from a shared secret without mutating state."""
+        # Sort public keys lexicographically for deterministic order (if available)
+        if own_pub and peer_pub:
+            keys = sorted([own_pub, peer_pub])
+            combined_keys = keys[0] + keys[1]
+        else:
+            combined_keys = b""
+        
+        enc_salt = hashlib.sha512(combined_keys + b"enc_key_salt").digest()[:32]
+        chain_salt = hashlib.sha512(combined_keys + b"chain_salt").digest()[:32]
+        
         # Derive encryption and MAC keys
         hkdf_keys = HKDF(
                 algorithm=hashes.SHA3_512(),
                 length=32,
-                salt=b"ReallyCoolAndSecureSalt",
+                salt=enc_salt,
                 info=b"key_derivation"
         )
         derived = hkdf_keys.derive(shared_secret)
         enc_key = derived
-        
+    
         # Derive root chain key
         hkdf_chain = HKDF(
                 algorithm=hashes.SHA3_512(),
                 length=64,
-                salt=b"ReallyCoolAndSecureSalt",
+                salt=chain_salt,
                 info=b"chain_key_root"
         )
         root_chain_key = hkdf_chain.derive(shared_secret)
@@ -881,6 +909,15 @@ class SecureChatProtocol:
         }
         return json.dumps(message).encode('utf-8')
     
+    @staticmethod
+    def derive_combined_shared_secret(kem_shared: bytes, dh_shared: bytes) -> bytes:
+        return HKDF(
+                algorithm=hashes.SHA512(),
+                length=32,
+                salt=kem_shared,
+                info=b"hybrid kem+x25519"
+        ).derive(dh_shared)
+    
     def process_key_exchange_init(self, data: bytes) -> tuple[bytes, bytes, str]:
         """Process initial key exchange and return combined shared key, KEM ciphertext, and version warning if any.
         
@@ -928,8 +965,8 @@ class SecureChatProtocol:
         # Perform KEM encapsulation to obtain KEM shared secret and ciphertext to send back
         kem_shared_secret, ciphertext = ML_KEM_1024.encaps(kem_public_key)
         
-        # Combine secrets using XOR
-        combined_shared = xor_bytes(kem_shared_secret, dh_shared_secret)
+        # Combine secrets
+        combined_shared = self.derive_combined_shared_secret(kem_shared_secret, dh_shared_secret)
         
         # Derive keys from combined shared secret
         self.encryption_key = self.derive_keys(combined_shared)
@@ -980,7 +1017,7 @@ class SecureChatProtocol:
         dh_shared_secret = self.dh_private_key.exchange(peer_dh_pub)
         
         kem_shared_secret = ML_KEM_1024.decaps(private_key, ciphertext)
-        combined_shared = xor_bytes(kem_shared_secret, dh_shared_secret)
+        combined_shared = self.derive_combined_shared_secret(kem_shared_secret, dh_shared_secret)
         
         # Derive keys from combined shared secret
         self.encryption_key = self.derive_keys(combined_shared)
@@ -998,6 +1035,15 @@ class SecureChatProtocol:
         Encrypt a message with authentication and replay protection using perfect forward secrecy.
         Integrates a Double Ratchet step using X25519 by including a fresh sender public key per message
         and mixing the DH shared secret into the chain key derivation.
+        
+        Additional MAC rationale:
+            For authentication with AES or Poly1305, the message must be decrypted.
+            To decrypt the message we need to derive the key.
+            If there is no additional MAC, a bad actor could send a message with a very high counter,
+            making the program essentially DoS itself.
+            It also makes it possible to differentiate between forged messages and messages
+            that have been corrupted or manipulated in flight
+        
         :param plaintext: The plaintext message to encrypt.
         :return: The encrypted message as bytes, ready to send.
         :raises: ValueError: If no shared key or send chain key is established.
@@ -1016,7 +1062,7 @@ class SecureChatProtocol:
         dh_shared = eph_priv.exchange(X25519PublicKey.from_public_bytes(peer_pub_bytes))
         
         # Mix DH into current send chain key to get a message-specific chain state
-        mixed_chain_key = self._mix_dh_with_chain(self.send_chain_key, dh_shared, self.message_counter, "m")
+        mixed_chain_key = self._mix_dh_with_chain(self.send_chain_key, dh_shared, self.message_counter)
         
         # Derive unique message key for this message from the mixed chain
         message_key = self._derive_message_key(mixed_chain_key, self.message_counter)
@@ -1041,7 +1087,7 @@ class SecureChatProtocol:
         # Encrypt with AES-GCM using the unique message key and AAD
         ciphertext = encryptor.encrypt(nonce, plaintext_bytes, aad)
         
-        # delete the message key
+        # This may or may not actually remove it from memory but it's better than nothing
         message_key = b'\x00' * len(message_key)
         del message_key
         
@@ -1057,7 +1103,6 @@ class SecureChatProtocol:
         verif_hasher = HMAC(self.encryption_key, hashes.SHA512())
         # Include dh_public_key in verification to authenticate the ratchet key
         verif_hasher.update(json.dumps({
-            "type":          encrypted_message["type"],
             "counter":       encrypted_message["counter"],
             "nonce":         encrypted_message["nonce"],
             "dh_public_key": encrypted_message["dh_public_key"],
@@ -1092,7 +1137,6 @@ class SecureChatProtocol:
         verif_hasher = HMAC(self.encryption_key, hashes.SHA512())
         # Include dh_public_key in verification to authenticate the ratchet key
         verif_hasher.update(json.dumps({
-            "type":          message["type"],
             "counter":       counter,
             "nonce":         message["nonce"],
             "dh_public_key": peer_dh_pub_b64,
@@ -1102,14 +1146,28 @@ class SecureChatProtocol:
             raise ValueError("Message verification failed, message dropped")
             
         
-        # Check for replay attacks or old messages
+        # Determine if we have to use a previously saved ratchet step (out-of-order message)
+        use_saved = False
+        temp_chain_key: bytes
+        new_chain_key: bytes = bytes()
         if counter <= self.peer_counter:
-            raise ValueError(
-                    f"Message legitimate but counter has unexpected value: higher than {self.peer_counter} got {counter}")
-        
-        temp_chain_key = self.receive_chain_key
-        for i in range(self.peer_counter + 1, counter):
-            temp_chain_key = self._ratchet_chain_key(temp_chain_key, i)
+            # Try to use a saved pre-ratchet chain state for this counter
+            saved = self.skipped_counters[counter]
+            if saved is None:
+                # As per current implementation, raise the same ValueError when not saved
+                raise ValueError("Message is probably legitimate but counter has unexpected value: " +
+                                 f"higher than {self.peer_counter} got {counter}")
+            temp_chain_key = saved
+            use_saved = True
+        else:
+            # We are moving forward; ratchet across gaps and save intermediate steps
+            temp_chain_key = self.receive_chain_key
+            for i in range(self.peer_counter + 1, counter):
+                # Save the pre-ratchet chain state for counter i so we can later decrypt out-of-order
+                if self.skipped_counters[i] is None:
+                    self.skipped_counters[i] = temp_chain_key
+                # Advance to the next chain state
+                temp_chain_key = self._ratchet_chain_key(temp_chain_key, i)
         
         # Mix DH from peer's message into the temp chain key
         if not self.msg_recv_private:
@@ -1117,13 +1175,14 @@ class SecureChatProtocol:
         
         dh_shared = self.msg_recv_private.exchange(X25519PublicKey.from_public_bytes(peer_dh_pub_bytes))
 
-        mixed_chain_key = self._mix_dh_with_chain(temp_chain_key, dh_shared, counter, "m")
+        mixed_chain_key = self._mix_dh_with_chain(temp_chain_key, dh_shared, counter)
         
         # Derive the message key for the current message from the mixed chain
         message_key = self._derive_message_key(mixed_chain_key, counter)
         
         # Calculate what the new chain key state WOULD be (symmetric ratchet only)
-        new_chain_key = self._ratchet_chain_key(temp_chain_key, counter)
+        if not use_saved:
+            new_chain_key = self._ratchet_chain_key(temp_chain_key, counter)
         
         # Create AAD from message metadata for authentication verification
         aad_data = {
@@ -1138,6 +1197,7 @@ class SecureChatProtocol:
         try:
             decrypted_data = DoubleEncryptor(message_key).decrypt(nonce, ciphertext, aad)
         except InvalidTag:
+            # May or may not actually remove it from memory but it's better than nothing
             message_key = b'\x00' * len(message_key)
             raise ValueError("Message is probably legitimate but failed to decrypt, InvalidTag")
             
@@ -1145,16 +1205,24 @@ class SecureChatProtocol:
         try:
             decrypted_data_str = decrypted_data.decode('utf-8')
         except UnicodeDecodeError:
+            # May or may not actually remove it from memory but it's better than nothing
             message_key = b'\x00' * len(message_key)
             raise ValueError("Message is probably legitimate but failed to decode, UnicodeDecodeError")
         
-        # Update ratchet state
-        self.receive_chain_key = new_chain_key
-        self.peer_counter = counter
-        # Store peer's latest public key for our next send
-        self.msg_peer_base_public = peer_dh_pub_bytes
+        # Update ratchet state: only when moving forward. For out-of-order (saved) do not change state.
+        if use_saved:
+            # Remove saved step after successful decryption
+            try:
+                self.skipped_counters.pop(counter)
+            except KeyError:
+                pass
+        if not use_saved and new_chain_key:
+            self.receive_chain_key = new_chain_key
+            self.peer_counter = counter
+            # Store peer's latest public key for our next send
+            self.msg_peer_base_public = peer_dh_pub_bytes
         
-        # delete the message key
+        # This may or may not actually remove it from memory but it's better than nothing
         message_key = b'\x00' * len(message_key)
         del message_key
         
@@ -1353,7 +1421,7 @@ class SecureChatProtocol:
         
         # Compute DH shared secret for this chunk and mix into send chain
         dh_shared = eph_priv.exchange(X25519PublicKey.from_public_bytes(peer_pub_bytes))
-        mixed_chain_key = self._mix_dh_with_chain(self.send_chain_key, dh_shared, self.message_counter, "m")
+        mixed_chain_key = self._mix_dh_with_chain(self.send_chain_key, dh_shared, self.message_counter)
         
         # Derive unique message key for this chunk
         message_key = self._derive_message_key(mixed_chain_key, self.message_counter)
@@ -1388,7 +1456,7 @@ class SecureChatProtocol:
         ciphertext = encryptor.encrypt(nonce, plaintext, aad)
         del encryptor
         
-        # Securely delete the message key
+        # This may or may not actually remove it from memory but it's better than nothing
         message_key = b'\x00' * len(message_key)
         del message_key
         
@@ -1466,11 +1534,9 @@ class SecureChatProtocol:
                     yield file_chunk
     
     @staticmethod
-    def process_file_metadata(decrypted_data: str) -> FileMetadata:
+    def process_file_metadata(message: dict) -> FileMetadata:
         """Process a file metadata message."""
         try:
-            message = json.loads(decrypted_data)
-            
             return {
                 "transfer_id":    message["transfer_id"],
                 "filename":       message["filename"],
@@ -1518,7 +1584,7 @@ class SecureChatProtocol:
         if not self.msg_recv_private:
             raise ValueError("Local DH private key not initialized for file chunk ratchet")
         dh_shared = self.msg_recv_private.exchange(X25519PublicKey.from_public_bytes(peer_eph_pub))
-        mixed_chain_key = self._mix_dh_with_chain(temp_chain_key, dh_shared, counter, "m")
+        mixed_chain_key = self._mix_dh_with_chain(temp_chain_key, dh_shared, counter)
         
         # Derive the message key for the current message
         message_key = self._derive_message_key(mixed_chain_key, counter)
@@ -1571,7 +1637,7 @@ class SecureChatProtocol:
         # Store peer's latest eph public key for completeness
         self.msg_peer_base_public = peer_eph_pub
         
-        # Securely delete the message key
+        # This may or may not actually remove it from memory but it's better than nothing
         message_key = b'\x00' * len(message_key)
         del message_key
         

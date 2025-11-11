@@ -72,11 +72,12 @@ class ProtocolCryptoTests(unittest.TestCase):
         self.assertEqual(p3, m3)
         self.assertEqual(self.bob.peer_counter, 3)
 
-        # Replay detection: decrypting an old message should fail now
+        # Out-of-order: message 2 should decrypt because step was saved; message 1 was not saved and should fail
+        p2_old = self.bob.decrypt_message(c2)
+        self.assertEqual(p2_old, m2)
+        self.assertEqual(self.bob.peer_counter, 3)
         with self.assertRaises(ValueError):
             self.bob.decrypt_message(c1)
-        with self.assertRaises(ValueError):
-            self.bob.decrypt_message(c2)
 
         # Tamper with ciphertext bytes -> should fail authentication
         tampered = json.loads(c4.decode("utf-8"))

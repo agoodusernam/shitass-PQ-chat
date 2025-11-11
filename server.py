@@ -41,7 +41,7 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
         self.clients: dict[str, 'SecureChatRequestHandler'] = {}
         self.clients_lock: threading.Lock = threading.Lock()
         self.running: bool = False
-        self.client_counter: int = 0  # Counter for unique client IDs
+        self.client_counter: int = 0
         
         super().__init__((host, port), SecureChatRequestHandler)
         
@@ -59,8 +59,8 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
             client_handler.client_id = client_id
             self.clients[client_id] = client_handler
             
-            print(f"[{datetime.datetime.now().strftime(format="%d.%m.%Y, %H:%S")}] Client {client_id} connected from " +
-                  f"{client_handler.client_address}")
+            print(f"[{datetime.datetime.now().strftime('%d.%m.%Y, %H:%M:%S')}] Client {client_id} " +
+                  f"connected from {client_handler.client_address}")
         
         # If we now have exactly 2 clients, start key exchange
         if len(self.clients) == 2:
@@ -89,6 +89,8 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
                     except Exception:
                         # Unexpected issue notifying remaining client; non-fatal
                         pass
+                else:
+                    self.client_counter = 0
     
     def initiate_key_exchange(self):
         """Initiate the key exchange process between two connected clients."""
@@ -239,7 +241,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                     self.server.route_message(self.client_id, message_data)
                 
                 except ConnectionError as e:
-                    print(f"[{datetime.datetime.now().strftime(format="%d.%m.%Y, %H:%S")}] Client {self.client_id} disconnected unexpectedly: {e}")
+                    print(f"[{datetime.datetime.now().strftime('%d.%m.%Y, %H:%M:%S')}] Client {self.client_id} disconnected unexpectedly: {e}")
                     break
                 except (UnicodeDecodeError, json.JSONDecodeError) as e:
                     print(f"Client {self.client_id} sent undecodable message: {e}")
@@ -281,8 +283,8 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
     def route_verification_message(self, message_data: bytes) -> None:
         """Route key verification messages between clients."""
         try:
-            if self.key_exchange_complete:
-                self.handle_unexpected_message("verification after key exchange")
+            if not self.key_exchange_complete:
+                self.handle_unexpected_message("verification before key exchange")
                 return
             other_client = self.get_other_client()
             if other_client:
@@ -430,11 +432,8 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                 self.server.remove_client(self.client_id)
             try:
                 self.request.close()
-            except (OSError, ConnectionError):
+            except (OSError, ConnectionError, socket.error):
                 # ignore: closing a dead socket
-                pass
-            except Exception:
-                # ignore unexpected during cleanup
                 pass
     
     def handle_unexpected_message(self, extra_info: str = "") -> None:

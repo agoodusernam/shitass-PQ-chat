@@ -21,6 +21,7 @@ VOICE_RATE = 44100
 VOICE_CHANNELS = 1
 VOICE_CHUNK = int(VOICE_RATE * (1/VOICE_SEND_FREQUENCY))
 VOICE_FORMAT = 2
+MAX_UNEXPECTED_MSGS = 10
 '''
     
     with open("configs.py", "w") as f:
@@ -34,8 +35,8 @@ try:
     ensure_config_exists()
 except PermissionError as e:
     raise PermissionError("Could not create configs.py, please create it manually or contact the developer.") from e
-except FileExistsError as e:
-    raise FileExistsError("configs.py already exists but we tried to write anyway. Contact the developer.") from e
+except OSError as e:
+    raise OSError("Could not create configs.py, please create it manually or contact the developer.") from e
 
 
 def validate_configs() -> None:
@@ -75,6 +76,9 @@ def validate_configs() -> None:
     
     if not os.path.isfile(configs.RINGTONE_FILE):
         print(f"Warning: Ringtone file not found: {configs.RINGTONE_FILE}")
+    
+    if not configs.MAX_UNEXPECTED_MSGS > 0 or not isinstance(configs.MAX_UNEXPECTED_MSGS, int):
+        raise ValueError("MAX_UNEXPECTED_MSGS must be a positive number")
 
 
 validate_configs()

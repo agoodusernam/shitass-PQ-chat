@@ -118,11 +118,15 @@ class SecureChatClient:
         """
         return bool(self.file_transfer_active or self.voice_call_active or self.protocol.rekey_in_progress)
     
+    @bypass_rate_limits.setter
+    def bypass_rate_limits(self, bypass: bool):
+        raise ValueError("Cannot set bypass_rate_limits directly.")
+    
     def close_audio(self):
         pass
     
     @staticmethod
-    def _first_unexpected_field(obj: dict[str, Any], allowed: set[str]) -> str | None:
+    def _first_unexpected_field(obj: dict[Any, Any], allowed: set[str]) -> str | None:
         """Return the first key not in allowed or None if all keys allowed."""
         for k in obj.keys():
             if k not in allowed:
@@ -191,6 +195,7 @@ class SecureChatClient:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.socket.connect((host, port))
             self.connected = True
+            self.host, self.port = host, port
             
             self.display_system_message(f"Connected to secure chat server at {self.host}:{self.port}")
             self.display_system_message("Waiting for another user to connect...")
@@ -245,7 +250,8 @@ class SecureChatClient:
                 break
     
     def handle_message(self, message_data: bytes) -> None:
-        """Handle different types of messages received from the server.
+        """
+        Handle different types of messages received from the server.
 
         This method acts as a message dispatcher, parsing incoming messages and
         routing them to appropriate handler methods based on the message type.
@@ -258,8 +264,7 @@ class SecureChatClient:
             (for optimised file chunks). The method first tries JSON parsing for
             control messages (including keepalives), then falls back to binary
             file chunk processing if JSON parsing fails.
-            
-            All exceptions are caught and logged to prevent crashes.
+        
         """
         # Rate-limit peers to 5 messages/sec, unless in file transfer or voice call
         if not self.bypass_rate_limits:
@@ -274,14 +279,14 @@ class SecureChatClient:
             self._rl_count += 1
 
         if len(message_data) > 8192 and not self.bypass_rate_limits:
-            # Prevent potential DoS with large messages before key verification
+            # Prevent potential DoS with large messages
             self.display_error_message("Received overly large message without key verification. Dropping.")
             return
         
         # First, try to parse as JSON (for control messages including keepalive)
         try:
             message_json: dict[Any, Any] = json.loads(message_data.decode('utf-8'))
-            message_type = MessageType(int(message_json.get("type", -1)))
+            message_type = MessageType(int(message_json.get("type")))  # type: ignore
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
             # If JSON parsing failed, check if this might be a binary file chunk message
             success = self.handle_maybe_binary_chunk(message_data)
@@ -353,9 +358,12 @@ class SecureChatClient:
         response_data = json.dumps(response_message).encode('utf-8')
         
         # Send response to server
-        send_message(self.socket, response_data)
+        ok, err = send_message(self.socket, response_data)
+        if not ok:
+            self.display_error_message(f"Failed to send keepalive response: {err}")
+            self.display_system_message("Server may disconnect after 3 keepalive failures.")
     
-    def handle_delivery_confirmation(self, message: str) -> None:
+    def handle_delivery_confirmation(self, message: dict) -> None:
         """
         Handle delivery confirmation messages from the other client.
         GUI exclusive
@@ -416,10 +424,11 @@ class SecureChatClient:
         """Handle key exchange response from another client."""
         if self.private_key:
             _, version_warning = self.protocol.process_key_exchange_response(message_data, self.private_key)
+            self.private_key = b"\x00" * 32
             
             # Display version warning if present
             if version_warning:
-                self.display_regular_message(f"{version_warning}")
+                self.display_system_message(f"{version_warning}")
                 
             self.display_system_message("Key exchange completed successfully.")
             return True
@@ -552,7 +561,7 @@ class SecureChatClient:
         
         # Attempt to parse the decrypted text as a JSON message
         try:
-            message_obj: dict[str, Any] = json.loads(decrypted_text)
+            message_json: dict[Any, Any] = json.loads(decrypted_text)
         except (binascii.Error, json.JSONDecodeError, UnicodeDecodeError):
             self.display_error_message("Received message that could not be decoded.")
             return
@@ -560,58 +569,93 @@ class SecureChatClient:
         # Validate unexpected fields when peer is unverified (inner JSON)
         if not self.protocol.peer_key_verified:
             allowed_inner = self._allowed_unverified_inner_fields()
-            unexpected_inner = self._first_unexpected_field(message_obj, allowed_inner)
+            unexpected_inner = self._first_unexpected_field(message_json, allowed_inner)
             if unexpected_inner:
                 self.display_error_message(f"Dropped decrypted message from unverified peer due to unexpected field '{unexpected_inner}'.")
                 return
         
-        message_type = MessageType(message_obj.get("type", -1))
+        message_type = MessageType(message_json.get("type", -1))
         if message_type == MessageType.NONE:
             self.display_error_message("Received message with invalid type.")
             return
         
+        try:
+            self.handle_message_types(message_type, message_json, received_message_counter)
+        except Exception as e:
+            self.display_error_message(f"Error handling a message: {e}")
+            return
+    
+    
+    def handle_message_types(self, message_type: MessageType, message_json: dict,
+                             received_message_counter: int) -> bool:
+        """
+        Handle the different types of messages.
+        Handlers may raise errors which should be caught by the caller.
+        
+        :param message_type: The type of message
+        :param message_json: The JSON message, serialized into a dictionary
+        :param received_message_counter: The counter of the message, to be used for delivery confirmation
+        :return: True if it could be handled successfully, False if not
+        """
         match message_type:
             case MessageType.TEXT_MESSAGE:
-                text = str(message_obj.get("text", ""))
+                text = str(message_json.get("text", ""))
                 if not self.protocol.peer_key_verified:
                     text = "".join(ch for ch in text if ch in string.printable)
                 self.display_regular_message(text)
                 self._send_delivery_confirmation(received_message_counter)
+                
             case MessageType.EMERGENCY_CLOSE:
                 self.handle_emergency_close()
+                
             case MessageType.DUMMY_MESSAGE:
                 pass
+            
             case MessageType.FILE_METADATA:
-                self.handle_file_metadata(decrypted_text)
+                self.handle_file_metadata(message_json)
+                
             case MessageType.FILE_ACCEPT:
-                self.handle_file_accept(decrypted_text)
+                self.handle_file_accept(message_json)
+                
             case MessageType.FILE_REJECT:
-                self.handle_file_reject(decrypted_text)
+                self.handle_file_reject(message_json)
+                
             case MessageType.FILE_COMPLETE:
-                self.handle_file_complete(decrypted_text)
+                self.handle_file_complete(message_json)
+                
             case MessageType.DELIVERY_CONFIRMATION:
                 if self.key_exchange_complete:
-                    self.handle_delivery_confirmation(decrypted_text)
+                    self.handle_delivery_confirmation(message_json)
+                    
             case MessageType.EPHEMERAL_MODE_CHANGE:
-                self.handle_ephemeral_mode_change(decrypted_text)
+                self.handle_ephemeral_mode_change(message_json)
+                
             case MessageType.REKEY:
-                self.handle_rekey(decrypted_text)
+                self.handle_rekey(message_json)
+                
             case MessageType.VOICE_CALL_INIT:
-                self.handle_voice_call_init(decrypted_text)
+                self.handle_voice_call_init(message_json)
+                
             case MessageType.VOICE_CALL_ACCEPT:
-                self.handle_voice_call_accept(decrypted_text)
+                self.handle_voice_call_accept(message_json)
+                
             case MessageType.VOICE_CALL_REJECT:
                 self.handle_voice_call_reject()
+                
             case MessageType.VOICE_CALL_DATA:
-                self.handle_voice_call_data(decrypted_text)
+                self.handle_voice_call_data(message_json)
+                
             case MessageType.VOICE_CALL_END:
                 self.handle_voice_call_end()
+                
             case MessageType.NICKNAME_CHANGE:
-                self.handle_nickname_change(decrypted_text)
+                self.handle_nickname_change(message_json)
+                
             case _:
                 self.display_error_message(f"Dropped message with unknown inside type: {message_type}")
-                return
-    
+                return False
+        
+        return True
     
     def _send_delivery_confirmation(self, confirmed_counter: int) -> None:
         """Send a delivery confirmation for a received text message."""
@@ -650,11 +694,9 @@ class SecureChatClient:
     
     def handle_emergency_close(self) -> None:
         """Handle emergency close message from the other client."""
-        print(f"\n{'=' * 50}")
-        print("EMERGENCY CLOSE RECEIVED")
-        print("The other client has activated emergency close.")
-        print("Connection will be terminated immediately.")
-        print(f"{'=' * 50}")
+        self.display_system_message("EMERGENCY CLOSE RECEIVED")
+        self.display_system_message("The other client has activated emergency close.")
+        self.display_system_message("Connection will be terminated immediately.")
         
         # Immediately disconnect
         self.disconnect()
@@ -729,16 +771,15 @@ class SecureChatClient:
         except Exception as e:
             print(f"Failed to send file: {e}")
     
-    def handle_ephemeral_mode_change(self, decrypted_message: str) -> None:
+    def handle_ephemeral_mode_change(self, message: dict) -> None:
         """Handle incoming ephemeral mode change from peer (console feedback)."""
-        message = json.loads(decrypted_message)
         mode = str(message.get("mode", "OFF")).upper()
         if mode == "GLOBAL":
             print("\nPeer enabled GLOBAL ephemeral mode. Only the enabler can disable it.")
         elif mode == "OFF":
             print("\nPeer disabled GLOBAL ephemeral mode.")
     
-    def handle_file_metadata(self, decrypted_message: str) -> None:
+    def handle_file_metadata(self, decrypted_message: dict) -> None:
         """Handle incoming file metadata."""
         try:
             metadata = self.protocol.process_file_metadata(decrypted_message)
@@ -771,7 +812,7 @@ class SecureChatClient:
         
         while True:
             try:
-                response = input("Accept file? (yes/no): ").lower().strip()
+                response = input("Accept file? (y/n): ").lower().strip()
                 if response in ['yes', 'y']:
                     # Send acceptance via queue (loop will encrypt)
                     self.protocol.queue_message(("encrypt_json", {
@@ -803,39 +844,40 @@ class SecureChatClient:
                 del self.active_file_metadata[transfer_id]
                 break
     
-    def handle_file_accept(self, decrypted_message: str) -> None:
+    def handle_file_accept(self, message: dict) -> None:
         """Handle file acceptance from peer."""
+        self.protocol.send_dummy_messages = False
         try:
-            self.protocol.send_dummy_messages = False
-            message = json.loads(decrypted_message)
             transfer_id = message["transfer_id"]
+        except KeyError:
+            self.display_error_message("Received acceptance without transfer ID")
+            self.protocol.send_dummy_messages = True
+            return
             
-            if transfer_id not in self.pending_file_transfers:
-                print("Received acceptance for unknown file transfer")
-                return
+        if transfer_id not in self.pending_file_transfers:
+            print("Received acceptance for unknown file transfer")
+            self.protocol.send_dummy_messages = True
+            return
             
-            transfer_info = self.pending_file_transfers[transfer_id]
-            file_path = transfer_info["file_path"]
-            
-            print(f"File transfer accepted. Sending {transfer_info['metadata']['filename']}...")
-            
-            # Start tracking the sending transfer in the protocol
-            self.protocol.sending_transfers[transfer_id] = transfer_info['metadata']
-            
-            # Start sending file chunks in a separate thread to avoid blocking message processing
-            chunk_thread = threading.Thread(
-                    target=self._send_file_chunks,
-                    args=(transfer_id, file_path),
-                    daemon=True
-            )
-            chunk_thread.start()
+        transfer_info = self.pending_file_transfers[transfer_id]
+
+        file_path = transfer_info["file_path"]
         
-        except Exception as e:
-            print(f"Error handling file acceptance: {e}")
+        print(f"File transfer accepted. Sending {transfer_info['metadata']['filename']}...")
+        
+        # Start tracking the sending transfer in the protocol
+        self.protocol.sending_transfers[transfer_id] = transfer_info['metadata']
+        
+        # Start sending file chunks in a separate thread to avoid blocking message processing
+        chunk_thread = threading.Thread(
+                target=self._send_file_chunks,
+                args=(transfer_id, file_path),
+                daemon=True
+        )
+        chunk_thread.start()
     
-    def handle_file_reject(self, decrypted_message: str) -> None:
+    def handle_file_reject(self, message: dict) -> None:
         """Handle file rejection from peer."""
-        message = json.loads(decrypted_message)
         try:
             transfer_id = message["transfer_id"]
         except KeyError:
@@ -852,11 +894,10 @@ class SecureChatClient:
         else:
             print("Received rejection for unknown file transfer")
     
-    def handle_rekey(self, decrypted_text: str) -> None:
+    def handle_rekey(self, inner: dict) -> None:
         try:
-            inner = json.loads(decrypted_text)
-            action = inner.get["action"]
-        except (json.JSONDecodeError, KeyError):
+            action = inner["action"]
+        except KeyError:
             self.display_error_message("Dropped rekey message without action. Invalid JSON.")
             return
         if action == "init":
@@ -889,28 +930,28 @@ class SecureChatClient:
         else:
             self.display_error_message("Received unknown rekey action")
     
-    def handle_voice_call_init(self, decrypted_text: str) -> None:
-        """Handle incoming voice call initiation (console feedback)."""
+    def handle_voice_call_init(self, init_msg: dict) -> None:
+        """Handle incoming voice call initiation, GUI exclusive"""
         self.protocol.queue_message(("encrypt_json", {"type": MessageType.VOICE_CALL_REJECT}))
         self.display_system_message("Incoming voice call rejected: voice calls not supported on terminal client.")
     
-    def handle_voice_call_accept(self, decrypted_text: str) -> None:
-        """Handle incoming voice call acceptance (console feedback)."""
+    def handle_voice_call_accept(self, message: dict) -> None:
+        """Handle incoming voice call acceptance, GUI exclusive"""
         pass
     
     def handle_voice_call_reject(self) -> None:
-        """Handle incoming voice call rejection (console feedback)."""
+        """Handle incoming voice call rejection, GUI exclusive"""
         pass
     
-    def handle_voice_call_data(self, decrypted_text: str) -> None:
-        """Handle incoming voice call data (console feedback)."""
+    def handle_voice_call_data(self, data: dict) -> None:
+        """Handle incoming voice call data, GUI exclusive"""
         pass
     
     def handle_voice_call_end(self) -> None:
-        """Handle incoming voice call end (console feedback)."""
+        """Handle incoming voice call end, GUI exclusive"""
         pass
     
-    def handle_nickname_change(self, decrypted_text: str) -> None:
+    def handle_nickname_change(self, message: dict) -> None:
         """Handle incoming nickname change from peer."""
         # Disable nickname changes when keys are unverified
         if not self.protocol.peer_key_verified:
@@ -919,7 +960,6 @@ class SecureChatClient:
         if not self.nickname_change_allowed:
             self.display_system_message("Peer attempted to change nickname")
             return
-        message = json.loads(decrypted_text)
         self.peer_nickname = str(message.get("nickname", "Other User"))[:32]
         self.display_system_message(f"Peer changed nickname to: {self.peer_nickname}")
     
@@ -990,9 +1030,8 @@ class SecureChatClient:
             if transfer_id in self._last_progress_shown:
                 del self._last_progress_shown[transfer_id]
     
-    def handle_file_complete(self, decrypted_message: str) -> None:
+    def handle_file_complete(self, message: dict) -> None:
         """Handle file transfer completion notification."""
-        message = json.loads(decrypted_message)
         try:
             transfer_id = message["transfer_id"]
         except KeyError:
@@ -1089,6 +1128,7 @@ class SecureChatClient:
         try:
             while self.connected:
                 if not (self.key_exchange_complete and self.verification_complete):
+                    time.sleep(0.2)
                     continue
                 try:
                     message = input()

@@ -219,6 +219,7 @@ class FileTransferWindow:
         self.parent_root = parent_root
         self.window: tk.Toplevel = tk.Toplevel(self.parent_root)
         self.window.withdraw()
+        self._ui_created: bool = False
         self.speed_label: tk.Label | None = None
         self.transfer_list: scrolledtext.ScrolledText | None = None
         
@@ -246,7 +247,7 @@ class FileTransferWindow:
     
     def create_window(self):
         """Create the file transfer window if it doesn't exist."""
-        if self.window is None or not self.window.winfo_exists() or not self.window.state() == 'withdrawn':
+        if not self._ui_created:
             self.window.title("File Transfer Progress")
             self.window.geometry("550x400")
             self.window.configure(bg=self.BG_COLOR)
@@ -298,6 +299,7 @@ class FileTransferWindow:
             
             # Handle window closing
             self.window.protocol("WM_DELETE_WINDOW", self.hide_window)
+            self._ui_created = True
     
     def show_window(self):
         """Show the file transfer window."""
@@ -1851,7 +1853,7 @@ class ChatGUI:
                 "audio_format": configs.VOICE_FORMAT,
             }
             # Spoof an accept message to start the call
-            self.client.handle_voice_call_accept(json.dumps(message))
+            self.client.handle_voice_call_accept(message)
         
         def on_reject():
             self.client.on_user_response(False, 0, 0, 0)
@@ -1913,8 +1915,6 @@ class GUISecureChatClient(SecureChatClient):
             verification_started (bool): Whether verification has started.
             verification_pending (bool): Whether verification is pending user response.
             voice_muted (bool): Whether the voice call is muted.
-
-        Additional unsafe attributes:
             voice_data_queue (deque[bytes]): Queue for incoming voice data.
             pending_file_requests (dict[str, FileRequest]): Pending file requests.
             _pending_voice_init (dict[str, int]): Pending voice call initialisation parameters.
@@ -2030,7 +2030,7 @@ class GUISecureChatClient(SecureChatClient):
         }
         self.protocol.queue_message(("encrypt_json", to_send))
     
-    def handle_voice_call_init(self, decrypted_text: str) -> None:
+    def handle_voice_call_init(self, init_msg: dict) -> None:
         """
         Handle incoming voice call request.
         Store peer params and prompt the user to accept or reject the call (unless disabled).
@@ -2038,14 +2038,12 @@ class GUISecureChatClient(SecureChatClient):
         """
         # Parse and store initiator's params for negotiation
         try:
-            init_msg = json.loads(decrypted_text)
-            rate = int(init_msg.get("rate", 44100))
             self._pending_voice_init = {
-                "rate": rate,
-                "chunk_size": int(init_msg.get("chunk_size", int(rate * 0.01))),
-                "audio_format": int(init_msg.get("audio_format", configs.VOICE_FORMAT)),
+                "rate": int(init_msg["rate"]),
+                "chunk_size": int(init_msg["chunk_size"]),
+                "audio_format": int(init_msg["audio_format"]),
             }
-        except json.JSONDecodeError:
+        except (KeyError, ValueError):
             # If parsing fails, clear any previous state
             self._pending_voice_init = {}
         
@@ -2111,17 +2109,12 @@ class GUISecureChatClient(SecureChatClient):
                 return int(fmt)
         return default_fmt
     
-    def handle_voice_call_accept(self, decrypted_text: str):
+    def handle_voice_call_accept(self, message: dict):
         """
         Handle acceptance of a voice call request.
         Start the send and receive threads for voice data.
         Voice data bypasses the queue as it needs to be realtime
         """
-        try:
-            message = json.loads(decrypted_text)
-        except json.JSONDecodeError:
-            self.display_system_message("Error: Failed to parse voice call accept message.")
-            return
             
         # Determine peer params and compute agreed format
         local_rate = int(configs.VOICE_RATE)
@@ -2188,16 +2181,13 @@ class GUISecureChatClient(SecureChatClient):
         self.gui.append_to_chat("Voice call rejected")
         self.gui.voice_call_btn.config(state=ltk.NORMAL)
     
-    def handle_voice_call_data(self, decrypted_text: str) -> None:
-        """Handle incoming voice call data (console feedback)."""
+    def handle_voice_call_data(self, data: dict) -> None:
+        """Handle incoming voice call data"""
         try:
             if not self.voice_call_active:
                 return
             # Directly enqueue the raw audio data for playback
-            self.voice_data_queue.append(base64.b64decode(json.loads(decrypted_text)["audio_data"], validate=True))
-        except json.JSONDecodeError:
-            self.display_error_message("Received invalid voice call data. json.JSONDecodeError")
-            return
+            self.voice_data_queue.append(base64.b64decode(data["audio_data"], validate=True))
         
         except binascii.Error:
             self.display_error_message("Received invalid voice call data. binascii.Error")
@@ -2254,22 +2244,18 @@ class GUISecureChatClient(SecureChatClient):
         self.gui.on_tk_thread(self.gui.hide_mute_button)
         self.display_system_message("Peer ended the voice call")
     
-    def handle_delivery_confirmation(self, message_data: str) -> None:
+    def handle_delivery_confirmation(self, message: dict) -> None:
         """Handle delivery confirmation messages from the peer - override to update GUI."""
         try:
-            confirmed_counter = json.loads(message_data)["confirmed_counter"]
+            confirmed_counter = message["confirmed_counter"]
             # Update the GUI to show the message was delivered
             self.gui.on_tk_thread(self.gui.update_message_delivery_status, confirmed_counter)
-        
-        except json.JSONDecodeError:
-            self.display_error_message("Invalid delivery confirmation message format.")
         except KeyError:
             self.display_error_message("Missing 'confirmed_counter' field in delivery confirmation message.")
     
-    def handle_ephemeral_mode_change(self, decrypted_message: str) -> None:
+    def handle_ephemeral_mode_change(self, message: dict) -> None:
         """Override: apply peer's ephemeral mode changes to GUI state."""
         try:
-            message = json.loads(decrypted_message)
             mode = str(message.get("mode", "OFF")).upper()
             owner_id = message.get("owner_id")
         except json.JSONDecodeError:
@@ -2311,20 +2297,14 @@ class GUISecureChatClient(SecureChatClient):
         
     
     def handle_emergency_close(self) -> None:
-        """Handle emergency close message from the other client - override to display in GUI."""
-        # Display emergency close message in GUI
-        self.display_system_message("EMERGENCY CLOSE RECEIVED")
-        self.display_system_message("The other client has activated emergency close.")
-        self.display_system_message("Connection will be terminated immediately.")
+        """Handle emergency close message from the other client."""
         
         # Show popup notification
         self.gui.on_tk_thread(messagebox.showwarning,
                             "Emergency Close Activated",
                             "The other client has activated emergency close.\nThe connection will be terminated immediately."
                             )
-        
-        # Use the GUI's emergency close function to properly close everything
-        self.gui.emergency_close()
+        super().handle_emergency_close()
         
     
     def handle_key_exchange_response(self, message_data: bytes) -> bool:
@@ -2375,7 +2355,7 @@ class GUISecureChatClient(SecureChatClient):
         self.display_system_message("Waiting for a new client to connect...")
         self.display_system_message("A new key exchange will start automatically.")
     
-    def handle_file_metadata(self, decrypted_message: str):
+    def handle_file_metadata(self, decrypted_message: dict) -> None:
         """Handle incoming file metadata with GUI dialogue."""
         metadata = self.protocol.process_file_metadata(decrypted_message)
         transfer_id = metadata["transfer_id"]
@@ -2412,14 +2392,10 @@ class GUISecureChatClient(SecureChatClient):
         # Store the transfer ID for command processing
         self.pending_file_requests[transfer_id] = metadata
     
-    def handle_file_accept(self, decrypted_message: str):
+    def handle_file_accept(self, message: dict):
         """Handle file acceptance from peer with GUI updates."""
         try:
-            message = json.loads(decrypted_message)
             transfer_id = message["transfer_id"]
-        except json.JSONDecodeError:
-            self.display_error_message("Invalid file accept message format.")
-            return
         except KeyError:
             self.display_error_message("Missing 'transfer_id' field in file accept message.")
             return
@@ -2445,11 +2421,10 @@ class GUISecureChatClient(SecureChatClient):
         chunk_thread.start()
         
     
-    def handle_file_reject(self, decrypted_message: str):
+    def handle_file_reject(self, message: dict):
         """
         Handle file rejection from peer with GUI updates.
         """
-        message = json.loads(decrypted_message)
         try:
             transfer_id = message["transfer_id"]
         except KeyError:
@@ -2606,10 +2581,9 @@ class GUISecureChatClient(SecureChatClient):
         complete_msg = {"type": MessageType.FILE_COMPLETE, "transfer_id": transfer_id}
         self.protocol.queue_message(("encrypt_json", complete_msg))
     
-    def handle_file_complete(self, decrypted_message: str):
+    def handle_file_complete(self, message: dict):
         """Handle file transfer completion notification with GUI updates."""
         try:
-            message = json.loads(decrypted_message)
             transfer_id = message["transfer_id"]
         except KeyError:
             self.display_error_message("Missing 'transfer_id' field in file complete message.")

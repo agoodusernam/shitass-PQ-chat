@@ -2039,7 +2039,7 @@ class DebugGUISecureChatClient(GUISecureChatClient):
         self.gui: DebugChatGUI = gui
         
         # Protocol version tracking
-        self.peer_version: int = 0
+        self.peer_version: str = ""
         
         # Keepalive tracking
         self.last_keepalive_received: float = 0.0
