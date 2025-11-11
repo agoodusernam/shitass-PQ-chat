@@ -1323,6 +1323,21 @@ class ChatGUI:
         if not message:
             return "break"
         
+        if message.lower().strip() == '/help':
+            self.append_to_chat("Available commands:")
+            self.append_to_chat("/help - Show this help message")
+            self.append_to_chat("/verify - Show the key verification instructions")
+            self.append_to_chat("/y or /yes - Confirm key verification or accept file transfer")
+            self.append_to_chat("/n or /no - Deny key verification or reject file transfer")
+            self.append_to_chat("/rekey - Generate a new key pair and restart key exchange (requires prior verification)")
+            self.append_to_chat("/quit - Disconnect and exit the application")
+            self.message_entry.delete("1.0", tk.END)
+            return "break"
+        
+        if self.client.protocol.rekey_in_progress:
+            self.client.display_system_message("Cannot send messages. Rekey in progress.")
+            return "break"
+        
         # Handle special commands (these work even during verification)
         if message.lower() == '/quit':
             self.disconnect_from_server()
@@ -1339,17 +1354,6 @@ class ChatGUI:
                 self.client.initiate_rekey()
             else:
                 self.append_to_chat("Cannot rekey - verification not complete")
-            self.message_entry.delete("1.0", tk.END)
-            return "break"
-        
-        if message.lower() == '/help':
-            self.append_to_chat("Available commands:")
-            self.append_to_chat("/help - Show this help message")
-            self.append_to_chat("/verify - Show the key verification instructions")
-            self.append_to_chat("/y or /yes - Confirm key verification or accept file transfer")
-            self.append_to_chat("/n or /no - Deny key verification or reject file transfer")
-            self.append_to_chat("/rekey - Generate a new key pair and restart key exchange (requires prior verification)")
-            self.append_to_chat("/quit - Disconnect and exit the application")
             self.message_entry.delete("1.0", tk.END)
             return "break"
         

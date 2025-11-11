@@ -141,9 +141,7 @@ class ProtocolCryptoTests(unittest.TestCase):
         # Initiate rekey from Alice
         init_payload = self.alice.create_rekey_init()
         resp_payload = self.bob.process_rekey_init(init_payload)
-        commit_payload = self.alice.process_rekey_response(resp_payload)
-        ack_payload = self.bob.process_rekey_commit(commit_payload)
-        self.assertEqual(ack_payload.get("action"), "commit_ack")
+        self.alice.process_rekey_response(resp_payload)
 
         # Activate new keys on both sides
         self.alice.activate_pending_keys()

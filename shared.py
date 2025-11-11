@@ -43,7 +43,7 @@ except ImportError as exc_:
     raise ImportError("Please install the required libraries with pip install -r requirements.txt") from exc_
 
 # Protocol constants
-PROTOCOL_VERSION: Final[str] = "6.0.1"
+PROTOCOL_VERSION: Final[str] = "6.0.2"
 # Protocol compatibility is denoted by version number
 # Breaking.Minor.Patch - only Breaking versions are checked for compatibility.
 # Breaking version changes introduce breaking changes that are not compatible with previous versions of the same major version.
@@ -408,7 +408,7 @@ class SecureChatProtocol:
         self.sender_thread: threading.Thread | None = None
         self.sender_running: bool = False
         self.sender_lock: threading.Lock = threading.Lock()
-        self.send_dummy_messages: bool = configs.SEND_DUMMY_PACKETS
+        self._send_dummy_messages: bool = configs.SEND_DUMMY_PACKETS
         
         # Cryptographic identity + peer info
         self.own_public_key: bytes = bytes()
@@ -455,6 +455,16 @@ class SecureChatProtocol:
     def encryption_ready(self) -> bool:
         """Check if encryption is ready (shared key and chain keys established)."""
         return bool(self.shared_key and self.send_chain_key and self.receive_chain_key)
+    
+    @property
+    def send_dummy_messages(self) -> bool:
+        """Check if dummy messages should be sent."""
+        return self._send_dummy_messages and not self.rekey_in_progress
+    
+    @send_dummy_messages.setter
+    def send_dummy_messages(self, value: bool) -> None:
+        """Set whether dummy messages should be sent."""
+        self._send_dummy_messages = value
     
     def reset_key_exchange(self) -> None:
         """Reset all cryptographic state to initial values for key exchange restart."""
@@ -825,13 +835,7 @@ class SecureChatProtocol:
         words = self._hash_to_words(key_hash, wordlist, num_words=8)
         # 8 words should give ~128 bits of security with a wordlist of ~65k words
         
-        # Format the words in a user-friendly way
-        # Display 4 words per line for better readability
-        msg = "\n"
-        for i in range(0, len(words), 4):
-            msg += " ".join(words[i:i + 4]) + "\n"
-        
-        return msg.strip()
+        return " ".join(words)
     
     @staticmethod
     def _load_wordlist() -> list[str]:
@@ -1329,18 +1333,6 @@ class SecureChatProtocol:
             "action": "commit",
         }
     
-    @staticmethod
-    def process_rekey_commit(message: dict) -> dict:
-        """Process a REKEY commit on the responder; return a commit_ack to be sent under old key.
-        Switching to the new keys should happen immediately after sending the ack.
-        """
-        if message.get("type") != MessageType.REKEY or message.get("action") != "commit":
-            raise ValueError("Invalid REKEY commit message")
-        
-        return {
-            "type":   MessageType.REKEY,
-            "action": "commit_ack",
-        }
     
     # File transfer methods
     def create_file_metadata_message(self, file_path: str,

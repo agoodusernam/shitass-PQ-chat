@@ -917,7 +917,7 @@ class SecureChatClient:
             # Send commit under old key; do not switch yet (wait for ack)
             self.protocol.queue_message(("encrypt_json", commit))
         elif action == "commit":
-            ack = self.protocol.process_rekey_commit(inner)
+            ack = {"type": MessageType.REKEY, "action": "commit_ack",}
             # Send ack under old key, then switch to new keys
             self.protocol.queue_message(("encrypt_json_then_switch", ack))
             self.display_system_message("Rekey completed successfully.")
