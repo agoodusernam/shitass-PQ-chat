@@ -35,7 +35,7 @@ try:
     from cryptography.hazmat.primitives.padding import PKCS7
     
     from cryptography.hazmat.primitives import hashes
-    from cryptography.hazmat.primitives.kdf.hkdf import HKDF, HKDFExpand
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
     from cryptography.hazmat.primitives.hmac import HMAC
     
     from cryptography.hazmat.primitives.constant_time import bytes_eq
@@ -46,7 +46,7 @@ except ImportError as exc_:
     raise ImportError("Please install the required libraries with pip install -r requirements.txt") from exc_
 
 # Protocol constants
-PROTOCOL_VERSION: Final[str] = "6.0.2"
+PROTOCOL_VERSION: Final[str] = "7.0.1"
 # Protocol compatibility is denoted by version number
 # Breaking.Minor.Patch - only Breaking versions are checked for compatibility.
 # Breaking version changes introduce breaking changes that are not compatible with previous versions of the same major version.
@@ -115,7 +115,7 @@ class DoubleEncryptor:
         aes_nonce = xor_bytes(nonce, self._key[:12])
         chacha_nonce = xor_bytes(nonce, self._key[-12:])
         
-        layer0 = xor_bytes(padded_data, self._derive_OTP_keystream(len(padded_data)))
+        layer0 = xor_bytes(padded_data, self._derive_OTP_keystream(len(padded_data), aes_nonce + chacha_nonce))
         layer1 = self._aes.encrypt(aes_nonce, layer0, associated_data)
         layer2 = self._chacha.encrypt(chacha_nonce, layer1, associated_data)
         return layer2
@@ -127,15 +127,18 @@ class DoubleEncryptor:
         
         layer2 = self._chacha.decrypt(chacha_nonce, data, associated_data)
         layer1 = self._aes.decrypt(aes_nonce, layer2, associated_data)
-        layer0 = xor_bytes(layer1, self._derive_OTP_keystream(len(layer1)))
-
+        layer0 = xor_bytes(layer1, self._derive_OTP_keystream(len(layer1), aes_nonce + chacha_nonce))
+        
         return unpadder.update(layer0) + unpadder.finalize()
     
-    def _derive_OTP_keystream(self, length: int) -> bytes:
+    def _derive_OTP_keystream(self, length: int, additional_salt: bytes) -> bytes:
         """Generate keystream from HQC shared secret using message counter."""
         
         # Mix: HQC secret + message counter
-        hasher = hashlib.shake_256(self._OTP_secret + self.message_counter.to_bytes(32, 'big'))
+        hasher = hashlib.shake_256()
+        hasher.update(self._OTP_secret)
+        hasher.update(additional_salt)
+        hasher.update(self.message_counter.to_bytes(8, byteorder="little"))
         return hasher.digest(length)
 
     def __del__(self):
@@ -1523,8 +1526,10 @@ class SecureChatProtocol:
             total_chunks = (file_size + SEND_CHUNK_SIZE - 1) // SEND_CHUNK_SIZE
             total_processed_size = file_size if not effective_compress else int(file_size * 0.85)
         
-        # Generate unique transfer ID
-        transfer_id: str = hashlib.sha256(f"{file_name}{file_size}{file_hash.hexdigest()}".encode()).hexdigest()[:16]
+        # Generate unique transfer ID. It should be unique but does not have to be cryptographically secure.
+        # SHA256 just happens to be fast, and its outputs are likely unique enough for this purpose.
+        transfer_id: str = hashlib.sha256(f"{file_name}{file_size}{file_hash.hexdigest()}".encode(),
+                                          usedforsecurity=False).hexdigest()[:32]
         
         metadata: FileMetadata = {
             "transfer_id":    transfer_id,
@@ -1609,7 +1614,7 @@ class SecureChatProtocol:
         encryptor = DoubleEncryptor(message_key, self._hqc_secret, self.message_counter)
         ciphertext = encryptor.encrypt(nonce, plaintext, aad)
         
-        # This may or may not actually remove it from memory but it's better than nothing
+        # This may or may not actually remove it from memory, but it's better than nothing
         message_key = b'\x00' * len(message_key)
         del message_key
         

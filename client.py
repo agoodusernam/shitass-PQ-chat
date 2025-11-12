@@ -781,7 +781,7 @@ class SecureChatClient:
             metadata = self.protocol.create_file_metadata_message(file_path, compress=compress)
             
             # Use the effective compression decided by the protocol (auto-detects incompressible types)
-            compress = bool(metadata.get("compressed", True))
+            compress = metadata["compressed"]
             
             # Store file path for later sending
             transfer_id = metadata["transfer_id"]
@@ -795,8 +795,7 @@ class SecureChatClient:
             # Send metadata to peer via queue (loop will encrypt)
             self.protocol.queue_message(("encrypt_json", metadata_message))
             compression_text = "compressed" if compress else "uncompressed"
-            print(
-                    f"File transfer request sent: {metadata['filename']} ({metadata['file_size']} bytes, {compression_text})")
+            print(f"File transfer request sent: {metadata['filename']} ({metadata['file_size']} bytes, {compression_text})")
         
         except Exception as e:
             print(f"Failed to send file: {e}")
