@@ -3,6 +3,7 @@
 import base64
 import os
 import json
+import secrets
 import socket
 import struct
 import hashlib
@@ -20,9 +21,6 @@ from collections.abc import Generator, Buffer
 from collections import OrderedDict
 import binascii
 
-from cryptography.exceptions import InvalidTag
-from cryptography.hazmat.primitives.kdf.concatkdf import ConcatKDFHash
-
 import config_handler
 import config_manager
 import configs
@@ -30,14 +28,19 @@ assert config_manager  # silence unused import warning
 
 
 try:
-    from kyber_py.ml_kem import ML_KEM_1024 # type: ignore # TODO: Switch to production ready library
-    from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305, AESGCMSIV
-    from cryptography.hazmat.primitives.kdf.hkdf import HKDF, HKDFExpand
-    from cryptography.hazmat.primitives import hashes
+    from pqcrypto.kem import ml_kem_1024, hqc_256 # type: ignore # Still not a production ready, but better than before
     from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
-    from cryptography.hazmat.primitives.hmac import HMAC
-    from cryptography.hazmat.primitives.constant_time import bytes_eq
+    
+    from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305, AESGCMSIV
     from cryptography.hazmat.primitives.padding import PKCS7
+    
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF, HKDFExpand
+    from cryptography.hazmat.primitives.hmac import HMAC
+    
+    from cryptography.hazmat.primitives.constant_time import bytes_eq
+    
+    from cryptography.exceptions import InvalidTag
 except ImportError as exc_:
     print("Required cryptographic libraries not found.")
     raise ImportError("Please install the required libraries with pip install -r requirements.txt") from exc_
@@ -64,45 +67,76 @@ INCOMPRESSIBLE_EXTENSIONS: Final[set[str]] = {
 
 class DoubleEncryptor:
     """
-    Provides double encryption and decryption using AES-GCM-SIV and ChaCha20-Poly1305.
+    Provides an authenticated two-AEAD encryption scheme with an additional OTP-like keystream pre-mask.
+
+    Components:
+        - OTP-like pre-mask: Before AEAD, the PKCS7-padded plaintext is XORed with a keystream derived
+          from `OTP_secret`, the per-message counter, and the payload length. The keystream is produced
+          via KDF/HMAC primitives and is deterministic per message/length. This is not an
+          information-theoretic OTP, but a KDF-based stream that adds defence in depth.
+        - Double AEAD: The masked payload is then encrypted with AES-GCM-SIV and ChaCha20-Poly1305.
+          Nonces for each layer are derived by XORing the caller-provided 12-byte nonce with halves of
+          the 64-byte key to reduce nonce misuse risk (even if the provided nonce repeats).
+
+    Key material:
+        - Requires a 64-byte key: first 32 bytes for AES-GCM-SIV, last 32 bytes for ChaCha20-Poly1305.
+        - `OTP_secret` is a separate secret (e.g. from HQC) used solely for keystream derivation.
     
-    Automatically adds and removes padding for the data.
+    Padding:
+        - Payloads are PKCS7-padded to 512 bytes to hinder message size analysis.
     
-    Rationale:
-        ChaCha20 is usually considered stronger than AES against certain side-channel attacks, and post quantum attacks.
-        AES has been vetted and more thoroughly analysed over the years and is hardware-accelerated on many platforms.
-        If either AES or ChaCha20 is broken, any messages will still be secure.
-        These ciphers also assume the nonce is public knowledge. Here, the nonce is not public knowledge.
-        This increases the security margin further, even if AES is broken completely with a private nonce and
-        ChaCha20 is broken but only with a public nonce, or vice versa, messages are still secure.
+    Associated Data (AAD):
+        - The same AAD is authenticated by both AEAD layers to protect metadata.
     
-        Padding to the next 512 bytes prevents (or at least severely hinders) message size analysis.
-        From the outside, messages with 1 character or 512 characters look indistinguishable.
+    Security notes:
+        - Keystream uniqueness relies on the tuple (`OTP_secret`, `message_counter`, payload length).
+          Do not reuse counters with the same `OTP_secret`.
+        - As long as one of these algorithms stay secure, the scheme remains secure. Any two can be broken
+          and any data is still unreadable without the key
     """
-    def __init__(self, key: bytes):
+    def __init__(self, key: bytes, OTP_secret: bytes, message_counter: int):
+        """
+        Args:
+            key: 64 bytes. First 32 bytes for AES-GCM-SIV, last 32 bytes for ChaCha20-Poly1305.
+            OTP_secret: Secret seed used to derive the OTP-like keystream that pre-masks the padded data.
+            message_counter: Monotonically increasing counter mixed into the keystream to ensure per-message
+                             uniqueness.
+        """
         self._key = key
-        key1_hkdf = ConcatKDFHash(algorithm=hashes.SHA512(), length=32, otherinfo=b"AES_key_kdf")
-
-        key2_hkdf = HKDFExpand(algorithm=hashes.SHA3_512(), length=32, info=b"ChaCha_key_hkdf")
-
-        self._aes = AESGCMSIV(key1_hkdf.derive(self._key[16:]))
-        self._chacha = ChaCha20Poly1305(key2_hkdf.derive(self._key[:16]))
+        self._aes = AESGCMSIV(key[:32])
+        self._chacha = ChaCha20Poly1305(key[32:])
+        self._OTP_secret = OTP_secret
+        self.message_counter = message_counter
         
     def encrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None) -> bytes:
         padder = PKCS7(512).padder()
         padded_data = padder.update(data) + padder.finalize()
         
-        new_nonce = xor_bytes(nonce, self._key[:12])
-        layer1 = self._aes.encrypt(new_nonce, padded_data, associated_data)
-        ct = self._chacha.encrypt(xor_bytes(new_nonce, self._key[-12:]), layer1, associated_data)
-        return ct
+        aes_nonce = xor_bytes(nonce, self._key[:12])
+        chacha_nonce = xor_bytes(nonce, self._key[-12:])
+        
+        layer0 = xor_bytes(padded_data, self._derive_OTP_keystream(len(padded_data)))
+        layer1 = self._aes.encrypt(aes_nonce, layer0, associated_data)
+        layer2 = self._chacha.encrypt(chacha_nonce, layer1, associated_data)
+        return layer2
     
     def decrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None) -> bytes:
-        new_nonce = xor_bytes(nonce, self._key[:12])
-        layer1 = self._chacha.decrypt(xor_bytes(new_nonce, self._key[-12:]), data, associated_data)
-        padded_data = self._aes.decrypt(new_nonce, layer1, associated_data)
+        aes_nonce = xor_bytes(nonce, self._key[:12])
+        chacha_nonce = xor_bytes(nonce, self._key[-12:])
         unpadder = PKCS7(512).unpadder()
-        return unpadder.update(padded_data) + unpadder.finalize()
+        
+        layer2 = self._chacha.decrypt(chacha_nonce, data, associated_data)
+        layer1 = self._aes.decrypt(aes_nonce, layer2, associated_data)
+        layer0 = xor_bytes(layer1, self._derive_OTP_keystream(len(layer1)))
+
+        return unpadder.update(layer0) + unpadder.finalize()
+    
+    def _derive_OTP_keystream(self, length: int) -> bytes:
+        """Generate keystream from HQC shared secret using message counter."""
+        
+        # Mix: HQC secret + message counter
+        hasher = hashlib.shake_256(self._OTP_secret + self.message_counter.to_bytes(32, 'big'))
+        return hasher.digest(length)
 
     def __del__(self):
         # This is not particularly secure, but it's better than nothing
@@ -411,13 +445,19 @@ class SecureChatProtocol:
         self._send_dummy_messages: bool = configs.SEND_DUMMY_PACKETS
         
         # Cryptographic identity + peer info
-        self.own_public_key: bytes = bytes()
-        self.peer_public_key: bytes = bytes()
+        self.mlkem_public_key: bytes = bytes()
+        self.mlkem_private_key: bytes = bytes()
+        self.hqc_public_key: bytes = bytes()
+        self.hqc_private_key: bytes = bytes()
+        
+        self.peer_mlkem_public_key: bytes = bytes()
+        self.peer_hqc_public_key: bytes = bytes()
         self.peer_key_verified: bool = False
         
         # Session keys
-        self.shared_key: bytes = bytes()
-        self.encryption_key: bytes = bytes()
+        self.shared_key: bool = False
+        self.verification_key: bytes = bytes()
+        self._hqc_secret: bytes = bytes()
         
         # Ratchet state (symmetric)
         self.message_counter: int = 0
@@ -441,20 +481,38 @@ class SecureChatProtocol:
         self.pending_encryption_key: bytes = bytes()
         self.pending_send_chain_key: bytes = bytes()
         self.pending_receive_chain_key: bytes = bytes()
+        self.pending_hqc_secret: bytes = bytes()
         self.pending_message_counter: int = 0
         self.pending_peer_counter: int = 0
-        self.rekey_private_key: bytes = bytes()
+        self.rekey_mlkem_private_key: bytes = bytes()
+        self.rekey_hqc_private_key: bytes = bytes()
+        self.rekey_dh_public: X25519PublicKey | None = None
+        self.rekey_dh_public_bytes: bytes = bytes()
+        self.rekey_dh_private: X25519PrivateKey | None = None
         
         # File transfer state
         self.received_chunks: dict[str, set[int]] = {}
         self.temp_file_paths: dict[str, str] = {}
         self.open_file_handles: dict[str, typing.IO] = {}
         self.sending_transfers: dict[str, FileMetadata] = {}
+        
+        # Automatic rekey tracking
+        self.messages_since_last_rekey: int = 0
+        # Randomize the rekey interval by ±20% of the base value
+        base_interval = configs.REKEY_INTERVAL
+        variation = int(base_interval * 0.2)
+        self.rekey_interval: int = base_interval + (secrets.randbelow(variation + 1) - variation)
     
     @property
     def encryption_ready(self) -> bool:
         """Check if encryption is ready (shared key and chain keys established)."""
         return bool(self.shared_key and self.send_chain_key and self.receive_chain_key)
+    
+    def should_auto_rekey(self) -> bool:
+        """Check if automatic rekey should be initiated based on message count."""
+        return (self.messages_since_last_rekey >= self.rekey_interval and 
+                not self.rekey_in_progress and 
+                self.encryption_ready)
     
     @property
     def send_dummy_messages(self) -> bool:
@@ -467,16 +525,22 @@ class SecureChatProtocol:
         self._send_dummy_messages = value
     
     def reset_key_exchange(self) -> None:
-        """Reset all cryptographic state to initial values for key exchange restart."""
+        """
+        Reset all cryptographic state to initial values for key exchange restart.
+        
+        These values will be rewritten quickly, so it's not necessary to zero them manually.
+        Even that likely wouldn't actually clear the data from RAM
+        """
         # Stop sender thread if running
         self.stop_sender_thread()
         
-        self.shared_key = bytes()
+        self.shared_key = False
         self.message_counter = 0
         self.peer_counter = 0
-        self.peer_public_key = bytes()
+        self.peer_mlkem_public_key = bytes()
         self.peer_key_verified = False
-        self.own_public_key = bytes()
+        self.mlkem_public_key = bytes()
+        self._hqc_secret = bytes()
         self.send_chain_key = bytes()
         self.receive_chain_key = bytes()
         # Reset DH ephemeral keys
@@ -707,24 +771,26 @@ class SecureChatProtocol:
         if post_action == "switch_keys":
             self.activate_pending_keys()
     
-    def generate_keypair(self) -> tuple[bytes, bytes]:
+    def generate_keys(self) -> bytes:
         """Generate ML-KEM keypair for key exchange."""
-        public_key, private_key = ML_KEM_1024.keygen()
-        self.own_public_key = public_key
-        return public_key, private_key
+        self.mlkem_public_key, self.mlkem_private_key = ml_kem_1024.generate_keypair()
+        self.dh_private_key = X25519PrivateKey.generate()
+        self.dh_public_key_bytes = self.dh_private_key.public_key().public_bytes_raw()
+        self.hqc_public_key, self.hqc_private_key = hqc_256.generate_keypair()
+        return self.mlkem_public_key
     
     def derive_keys(self, shared_secret: bytes) -> bytes:
         """Derive encryption and MAC keys from shared secret using HKDF."""
         # Sort public keys lexicographically for deterministic order
-        keys = sorted([self.own_public_key, self.peer_public_key])
+        keys = sorted([self.mlkem_public_key, self.peer_mlkem_public_key])
         combined_keys = keys[0] + keys[1]
-        salt = hashlib.sha512(combined_keys + b"encryption_key_salt").digest()[:32]
+        salt = hashlib.sha512(combined_keys + b"verification_key_salt").digest()[:32]
         
         hkdf = HKDF(
                 algorithm=hashes.SHA512(),
-                length=32,
+                length=64,
                 salt=salt,
-                info=b"derive_root_encryption_mac_keys"
+                info=b"derive_root_mac_keys"
         )
         derived = hkdf.derive(shared_secret)
     
@@ -736,9 +802,10 @@ class SecureChatProtocol:
     def _initialize_chain_keys(self, shared_secret: bytes) -> None:
         """Initialize separate chain keys for sending and receiving."""
         # Sort public keys lexicographically for deterministic order
-        keys = sorted([self.own_public_key, self.peer_public_key])
-        combined_keys = keys[0] + keys[1]
-        salt = hashlib.sha512(combined_keys + b"chain_key_salt").digest()[:32]
+        keys = sorted([self.mlkem_public_key, self.peer_mlkem_public_key, self.dh_public_key_bytes,
+                       self.peer_dh_public_key_bytes, self.hqc_public_key, self.peer_hqc_public_key])
+        combined_keys = b''.join(keys)
+        salt = hashlib.sha512(combined_keys + b"chain_key_salt").digest()
         
         # Derive a root chain key that both parties will use as the starting point
         chain_hkdf = HKDF(
@@ -761,7 +828,7 @@ class SecureChatProtocol:
         """Derive a message key from the chain key and counter."""
         hkdf = HKDF(
                 algorithm=hashes.SHA512(),
-                length=32,
+                length=64,
                 salt=counter.to_bytes(8, byteorder="little"),
                 info=f"message_key_{counter}".encode()
         )
@@ -869,15 +936,29 @@ class SecureChatProtocol:
         Includes both ML-KEM public keys and the ephemeral X25519 DH public keys from the key exchange.
         """
         # Ensure we have all required key materials
-        if not self.own_public_key or not self.peer_public_key or not self.peer_dh_public_key_bytes:
-            raise ValueError("Both public keys must be available")
+        if not all([self.mlkem_public_key, self.peer_mlkem_public_key, self.dh_public_key_bytes,
+                    self.peer_dh_public_key_bytes, self.hqc_public_key, self.peer_hqc_public_key]):
+            if not self.mlkem_public_key:
+                raise ValueError("Own ML-KEM public key not available")
+            if not self.peer_mlkem_public_key:
+                raise ValueError("Peer ML-KEM public key not available")
+            if not self.dh_public_key_bytes:
+                raise ValueError("Own DH public key bytes not available")
+            if not self.peer_dh_public_key_bytes:
+                raise ValueError("Peer DH public key bytes not available")
+            if not self.hqc_public_key:
+                raise ValueError("Own HQC public key not available")
+            if not self.peer_hqc_public_key:
+                raise ValueError("Peer HQC public key not available")
         
         # Build a deterministic, order-independent combination of all four keys
         components: list[bytes] = [
-            self.own_public_key,
-            self.peer_public_key,
+            self.mlkem_public_key,
+            self.peer_mlkem_public_key,
             self.dh_public_key_bytes,
             self.peer_dh_public_key_bytes,
+            self.hqc_public_key,
+            self.peer_hqc_public_key,
         ]
         # Sort lexicographically to make result independent of initiator/responder roles
         components.sort()
@@ -906,24 +987,24 @@ class SecureChatProtocol:
     
     def create_key_exchange_init(self, public_key: bytes) -> bytes:
         """Create initial key exchange message with X25519 DH public key."""
-        # Generate ephemeral X25519 keypair for this session init
-        self.dh_private_key = X25519PrivateKey.generate()
-        self.dh_public_key_bytes = self.dh_private_key.public_key().public_bytes_raw()
         message = {
             "version":       PROTOCOL_VERSION,
             "type":          MessageType.KEY_EXCHANGE_INIT,
-            "public_key":    base64.b64encode(public_key).decode('utf-8'),
+            "mlkem_public_key":    base64.b64encode(public_key).decode('utf-8'),
             "dh_public_key": base64.b64encode(self.dh_public_key_bytes).decode('utf-8'),
+            "hqc_public_key": base64.b64encode(self.hqc_public_key).decode('utf-8')
         }
         return json.dumps(message).encode('utf-8')
     
-    def create_key_exchange_response(self, ciphertext: bytes) -> bytes:
-        """Create key exchange response message including our X25519 DH public key."""
+    def create_key_exchange_response(self, mlkem_ciphertext: bytes, hqc_ciphertext: bytes) -> bytes:
+        """Create key exchange response message including our X25519 DH public key, mlkem and hqc ciphertext, and pk"""
         message = {
             "version":       PROTOCOL_VERSION,
             "type":          MessageType.KEY_EXCHANGE_RESPONSE,
-            "ciphertext":    base64.b64encode(ciphertext).decode('utf-8'),
-            "public_key":    base64.b64encode(self.own_public_key).decode('utf-8'),
+            "mlkem_ciphertext":    base64.b64encode(mlkem_ciphertext).decode('utf-8'),
+            "mlkem_public_key":    base64.b64encode(self.mlkem_public_key).decode('utf-8'),
+            "hqc_ciphertext": base64.b64encode(hqc_ciphertext).decode('utf-8'),
+            "hqc_public_key": base64.b64encode(self.hqc_public_key).decode('utf-8'),
             "dh_public_key": base64.b64encode(self.dh_public_key_bytes).decode('utf-8'),
         }
         return json.dumps(message).encode('utf-8')
@@ -938,19 +1019,19 @@ class SecureChatProtocol:
         ).derive(dh_shared)
     
     def process_key_exchange_init(self, data: bytes) -> tuple[bytes, bytes, str]:
-        """Process initial key exchange and return combined shared key, KEM ciphertext, and version warning if any.
+        """Process initial key exchange and return HQC ciphertext, KEM ciphertext, and version warning if any.
         
         Returns:
-            tuple: (combined_shared_secret, ciphertext, warning_message)
-                  warning_message is None if protocol versions match
+            tuple: (hqc_ciphertext, mlkem_ciphertext, warning_message)
+                  warning_message is "" if protocol versions match
         """
         try:
             message = json.loads(data)
             peer_version = str(message["version"])
             self.peer_version = peer_version
-            kem_public_key = base64.b64decode(message["public_key"], validate=True)
-            peer_dh_pub_b64 = message["dh_public_key"]
-            peer_dh_pub_bytes = base64.b64decode(peer_dh_pub_b64, validate=True)
+            kem_public_key = base64.b64decode(message["mlkem_public_key"], validate=True)
+            peer_dh_pub_bytes = base64.b64decode(message["dh_public_key"], validate=True)
+            hqc_public_key = base64.b64decode(message["hqc_public_key"], validate=True)
         except UnicodeDecodeError as e:
             raise ValueError("Key exchange init message contains invalid UTF-8 characters") from e
         except json.JSONDecodeError as e:
@@ -967,13 +1048,14 @@ class SecureChatProtocol:
                 f"WARNING: Protocol version mismatch. Local: {PROTOCOL_VERSION}, Peer: {peer_version}. " +
                 "Communication may not work properly.")
         # Store peer's KEM public key for verification
-        self.peer_public_key = kem_public_key
+        self.peer_mlkem_public_key = kem_public_key
+        self.peer_hqc_public_key = hqc_public_key
         # Store peer's DH public key for fingerprinting/verification context
         self.peer_dh_public_key_bytes = peer_dh_pub_bytes
         
         # Generate our own KEM keypair if we don't have one yet (for verification purposes)
-        if not self.own_public_key:
-            self.own_public_key, _ = self.generate_keypair()
+        if not self.mlkem_public_key or not self.hqc_public_key:
+            self.generate_keys()
         
         # Generate our ephemeral X25519 keypair for DH and compute DH shared secret
         self.dh_private_key = X25519PrivateKey.generate()
@@ -982,22 +1064,23 @@ class SecureChatProtocol:
         dh_shared_secret = self.dh_private_key.exchange(peer_dh_pub)
         
         # Perform KEM encapsulation to obtain KEM shared secret and ciphertext to send back
-        kem_shared_secret, ciphertext = ML_KEM_1024.encaps(kem_public_key)
+        mlkem_ciphertext, kem_shared_secret = ml_kem_1024.encrypt(kem_public_key)
+        hqc_ciphertext, self._hqc_secret = hqc_256.encrypt(hqc_public_key)
         
         # Combine secrets
         combined_shared = self.derive_combined_shared_secret(kem_shared_secret, dh_shared_secret)
         
         # Derive keys from combined shared secret
-        self.encryption_key = self.derive_keys(combined_shared)
-        self.shared_key = combined_shared
+        self.verification_key = self.derive_keys(combined_shared)
+        self.shared_key = True
         
         # Initialise message-phase Double Ratchet baseline
         self.msg_recv_private = self.dh_private_key
         self.msg_peer_base_public = self.peer_dh_public_key_bytes
         
-        return combined_shared, ciphertext, version_warning
+        return hqc_ciphertext, mlkem_ciphertext, version_warning
     
-    def process_key_exchange_response(self, data: bytes, private_key: bytes) -> tuple[bytes, str | None]:
+    def process_key_exchange_response(self, data: bytes) -> str | None:
         """Process key exchange response and derive combined shared key using KEM ⊕ X25519 DH.
         
         Returns:
@@ -1009,10 +1092,11 @@ class SecureChatProtocol:
         """
         try:
             message = json.loads(data)
-            ciphertext = base64.b64decode(message["ciphertext"], validate=True)
-            self.peer_public_key = base64.b64decode(message["public_key"], validate=True)
-            peer_dh_pub_b64 = message["dh_public_key"]
-            peer_dh_pub_bytes = base64.b64decode(peer_dh_pub_b64, validate=True)
+            mlkem_ciphertext = base64.b64decode(message["mlkem_ciphertext"], validate=True)
+            self.peer_mlkem_public_key = base64.b64decode(message["mlkem_public_key"], validate=True)
+            hqc_ciphertext = base64.b64decode(message["hqc_ciphertext"], validate=True)
+            self.peer_hqc_public_key = base64.b64decode(message["hqc_public_key"], validate=True)
+            peer_dh_pub_bytes = base64.b64decode(message["dh_public_key"], validate=True)
         except (UnicodeDecodeError, binascii.Error):
             raise DecodeError("Key exchange response decode error, UnicodeDecodeError")
         except json.JSONDecodeError:
@@ -1035,18 +1119,19 @@ class SecureChatProtocol:
         peer_dh_pub = X25519PublicKey.from_public_bytes(peer_dh_pub_bytes)
         dh_shared_secret = self.dh_private_key.exchange(peer_dh_pub)
         
-        kem_shared_secret = ML_KEM_1024.decaps(private_key, ciphertext)
+        kem_shared_secret = ml_kem_1024.decrypt(self.mlkem_private_key, mlkem_ciphertext)
         combined_shared = self.derive_combined_shared_secret(kem_shared_secret, dh_shared_secret)
+        self._hqc_secret = hqc_256.decrypt(self.hqc_private_key, hqc_ciphertext)
         
         # Derive keys from combined shared secret
-        self.encryption_key = self.derive_keys(combined_shared)
-        self.shared_key = combined_shared
+        self.verification_key = self.derive_keys(combined_shared)
+        self.shared_key = True
         
         # Initialize message-phase Double Ratchet baseline
         self.msg_recv_private = self.dh_private_key
         self.msg_peer_base_public = self.peer_dh_public_key_bytes
         
-        return combined_shared, version_warning
+        return version_warning
 
     
     def encrypt_message(self, plaintext: str) -> bytes:
@@ -1071,6 +1156,7 @@ class SecureChatProtocol:
             raise ValueError("No shared key or send chain key established")
         
         self.message_counter += 1
+        self.messages_since_last_rekey += 1
         
         # Generate ephemeral X25519 key for this message and compute DH with peer's static session public key
         eph_priv = X25519PrivateKey.generate()
@@ -1093,7 +1179,6 @@ class SecureChatProtocol:
         plaintext_bytes = plaintext.encode('utf-8')
         
         # Create AAD from message metadata for authentication
-        encryptor = DoubleEncryptor(message_key)
         nonce = os.urandom(12)
         aad_data: dict[str, MessageType | int | str] = {
             "type":          MessageType.ENCRYPTED_MESSAGE,
@@ -1102,9 +1187,10 @@ class SecureChatProtocol:
             "dh_public_key": base64.b64encode(eph_pub_bytes).decode('utf-8')
         }
         aad: bytes = json.dumps(aad_data).encode('utf-8')
-        
+        encryptor = DoubleEncryptor(message_key, self._hqc_secret, message_counter=self.message_counter)
         # Encrypt with AES-GCM using the unique message key and AAD
         ciphertext = encryptor.encrypt(nonce, plaintext_bytes, aad)
+        del encryptor
         
         # This may or may not actually remove it from memory but it's better than nothing
         message_key = b'\x00' * len(message_key)
@@ -1119,7 +1205,7 @@ class SecureChatProtocol:
             "dh_public_key": base64.b64encode(eph_pub_bytes).decode('utf-8')
         }
         
-        verif_hasher = HMAC(self.encryption_key, hashes.SHA512())
+        verif_hasher = HMAC(self.verification_key, hashes.SHA512())
         # Include dh_public_key in verification to authenticate the ratchet key
         verif_hasher.update(json.dumps({
             "counter":       encrypted_message["counter"],
@@ -1153,7 +1239,7 @@ class SecureChatProtocol:
         except KeyError as e:
             raise ValueError("Message missing field, message dropped") from e
         
-        verif_hasher = HMAC(self.encryption_key, hashes.SHA512())
+        verif_hasher = HMAC(self.verification_key, hashes.SHA512())
         # Include dh_public_key in verification to authenticate the ratchet key
         verif_hasher.update(json.dumps({
             "counter":       counter,
@@ -1213,8 +1299,9 @@ class SecureChatProtocol:
         aad = json.dumps(aad_data).encode('utf-8')
         
         # Decrypt with the derived message key and verify AAD
+        decryptor = DoubleEncryptor(message_key, self._hqc_secret, counter)
         try:
-            decrypted_data = DoubleEncryptor(message_key).decrypt(nonce, ciphertext, aad)
+            decrypted_data = decryptor.decrypt(nonce, ciphertext, aad)
         except InvalidTag:
             # May or may not actually remove it from memory but it's better than nothing
             message_key = b'\x00' * len(message_key)
@@ -1240,6 +1327,8 @@ class SecureChatProtocol:
             self.peer_counter = counter
             # Store peer's latest public key for our next send
             self.msg_peer_base_public = peer_dh_pub_bytes
+            # Track message for automatic rekey
+            self.messages_since_last_rekey += 1
         
         # This may or may not actually remove it from memory but it's better than nothing
         message_key = b'\x00' * len(message_key)
@@ -1257,74 +1346,132 @@ class SecureChatProtocol:
             # Incomplete pending state, do not switch
             return
         # Activate
-        self.shared_key = self.pending_shared_key
-        self.encryption_key = self.pending_encryption_key
+        self.shared_key = True
+        self.verification_key = self.pending_encryption_key
         self.send_chain_key = self.pending_send_chain_key
         self.receive_chain_key = self.pending_receive_chain_key
         self.message_counter = 0
         self.peer_counter = 0
+        # Reset automatic rekey counter
+        self.messages_since_last_rekey = 0
+        # Activate HQC secret if present
+        if self.pending_hqc_secret:
+            self._hqc_secret = self.pending_hqc_secret
         # Clear pending state
         self.pending_shared_key = bytes()
         self.pending_encryption_key = bytes()
         self.pending_send_chain_key = bytes()
         self.pending_receive_chain_key = bytes()
+        self.pending_hqc_secret = bytes()
         self.pending_message_counter = 0
         self.pending_peer_counter = 0
-        self.rekey_private_key = bytes()
+        # Clear rekey ephemeral keys
+        self.rekey_mlkem_private_key = bytes()
+        self.rekey_hqc_private_key = bytes()
+        self.rekey_dh_private = None
+        self.rekey_dh_public = None
+        self.rekey_dh_public_bytes = bytes()
         self.rekey_in_progress = False
     
-    def create_rekey_init(self) -> dict:
+    def create_rekey_init(self) -> dict[str, str | int]:
         """Create a REKEY init payload to be sent inside an encrypted message using the old key."""
         # Generate ephemeral KEM keypair for this rekey only
-        public_key, private_key = ML_KEM_1024.keygen()
-        self.rekey_private_key = private_key
+        mlkem_public_key, mlkem_private_key = ml_kem_1024.generate_keypair()
+        hqc_public_key, hqc_private_key = hqc_256.generate_keypair()
+        dh_private = X25519PrivateKey.generate()
+        dh_public = dh_private.public_key()
+        
+        self.rekey_mlkem_private_key = mlkem_private_key
+        self.rekey_hqc_private_key = hqc_private_key
+        self.rekey_dh_private = dh_private
+        self.rekey_dh_public = dh_public
+        self.rekey_dh_public_bytes = dh_public.public_bytes_raw()
         self.rekey_in_progress = True
         return {
             "type":       MessageType.REKEY,
             "action":     "init",
-            "public_key": base64.b64encode(public_key).decode('utf-8'),
+            "mlkem_public_key": base64.b64encode(mlkem_public_key).decode('utf-8'),
+            "hqc_public_key":   base64.b64encode(hqc_public_key).decode('utf-8'),
+            "dh_public_key":    base64.b64encode(dh_public.public_bytes_raw()).decode('utf-8')
         }
     
-    def process_rekey_init(self, message: dict) -> dict:
+    def process_rekey_init(self, message: dict[Any, Any]) -> dict[str, int | str]:
         """Process a REKEY init payload; derive pending keys and return REKEY response payload.
         This must be called on the responder, and the response must be sent under the old key.
         """
         try:
-            peer_ephemeral_pub = base64.b64decode(message["public_key"], validate=True)
+            peer_mlkem_public_key = base64.b64decode(message["mlkem_public_key"], validate=True)
+            peer_hqc_public_key = base64.b64decode(message["hqc_public_key"], validate=True)
+            peer_dh_public_key_bytes = base64.b64decode(message["dh_public_key"], validate=True)
+            peer_dh_public_key = X25519PublicKey.from_public_bytes(peer_dh_public_key_bytes)
         except (binascii.Error, KeyError):
             raise DecodeError("REKEY init decode error, binascii.Error")
         # Produce new shared secret and ciphertext for the initiator
-        shared_secret, ciphertext = ML_KEM_1024.encaps(peer_ephemeral_pub)
+        mlkem_ciphertext, mlkem_shared_secret = ml_kem_1024.encrypt(peer_mlkem_public_key)
+        hqc_ciphertext, hqc_secret = hqc_256.encrypt(peer_hqc_public_key)
+        self.rekey_dh_private = X25519PrivateKey.generate()
+        dh_shared_secret = self.rekey_dh_private.exchange(peer_dh_public_key)
+        # Combine ML-KEM and DH secrets (HQC stored separately like in initial key exchange)
+        combined_shared = self.derive_combined_shared_secret(mlkem_shared_secret, dh_shared_secret)
         # Store pending derived keys without touching active ones
-        enc_key, root_chain = self._derive_keys_and_chain(shared_secret)
-        self.pending_shared_key = shared_secret
+        enc_key, root_chain = self._derive_keys_and_chain(combined_shared)
+        self.pending_shared_key = combined_shared
         self.pending_encryption_key = enc_key
         self.pending_send_chain_key = root_chain
         self.pending_receive_chain_key = root_chain
+        self.pending_hqc_secret = hqc_secret
         self.pending_message_counter = 0
         self.pending_peer_counter = 0
         self.rekey_in_progress = True
         return {
             "type":       MessageType.REKEY,
             "action":     "response",
-            "ciphertext": base64.b64encode(ciphertext).decode('utf-8'),
+            "mlkem_ciphertext": base64.b64encode(mlkem_ciphertext).decode('utf-8'),
+            "hqc_ciphertext":   base64.b64encode(hqc_ciphertext).decode('utf-8'),
+            "dh_public_key":    base64.b64encode(self.rekey_dh_private.public_key().public_bytes_raw()).decode('utf-8'),
         }
     
     def process_rekey_response(self, message: dict) -> dict:
         """Process a REKEY response payload on the initiator; set pending keys and return commit payload."""
-        if message.get("type") != MessageType.REKEY or message.get("action") != "response":
-            raise ValueError("Invalid REKEY response message")
-        if self.rekey_private_key is None:
-            raise ValueError("No ephemeral private key for REKEY response")
-        ciphertext = base64.b64decode(message.get("ciphertext", ""))
-        if not ciphertext:
-            raise ValueError("Missing ciphertext in REKEY response")
-        shared_secret = ML_KEM_1024.decaps(self.rekey_private_key, ciphertext)
-        enc_key, root_chain = self._derive_keys_and_chain(shared_secret)
-        self.pending_shared_key = shared_secret
+        if not self.rekey_mlkem_private_key:
+            raise ValueError("No ephemeral ML-KEM private key for REKEY response")
+        if not self.rekey_hqc_private_key:
+            raise ValueError("No ephemeral HQC private key for REKEY response")
+        if not self.rekey_dh_private:
+            raise ValueError("No ephemeral DH private key for REKEY response")
+        
+        try:
+            mlkem_ciphertext = base64.b64decode(message.get("mlkem_ciphertext", ""), validate=True)
+            hqc_ciphertext = base64.b64decode(message.get("hqc_ciphertext", ""), validate=True)
+            peer_dh_public_key_bytes = base64.b64decode(message.get("dh_public_key", ""), validate=True)
+        except binascii.Error:
+            raise DecodeError("REKEY response decode error, binascii.Error")
+        
+        if not mlkem_ciphertext:
+            raise ValueError("Missing mlkem_ciphertext in REKEY response")
+        if not hqc_ciphertext:
+            raise ValueError("Missing hqc_ciphertext in REKEY response")
+        if not peer_dh_public_key_bytes:
+            raise ValueError("Missing dh_public_key in REKEY response")
+        
+        # Decrypt ML-KEM and HQC ciphertexts
+        mlkem_shared_secret = ml_kem_1024.decrypt(self.rekey_mlkem_private_key, mlkem_ciphertext)
+        hqc_secret = hqc_256.decrypt(self.rekey_hqc_private_key, hqc_ciphertext)
+        
+        # Compute DH shared secret
+        peer_dh_public_key = X25519PublicKey.from_public_bytes(peer_dh_public_key_bytes)
+        dh_shared_secret = self.rekey_dh_private.exchange(peer_dh_public_key)
+        
+        # Combine ML-KEM and DH secrets (HQC stored separately like in initial key exchange)
+        combined_shared = self.derive_combined_shared_secret(mlkem_shared_secret, dh_shared_secret)
+        
+        # Derive keys and store pending state
+        enc_key, root_chain = self._derive_keys_and_chain(combined_shared)
+        self.pending_shared_key = combined_shared
         self.pending_encryption_key = enc_key
         self.pending_send_chain_key = root_chain
         self.pending_receive_chain_key = root_chain
+        self.pending_hqc_secret = hqc_secret
         self.pending_message_counter = 0
         self.pending_peer_counter = 0
         self.rekey_in_progress = True
@@ -1445,7 +1592,6 @@ class SecureChatProtocol:
         header_json = json.dumps(header).encode('utf-8')
         
         # Encrypt header and chunk data in one operation
-        encryptor = DoubleEncryptor(message_key)
         nonce = os.urandom(12)
         
         # Create AAD including eph pub to authenticate ratchet key
@@ -1460,8 +1606,8 @@ class SecureChatProtocol:
         # Combine header length + header + chunk data for encryption
         header_len = struct.pack('!H', len(header_json))  # 2 bytes for header length
         plaintext = header_len + header_json + chunk_data
+        encryptor = DoubleEncryptor(message_key, self._hqc_secret, self.message_counter)
         ciphertext = encryptor.encrypt(nonce, plaintext, aad)
-        del encryptor
         
         # This may or may not actually remove it from memory but it's better than nothing
         message_key = b'\x00' * len(message_key)
@@ -1609,9 +1755,9 @@ class SecureChatProtocol:
         aad = json.dumps(aad_data).encode('utf-8')
         
         # Decrypt the chunk payload with AAD verification
-        encryptor = DoubleEncryptor(message_key)
+        decryptor = DoubleEncryptor(message_key, self._hqc_secret, counter)
         try:
-            plaintext = encryptor.decrypt(nonce, ciphertext, aad)
+            plaintext = decryptor.decrypt(nonce, ciphertext, aad)
         except InvalidTag:
             message_key = b'\x00' * len(message_key)
             raise ValueError("File chunk decryption failed: InvalidTag")

@@ -141,13 +141,13 @@ def run_benchmark(num_messages: int, size_mode: str, min_size: int, max_size: in
     # Initialize protocols & perform key exchange
     proto_a = SecureChatProtocol()
     proto_b = SecureChatProtocol()
-    pub_a, priv_a = proto_a.generate_keypair()
+    pub_a = proto_a.generate_keys()
     init_msg = proto_a.create_key_exchange_init(pub_a)
-    shared_secret_b, ciphertext, _ = proto_b.process_key_exchange_init(init_msg)
-    resp_msg = proto_b.create_key_exchange_response(ciphertext)
-    shared_secret_a, _ = proto_a.process_key_exchange_response(resp_msg, priv_a)
+    hqc_ciphertext, mlkem_ciphertext, _ = proto_b.process_key_exchange_init(init_msg)
+    resp_msg = proto_b.create_key_exchange_response(mlkem_ciphertext, hqc_ciphertext)
+    proto_a.process_key_exchange_response(resp_msg)
     
-    assert shared_secret_a == shared_secret_b, "Shared secrets mismatch during setup"
+    assert proto_a.verification_key == proto_b.verification_key, "Shared secrets mismatch during setup"
     
     # Prepare size sequence
     sizes: list[int] = []

@@ -95,13 +95,10 @@ class SecureChatClient:
         self.active_file_metadata: dict[str, FileMetadata] = {}
         self._last_progress_shown: dict[str, float | int] = {}
         
-        # Key exchange state
-        self.private_key: bytes = bytes()
-        
         # Server version information
         self.server_protocol_version: str = "0.0.0"
         
-        # Rate limiting (pre-verification)
+        # Rate limiting
         self._rl_window_start: float = 0.0
         self._rl_count: int = 0
     
@@ -119,10 +116,14 @@ class SecureChatClient:
         return bool(self.file_transfer_active or self.voice_call_active or self.protocol.rekey_in_progress)
     
     @bypass_rate_limits.setter
-    def bypass_rate_limits(self, bypass: bool):
+    def bypass_rate_limits(self, bypass: bool) -> None:
         raise ValueError("Cannot set bypass_rate_limits directly.")
     
-    def close_audio(self):
+    @property
+    def has_priv_key(self) -> bool:
+        return bool(self.protocol.dh_private_key)
+    
+    def close_audio(self) -> None:
         pass
     
     @staticmethod
@@ -146,9 +147,10 @@ class SecureChatClient:
         
         match mt:
             case MessageType.KEY_EXCHANGE_INIT:
-                return base | {"public_key", "dh_public_key"}
+                return base | {"mlkem_public_key", "dh_public_key", "hqc_public_key"}
             case MessageType.KEY_EXCHANGE_RESPONSE:
-                return base | {"ciphertext", "public_key", "dh_public_key"}
+                return base | {"mlkem_ciphertext", "hqc_ciphertext", "mlkem_public_key", "hqc_public_key",
+                               "dh_public_key"}
             case MessageType.ENCRYPTED_MESSAGE:
                 return base | {"counter", "nonce", "ciphertext", "dh_public_key", "verification"}
             case MessageType.KEY_VERIFICATION:
@@ -278,9 +280,10 @@ class SecureChatClient:
                 return
             self._rl_count += 1
 
-        if len(message_data) > 8192 and not self.bypass_rate_limits:
+        if len(message_data) > 33260 and not self.bypass_rate_limits:
             # Prevent potential DoS with large messages
-            self.display_error_message("Received overly large message without key verification. Dropping.")
+            self.display_error_message("Received overly large message without key verification. Dropping." +
+                                       f" ({len(message_data)} bytes)")
             return
         
         # First, try to parse as JSON (for control messages including keepalive)
@@ -363,7 +366,7 @@ class SecureChatClient:
             self.display_error_message(f"Failed to send keepalive response: {err}")
             self.display_system_message("Server may disconnect after 3 keepalive failures.")
     
-    def handle_delivery_confirmation(self, message: dict) -> None:
+    def handle_delivery_confirmation(self, message: dict[Any, Any]) -> None:
         """
         Handle delivery confirmation messages from the other client.
         GUI exclusive
@@ -384,7 +387,7 @@ class SecureChatClient:
             
         """
         # Generate keypair
-        public_key, self.private_key = self.protocol.generate_keypair()
+        public_key = self.protocol.generate_keys()
         
         # Create key exchange init message
         init_message = self.protocol.create_key_exchange_init(public_key)
@@ -409,22 +412,21 @@ class SecureChatClient:
             It expects the message to contain the ciphertext that needs to be processed.
             The response will be sent back to the server to continue the key exchange.
         """
-        _, ciphertext, version_warning = self.protocol.process_key_exchange_init(message_data)
+        hqc_ciphertext, mlkem_ciphertext, version_warning = self.protocol.process_key_exchange_init(message_data)
         
         # Display version warning if present
         if version_warning:
             self.display_system_message(f"{version_warning}")
         
-        response = self.protocol.create_key_exchange_response(ciphertext)
+        response = self.protocol.create_key_exchange_response(mlkem_ciphertext, hqc_ciphertext)
         
         # Send response back through server
         send_message(self.socket, response)
     
     def handle_key_exchange_response(self, message_data: bytes) -> bool:
         """Handle key exchange response from another client."""
-        if self.private_key:
-            _, version_warning = self.protocol.process_key_exchange_response(message_data, self.private_key)
-            self.private_key = b"\x00" * 32
+        if self.has_priv_key:
+            version_warning = self.protocol.process_key_exchange_response(message_data)
             
             # Display version warning if present
             if version_warning:
@@ -584,9 +586,12 @@ class SecureChatClient:
         except Exception as e:
             self.display_error_message(f"Error handling a message: {e}")
             return
+        
+        # Check if automatic rekey should be initiated after processing the message
+        self.check_and_initiate_auto_rekey()
     
     
-    def handle_message_types(self, message_type: MessageType, message_json: dict,
+    def handle_message_types(self, message_type: MessageType, message_json: dict[Any, Any],
                              received_message_counter: int) -> bool:
         """
         Handle the different types of messages.
@@ -718,6 +723,27 @@ class SecureChatClient:
         self.protocol.queue_message(("encrypt_json", payload))
         self.display_system_message("Rekey initiated.")
     
+    def check_and_initiate_auto_rekey(self) -> None:
+        """Check if automatic rekey should be initiated and initiate if conditions are met."""
+        # Check if rekey is needed based on message count
+        if not self.protocol.should_auto_rekey():
+            return
+        
+        # Don't rekey during file transfers
+        if self.file_transfer_active or self.protocol.has_active_file_transfers:
+            return
+        
+        # Don't rekey during voice calls
+        if self.voice_call_active:
+            return
+        
+        # All conditions met, initiate automatic rekey
+        if not self.key_exchange_complete:
+            return
+        
+        payload = self.protocol.create_rekey_init()
+        self.protocol.queue_message(("encrypt_json", payload))
+    
     def send_message(self, text: str) -> bool:
         """Encrypt and queue a chat message for sending."""
         if not self.key_exchange_complete:
@@ -734,6 +760,10 @@ class SecureChatClient:
         
         # Queue plaintext; sender loop will handle encryption
         self.protocol.queue_message(("encrypt_text", text))
+        
+        # Check if automatic rekey should be initiated after sending
+        self.check_and_initiate_auto_rekey()
+        
         return True
     
     def send_file(self, file_path: str, compress: bool = True) -> None:
@@ -771,7 +801,7 @@ class SecureChatClient:
         except Exception as e:
             print(f"Failed to send file: {e}")
     
-    def handle_ephemeral_mode_change(self, message: dict) -> None:
+    def handle_ephemeral_mode_change(self, message: dict[Any, Any]) -> None:
         """Handle incoming ephemeral mode change from peer (console feedback)."""
         mode = str(message.get("mode", "OFF")).upper()
         if mode == "GLOBAL":
@@ -779,7 +809,7 @@ class SecureChatClient:
         elif mode == "OFF":
             print("\nPeer disabled GLOBAL ephemeral mode.")
     
-    def handle_file_metadata(self, decrypted_message: dict) -> None:
+    def handle_file_metadata(self, decrypted_message: dict[Any, Any]) -> None:
         """Handle incoming file metadata."""
         try:
             metadata = self.protocol.process_file_metadata(decrypted_message)
@@ -844,7 +874,7 @@ class SecureChatClient:
                 del self.active_file_metadata[transfer_id]
                 break
     
-    def handle_file_accept(self, message: dict) -> None:
+    def handle_file_accept(self, message: dict[Any, Any]) -> None:
         """Handle file acceptance from peer."""
         self.protocol.send_dummy_messages = False
         try:
@@ -876,7 +906,7 @@ class SecureChatClient:
         )
         chunk_thread.start()
     
-    def handle_file_reject(self, message: dict) -> None:
+    def handle_file_reject(self, message: dict[Any, Any]) -> None:
         """Handle file rejection from peer."""
         try:
             transfer_id = message["transfer_id"]
@@ -894,7 +924,7 @@ class SecureChatClient:
         else:
             print("Received rejection for unknown file transfer")
     
-    def handle_rekey(self, inner: dict) -> None:
+    def handle_rekey(self, inner: dict[Any, Any]) -> None:
         try:
             action = inner["action"]
         except KeyError:
@@ -930,12 +960,12 @@ class SecureChatClient:
         else:
             self.display_error_message("Received unknown rekey action")
     
-    def handle_voice_call_init(self, init_msg: dict) -> None:
+    def handle_voice_call_init(self, init_msg: dict[Any, Any]) -> None:
         """Handle incoming voice call initiation, GUI exclusive"""
         self.protocol.queue_message(("encrypt_json", {"type": MessageType.VOICE_CALL_REJECT}))
         self.display_system_message("Incoming voice call rejected: voice calls not supported on terminal client.")
     
-    def handle_voice_call_accept(self, message: dict) -> None:
+    def handle_voice_call_accept(self, message: dict[Any, Any]) -> None:
         """Handle incoming voice call acceptance, GUI exclusive"""
         pass
     
@@ -943,7 +973,7 @@ class SecureChatClient:
         """Handle incoming voice call rejection, GUI exclusive"""
         pass
     
-    def handle_voice_call_data(self, data: dict) -> None:
+    def handle_voice_call_data(self, data: dict[Any, Any]) -> None:
         """Handle incoming voice call data, GUI exclusive"""
         pass
     
@@ -951,7 +981,7 @@ class SecureChatClient:
         """Handle incoming voice call end, GUI exclusive"""
         pass
     
-    def handle_nickname_change(self, message: dict) -> None:
+    def handle_nickname_change(self, message: dict[Any, Any]) -> None:
         """Handle incoming nickname change from peer."""
         # Disable nickname changes when keys are unverified
         if not self.protocol.peer_key_verified:
@@ -963,7 +993,7 @@ class SecureChatClient:
         self.peer_nickname = str(message.get("nickname", "Other User"))[:32]
         self.display_system_message(f"Peer changed nickname to: {self.peer_nickname}")
     
-    def handle_file_chunk_binary(self, chunk_info: dict) -> None:
+    def handle_file_chunk_binary(self, chunk_info: dict[Any, Any]) -> None:
         """Common file chunk processing logic for both JSON and binary formats."""
         transfer_id = chunk_info["transfer_id"]
         
@@ -1030,7 +1060,7 @@ class SecureChatClient:
             if transfer_id in self._last_progress_shown:
                 del self._last_progress_shown[transfer_id]
     
-    def handle_file_complete(self, message: dict) -> None:
+    def handle_file_complete(self, message: dict[Any, Any]) -> None:
         """Handle file transfer completion notification."""
         try:
             transfer_id = message["transfer_id"]
@@ -1110,7 +1140,7 @@ class SecureChatClient:
             # Stop tracking on error as well
             self.protocol.stop_sending_transfer(transfer_id)
     
-    def start_chat(self):
+    def start_chat(self) -> None:
         """Start the interactive chat interface."""
         if not self.connected:
             print("Not connected to server")

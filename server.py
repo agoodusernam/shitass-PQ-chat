@@ -410,7 +410,8 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         control message with the reason before closing the connection.
         """
         if self.connected:
-            print(f"[{datetime.datetime.now().strftime(format="%d.%m.%Y, %H:%S")}] Disconnecting client", self.client_id, "Reason:", reason if reason else "No reason provided")
+            print(f"[{datetime.datetime.now().strftime(format="%d.%m.%Y, %H:%M:%S")}] Disconnecting", self.client_id,
+                  "Reason:", reason if reason else "No reason provided")
             self.connected = False
             
             # Attempt to notify client about server-initiated disconnect

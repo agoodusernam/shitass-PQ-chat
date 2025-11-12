@@ -12,6 +12,7 @@ import tkinter as tk
 import uuid
 import wave
 from collections import deque
+from collections.abc import Iterable
 from tkinter import StringVar, filedialog, messagebox, scrolledtext
 from typing import Any, Callable, Literal, ParamSpec
 
@@ -52,7 +53,17 @@ try:
     SPELLCHECKER_AVAILABLE = True
 except ImportError:
     SPELLCHECKER_AVAILABLE = False
-    SpellChecker = None  # type: ignore
+    class WordFrequency:
+        def load_words(self, words: Iterable[str | bytes]) -> None:
+            return None
+    class SpellChecker:  # type: ignore[no-redef]
+        def unknown(self, words: Iterable[str | bytes]) -> set[str]:
+            return set("")
+        def candidates(self, word: str | bytes) -> set[str] | None:
+            return None
+        @property
+        def word_frequency(self) -> WordFrequency:
+            return WordFrequency()
 
 # tkinterdnd2 for drag-and-drop file support
 try:
@@ -438,7 +449,7 @@ class ChatGUI:
         self.file_transfer_window: FileTransferWindow = FileTransferWindow(self.root, self.theme_colors)
         
         # Spellcheck functionality
-        self.spell_checker: SpellChecker | None = SpellChecker() if SpellChecker is not None else None
+        self.spell_checker: SpellChecker = SpellChecker()
         self.spellcheck_timer: str = ""
         self.spellcheck_enabled: bool = SPELLCHECKER_AVAILABLE
         self.misspelled_tags: set[str] = set()
@@ -463,18 +474,18 @@ class ChatGUI:
         self.root.after(0, lambda: func(*args, **kwargs)) # type: ignore
         return None
     
-    def no_types_tk_thread(self, func: Callable, /, *args, **kwargs) -> None:
+    def no_types_tk_thread(self, func: Callable[[Any], Any], /, *args: Any, **kwargs: Any) -> None:
         """Run a function on the Tkinter main thread (no type checking)."""
         self.root.after(0, lambda: func(*args, **kwargs)) # type: ignore
         return None
     
-    def setup_focus_tracking(self):
+    def setup_focus_tracking(self) -> None:
         """Setup window focus tracking for notification sounds."""
         
-        def on_focus_in(_):
+        def on_focus_in(_) -> None:
             self.window_focused = True
         
-        def on_focus_out(_):
+        def on_focus_out(_) -> None:
             self.window_focused = False
         
         # Bind focus events to the root window
@@ -494,16 +505,14 @@ class ChatGUI:
         return self.notification_stream
     
     @property
-    def pyaudio_obj(self):
-        if not PYAUDIO_AVAILABLE:
-            return None
+    def pyaudio_obj(self) -> pyaudio.PyAudio:
         if self.audio_interface is None:
             self.audio_interface = pyaudio.PyAudio()
         
         return self.audio_interface
         
     
-    def play_notification_sound(self):
+    def play_notification_sound(self) -> None:
         """Play a notification sound if the window is not focused."""
         if not self.notification_enabled or self.window_focused:
             return
@@ -523,7 +532,7 @@ class ChatGUI:
         threading.Thread(target=play_notif, daemon=True).start()
     
     
-    def show_sys_notification(self, message_text: str = ""):
+    def show_sys_notification(self, message_text: str = "") -> None:
         """Show a Windows system notification if the window is not focused."""
         if not self.system_notifications_enabled or self.window_focused or not PLYER_AVAILABLE or not notification:
             return
@@ -534,7 +543,7 @@ class ChatGUI:
         else:
             display_message = "You have received a message."
         
-        def show_notification():
+        def show_notification() -> None:
             try:
                 notification.notify(
                         title="Secure Chat Notification",
@@ -551,7 +560,7 @@ class ChatGUI:
         threading.Thread(target=show_notification, daemon=True).start()
         
     # noinspection PyAttributeOutsideInit
-    def create_widgets(self):
+    def create_widgets(self) -> None:
         """Create the GUI widgets."""
         # Main frame
         main_frame = tk.Frame(self.root, bg=self.BG_COLOR)
@@ -870,14 +879,14 @@ class ChatGUI:
             
             self.chat_display.config(state=ltk.DISABLED)
     
-    def update_status(self, status_text, color=None):
+    def update_status(self, status_text: str, color: str = ""):
         """
         Update the status indicator with new text and coloir.
         Automatically runs on the Tkinter thread.
         """
         self.on_tk_thread(self._update_status, status_text, color)
     
-    def _update_status(self, status_text, color=None):
+    def _update_status(self, status_text: str, color: str = ""):
         """Update the status indicator with new text and coloir.
         
         If colour is provided, it will be used directly.
@@ -896,7 +905,7 @@ class ChatGUI:
         }
         
         # If colour is not provided, look up in theme colours
-        if color is None:
+        if color == "":
             status_key = status_map.get(status_text)
             if status_key and status_key in self.theme_colors:
                 color = self.theme_colors[status_key]
@@ -1085,7 +1094,7 @@ class ChatGUI:
         )
         close_btn.pack(pady=(8, 0), anchor="e")
     
-    def start_call(self):
+    def start_call(self) -> None:
         if not self.connected:
             messagebox.showwarning("Warning", "Not connected to server")
             return
@@ -1102,7 +1111,7 @@ class ChatGUI:
         self.client.request_voice_call(rate=configs.VOICE_RATE, chunk_size=configs.VOICE_CHUNK,
                                        audio_format=configs.VOICE_FORMAT)
     
-    def toggle_mute(self):
+    def toggle_mute(self) -> None:
         """Toggle local microphone mute during an active voice call."""
         if not self.client or not self.client.voice_call_active:
             return
@@ -1110,7 +1119,7 @@ class ChatGUI:
         new_text = "Unmute" if self.client.voice_muted else "Mute"
         self.mute_btn.config(text=new_text)
     
-    def show_mute_button(self):
+    def show_mute_button(self) -> None:
         """Show the mute button (used when a voice call becomes active)."""
         if not hasattr(self, "mute_btn"):
             return
@@ -1118,14 +1127,14 @@ class ChatGUI:
         self.mute_btn.config(text=btn_text, state=ltk.NORMAL)
         self.mute_btn.pack(side=ltk.LEFT, padx=(10, 0))
         
-    def hide_mute_button(self):
+    def hide_mute_button(self) -> None:
         """Hide the mute button and reset its label to default (used when a voice call ends)."""
         if not hasattr(self, "mute_btn"):
             return
         self.mute_btn.pack_forget()
         self.mute_btn.config(text="Mute")
     
-    def connect_to_server(self):
+    def connect_to_server(self) -> None:
         if self.connected:
             return
         host = self.host_entry.get().strip() or "localhost"
@@ -1138,7 +1147,7 @@ class ChatGUI:
         self.append_to_chat(f"Connecting to {host}:{port}...")
         self.update_status("Connecting")
         
-        def worker():
+        def worker() -> None:
             if not self.client.connect(host, port):
                 self.on_tk_thread(self.append_to_chat, "Connection failed.")
                 self.on_tk_thread(self.update_status, "Not Connected")
@@ -1160,7 +1169,7 @@ class ChatGUI:
         self.update_status("Connected, waiting for other client")
         self.start_chat_monitoring()
     
-    def disconnect_from_server(self):
+    def disconnect_from_server(self) -> None:
         """Disconnect from the server."""
         self.client.disconnect()
         self.connected = False
@@ -1450,14 +1459,17 @@ class ChatGUI:
         self.message_entry.delete("1.0", tk.END)
         return "break"  # Prevents the default newline insertion
     
-    def on_send_file_click(self, event):
+    def on_send_file_click(self, event: tk.Event | None = None) -> str:
         """Handle send file button click with shift key detection."""
+        if event is None:
+            self.send_file(compress=True)
+            return "break"
         # Detect if shift key is held
-        shift_held = bool(event.state & 0x1)  # Check shift key state
+        shift_held = isinstance(event.state, int) and event.state & 0x1
         self.send_file(compress=not shift_held)
         return "break"  # Prevent default button command from executing
     
-    def send_file(self, compress=True):
+    def send_file(self, compress: bool = True) -> None:
         """Send a file using file dialog."""
         if not self.connected or not self.client:
             return
@@ -1549,7 +1561,7 @@ class ChatGUI:
         # Start new timer for 400 ms delay
         self.spellcheck_timer = self.root.after(400, self.perform_spellcheck) # type: ignore
     
-    def perform_spellcheck(self):
+    def perform_spellcheck(self) -> None:
         """Perform spellcheck on the message entry text."""
         if not SPELLCHECKER_AVAILABLE:
             return
@@ -1603,7 +1615,7 @@ class ChatGUI:
             # Silently ignore spellcheck errors to avoid disrupting user experience
             pass
     
-    def show_spellcheck_menu(self, event: tk.Event):
+    def show_spellcheck_menu(self, event: tk.Event) -> None:
         """Show context menu with spelling suggestions on right-click."""
         if not SPELLCHECKER_AVAILABLE:
             return
@@ -1670,21 +1682,21 @@ class ChatGUI:
             # Silently ignore menu errors
             pass
     
-    def replace_word(self, start_pos: str, end_pos: str, replacement: str):
+    def replace_word(self, start_pos: str, end_pos: str, replacement: str) -> None:
         """Replace a word with the selected suggestion."""
         self.message_entry.delete(start_pos, end_pos)
         self.message_entry.insert(start_pos, replacement)
         # Trigger spellcheck after replacement
         self.on_text_change()
     
-    def add_to_dictionary(self, word: str):
+    def add_to_dictionary(self, word: str) -> None:
         """Add a word to the personal dictionary."""
         assert isinstance(self.spell_checker, SpellChecker)
         self.spell_checker.word_frequency.load_words([word])
         # Trigger spellcheck to remove red underline
         self.on_text_change()
     
-    def emergency_close(self, *_):
+    def emergency_close(self, *_) -> None:
         """Handle emergency close (Control+Q) - send emergency message and close immediately."""
         try:
             if self.connected and self.client:
@@ -1700,7 +1712,7 @@ class ChatGUI:
             # Even if there's an error, still close the application
             os._exit(1)
     
-    def on_closing(self):
+    def on_closing(self) -> None:
         """Handle window closing."""
         if self.connected:
             self.client.disconnect()
@@ -1722,12 +1734,12 @@ class ChatGUI:
             
             time.sleep(1.0)  # Check every second
     
-    def start_ephemeral_cleanup(self):
+    def start_ephemeral_cleanup(self) -> None:
         """Start the background thread to clean up ephemeral messages."""
     
         threading.Thread(target=self._cleanup_thread, daemon=True).start()
     
-    def on_ephemeral_change(self, value: StringVar):
+    def on_ephemeral_change(self, value: StringVar) -> None:
         """Handle dropdown selection for ephemeral mode: OFF, LOCAL, GLOBAL."""
         selected = str(value)
         # Enforce owner lock when currently in GLOBAL owned by someone else
@@ -1785,7 +1797,7 @@ class ChatGUI:
                 self.send_ephemeral_mode_change("OFF", previous_owner)
             self.update_ephemeral_ui()
     
-    def send_ephemeral_mode_change(self, mode: str, owner_id: str | None):
+    def send_ephemeral_mode_change(self, mode: str, owner_id: str | None) -> None:
         """Send an encrypted EPHEMERAL_MODE_CHANGE message to the peer."""
         if not (self.client and self.client.socket and self.client.protocol):
             return
@@ -1796,7 +1808,7 @@ class ChatGUI:
         }
         self.client.protocol.queue_message(("encrypt_json", payload))
     
-    def update_ephemeral_ui(self):
+    def update_ephemeral_ui(self) -> None:
         """Update dropdown UI state and colour based on current ephemeral mode and ownership."""
         # Colour feedback
         if self.ephemeral_mode == "GLOBAL":
@@ -1816,7 +1828,7 @@ class ChatGUI:
         else:
             self.ephemeral_menu.config(state=ltk.NORMAL)
             
-    def remove_ephemeral_messages(self, message_ids: list[str]):
+    def remove_ephemeral_messages(self, message_ids: list[str]) -> None:
         """Remove ephemeral messages from the chat display."""
         self.chat_display.config(state=ltk.NORMAL)
         for message_id in message_ids:
@@ -1833,7 +1845,7 @@ class ChatGUI:
         self.chat_display.config(state=ltk.DISABLED)
         
     
-    def prompt_voice_call(self):
+    def prompt_voice_call(self) -> None:
         """
         Handle incoming voice call request by prompting the user to accept or reject.
         Also plays a ringing sound effect
@@ -1845,7 +1857,7 @@ class ChatGUI:
         keep_ringing = True
         
         # Create a modal dialogue to prompt the user to accept or reject
-        def on_accept():
+        def on_accept() -> None:
             self.client.on_user_response(True, configs.VOICE_RATE, configs.VOICE_CHUNK,
                                          configs.VOICE_FORMAT)
             prompt.destroy()
@@ -1859,7 +1871,7 @@ class ChatGUI:
             # Spoof an accept message to start the call
             self.client.handle_voice_call_accept(message)
         
-        def on_reject():
+        def on_reject() -> None:
             self.client.on_user_response(False, 0, 0, 0)
             prompt.destroy()
             
@@ -1867,7 +1879,7 @@ class ChatGUI:
             keep_ringing = False
         
         # Play a simple ringing sound in a separate thread
-        def play_ringtone():
+        def play_ringtone() -> None:
             try:
                 with wave.open(configs.RINGTONE_FILE, "rb") as w:
                     p = self.pyaudio_obj if self.pyaudio_obj else pyaudio.PyAudio()
@@ -2248,7 +2260,7 @@ class GUISecureChatClient(SecureChatClient):
         self.gui.on_tk_thread(self.gui.hide_mute_button)
         self.display_system_message("Peer ended the voice call")
     
-    def handle_delivery_confirmation(self, message: dict) -> None:
+    def handle_delivery_confirmation(self, message: dict[Any, Any]) -> None:
         """Handle delivery confirmation messages from the peer - override to update GUI."""
         try:
             confirmed_counter = message["confirmed_counter"]
@@ -2257,7 +2269,7 @@ class GUISecureChatClient(SecureChatClient):
         except KeyError:
             self.display_error_message("Missing 'confirmed_counter' field in delivery confirmation message.")
     
-    def handle_ephemeral_mode_change(self, message: dict) -> None:
+    def handle_ephemeral_mode_change(self, message: dict[Any, Any]) -> None:
         """Override: apply peer's ephemeral mode changes to GUI state."""
         try:
             mode = str(message.get("mode", "OFF")).upper()

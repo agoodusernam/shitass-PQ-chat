@@ -53,6 +53,12 @@ WORDLIST_FILE: Final[str] = "wordlist.txt"
 # Path must be surrounded by quotes. (" or ')
 # Default: "wordlist.txt"
 
+REKEY_INTERVAL: Final[int] = 480
+# Base number of messages between automatic rekeys.
+# Each client will choose a random interval around this value at runtime.
+# Default: 480
+# Range: 1 - 10000
+
 
 ## ADVANCED SETTINGS
 # Don't change these unless you know what you're doing

@@ -10,23 +10,20 @@ class ProtocolCryptoTests(unittest.TestCase):
         self.bob = SecureChatProtocol()
 
         # Perform full key exchange between alice (initiator) and bob (responder)
-        pub_a, priv_a = self.alice.generate_keypair()
-        self.alice_priv = priv_a
+        pub_a = self.alice.generate_keys()
+        self.alice_priv = self.alice.dh_private_key
         init = self.alice.create_key_exchange_init(pub_a)
 
-        shared_b, ct, warn = self.bob.process_key_exchange_init(init)
-        self.assertIsInstance(shared_b, (bytes, bytearray))
-        self.assertTrue(shared_b)
+        hqc_ct, mlkem_ct, warn = self.bob.process_key_exchange_init(init)
         # Warning may be None or a string if version mismatch was forced elsewhere
         self.assertTrue(self.bob.shared_key)
         self.assertTrue(self.bob.send_chain_key)
         self.assertTrue(self.bob.receive_chain_key)
 
-        resp = self.bob.create_key_exchange_response(ct)
-        shared_a, warn2 = self.alice.process_key_exchange_response(resp, self.alice_priv)
-        self.assertIsInstance(shared_a, (bytes, bytearray))
-        self.assertTrue(shared_a)
-        self.assertEqual(shared_a, shared_b)
+        resp = self.bob.create_key_exchange_response(mlkem_ct, hqc_ct)
+        self.alice.process_key_exchange_response(resp)
+        self.assertIsInstance(self.alice.verification_key, bytes)
+        self.assertTrue(self.alice.verification_key)
         self.assertTrue(self.alice.shared_key)
         self.assertTrue(self.alice.send_chain_key)
         self.assertTrue(self.alice.receive_chain_key)
@@ -116,7 +113,7 @@ class ProtocolCryptoTests(unittest.TestCase):
 
     def test_version_mismatch_warning(self):
         # Craft init with fake version to trigger warning
-        pub_a, _ = self.alice.generate_keypair()
+        pub_a = self.alice.generate_keys()
         init = self.alice.create_key_exchange_init(pub_a)
         payload = json.loads(init.decode("utf-8"))
         payload["version"] = "0.0.0"

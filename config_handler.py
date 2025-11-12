@@ -57,7 +57,7 @@ class ConfigHandler:
     def __init__(self) -> None:
         self.config_file = "config.json"
         self.config: ConfigDict = create_default_config()
-        self.init_config: dict[str, Any] = {}
+        self.init_config: dict[Any, Any] = {}
         self.ensure_exists()
         with open(self.config_file, "r", encoding="utf-8") as config_file:
             self.init_config = json.load(config_file)
@@ -144,6 +144,3 @@ class ConfigHandler:
     
     def __str__(self) -> str:
         return json.dumps(self.config, indent=4)
-
-
-config = ConfigHandler()

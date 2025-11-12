@@ -919,13 +919,9 @@ class DebugChatGUI(ChatGUI):
             else:
                 debug_text += "  Verification Pending\n"
             
-            if self.client.protocol and self.client.protocol.shared_key:
-                debug_text += f"    ✓ Shared Key: {self.client.protocol.shared_key[:16].hex()}...\n"
-            else:
-                debug_text += "     ✗ No Shared Key\n"
             
-            if self.client.protocol and self.client.protocol.encryption_key:
-                debug_text += f"    ✓ Encryption Key: {self.client.protocol.encryption_key[:16].hex()}...\n"
+            if self.client.protocol and self.client.protocol.verification_key:
+                debug_text += f"    ✓ Encryption Key: {self.client.protocol.verification_key[:16].hex()}...\n"
             else:
                 debug_text += "     ✗ No Encryption Key\n"
             
@@ -953,13 +949,13 @@ class DebugChatGUI(ChatGUI):
             
             # Public Keys
             debug_text += "\nPUBLIC KEYS:\n"
-            if self.client.protocol and self.client.protocol.own_public_key:
-                debug_text += f"  Own Public Key: {self.client.protocol.own_public_key[:16].hex()}...\n"
+            if self.client.protocol and self.client.protocol.mlkem_public_key:
+                debug_text += f"  Own Public Key: {self.client.protocol.mlkem_public_key[:16].hex()}...\n"
             else:
                 debug_text += "  Own Public Key: Not generated\n"
             
-            if self.client.protocol and self.client.protocol.peer_public_key:
-                debug_text += f"  Peer Public Key: {self.client.protocol.peer_public_key[:16].hex()}...\n"
+            if self.client.protocol and self.client.protocol.peer_mlkem_public_key:
+                debug_text += f"  Peer Public Key: {self.client.protocol.peer_mlkem_public_key[:16].hex()}...\n"
             else:
                 debug_text += "  Peer Public Key: Not received\n"
             
@@ -1289,25 +1285,19 @@ class DebugChatGUI(ChatGUI):
             fingerprint_text = "=== KEY FINGERPRINTS ===\n\n"
             
             # Own public key fingerprint
-            if self.client.protocol.own_public_key:
-                own_fp = hashlib.sha3_256(self.client.protocol.own_public_key).hexdigest()[:32]
+            if self.client.protocol.mlkem_public_key:
+                own_fp = hashlib.sha3_256(self.client.protocol.mlkem_public_key).hexdigest()[:32]
                 fingerprint_text += f"Own Public Key:\n{own_fp}\n\n"
             else:
                 fingerprint_text += "Own Public Key: Not available\n\n"
             
             # Peer public key fingerprint
-            if self.client.protocol.peer_public_key:
-                peer_fp = hashlib.sha3_256(self.client.protocol.peer_public_key).hexdigest()[:32]
+            if self.client.protocol.peer_mlkem_public_key:
+                peer_fp = hashlib.sha3_256(self.client.protocol.peer_mlkem_public_key).hexdigest()[:32]
                 fingerprint_text += f"Peer Public Key:\n{peer_fp}\n\n"
             else:
                 fingerprint_text += "Peer Public Key: Not available\n\n"
             
-            # Shared key fingerprint
-            if self.client.protocol.shared_key:
-                shared_fp = hashlib.sha3_256(self.client.protocol.shared_key).hexdigest()[:32]
-                fingerprint_text += f"Shared Key:\n{shared_fp}\n\n"
-            else:
-                fingerprint_text += "Shared Key: Not available\n\n"
             
             text_area.config(state=ltk.NORMAL)
             text_area.insert(tk.END, fingerprint_text)
