@@ -4,7 +4,7 @@
 > **This should NOT be used for anything important.**
 >
 > This is an educational project and has not been designed to be secure
-> against any form of attack. The intended use of this project
+> against any form of side-channel attack. The intended use of this project
 > is for learning and experimenting with PQC and end-to-end encryption concepts.
 
 An end-to-end encrypted chat application using post-quantum cryptography (ML-KEM-1024, HQC-256) for key exchange and double AEAD encryption (AES-256-GCM-SIV + ChaCha20-Poly1305) for message protection.
@@ -138,6 +138,7 @@ demonstrate concepts in post-quantum cryptography, end-to-end encryption, forwar
 - Endpoint security is assumed. Compromised endpoints will leak keys and plaintext.
 - The server is trusted to faithfully relay messages but is NOT trusted with confidentiality.
 - Out-of-band fingerprint verification (§7.3 in SPEC.md) is REQUIRED to prevent man-in-the-middle attacks.
+- Before use in production, a thorough security audit and formal verification of the protocol and implementation is necessary.
 
 ### Cryptographic Details
 
