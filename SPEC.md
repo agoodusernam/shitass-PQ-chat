@@ -463,7 +463,12 @@ The protocol is designed with layered cryptographic defences such that breaking 
 - **Two layers broken**: If any two of the three layers are broken (e.g., AES-GCM-SIV + ChaCha20-Poly1305), the third layer still provides full confidentiality and authenticity. If both AEAD layers are broken, the HQC OTP layer preserves confidentiality. If HQC and one AEAD are broken, the remaining AEAD provides full protection.
 - **Partial breaks**: If one or two layers are weakened but not completely broken, the unweakened layer(s) still provide full confidentiality and authenticity guarantees.
 
-**Rationale**: This triple-layered encryption (OTP + double AEAD) defends against algorithm-specific attacks (cryptanalysis, implementation vulnerabilities, side-channels) and provides diversity in cryptographic design (OTP, stream cipher, block cipher, different internal structures). An adversary must develop successful attacks against three independent, well-studied cryptographic constructions. Additionally, the protocol's nonce-hiding mechanism (§8.1) ensures that the actual nonces used by the AEAD ciphers remain secret—they are not public knowledge—preventing known-nonce attacks against ChaCha20-Poly1305 and AES-GCM-SIV even if other aspects of the protocol are compromised.
+**Rationale**: This triple-layered encryption (OTP + double AEAD) defends against algorithm-specific attacks 
+(cryptanalysis, implementation vulnerabilities, side-channels) and provides diversity in cryptographic design 
+(OTP, stream cipher, block cipher, different internal structures). 
+An adversary must develop successful attacks against three independent, well-studied cryptographic constructions. 
+Additionally, the protocol's nonce-hiding mechanism (§8.1) ensures that the actual nonces used by the AEAD ciphers 
+remain secret preventing known-nonce attacks against ChaCha20-Poly1305 and AES-GCM-SIV even if other aspects of the protocol are compromised.
 
 #### 17.6.3 Combined resilience
 The protocol's defence-in-depth approach applies at both the key exchange layer and the message encryption layer:

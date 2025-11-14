@@ -33,8 +33,6 @@ MAX_UNEXPECTED_MSGS = 10
 # Ensure config exists before anything imports it
 try:
     ensure_config_exists()
-except PermissionError as e:
-    raise PermissionError("Could not create configs.py, please create it manually or contact the developer.") from e
 except OSError as e:
     raise OSError("Could not create configs.py, please create it manually or contact the developer.") from e
 
@@ -62,8 +60,7 @@ def validate_configs() -> None:
         raise ValueError("VOICE_CHANNELS must be 1 (mono) or 2 (stereo)")
     
     if configs.VOICE_CHUNK <= 0 or not isinstance(configs.VOICE_CHUNK, int):
-        raise ValueError("VOICE_CHUNK must be a positive number, if you didn't change VOICE_RATE or " +
-                         "VOICE_SEND_FREQUENCY, something terrible has happened.")
+        raise ValueError("VOICE_CHUNK must be a positive number")
     
     if configs.VOICE_FORMAT not in (1, 2, 4, 8, 16, 32):
         raise ValueError("VOICE_FORMAT must be a valid PyAudio format. Refer to PyAudio documentation.")
@@ -79,6 +76,18 @@ def validate_configs() -> None:
     
     if not configs.MAX_UNEXPECTED_MSGS > 0 or not isinstance(configs.MAX_UNEXPECTED_MSGS, int):
         raise ValueError("MAX_UNEXPECTED_MSGS must be a positive number")
+    
+    if not isinstance(configs.DEADDROP_FILE_LOCATION, str):
+        raise ValueError("DEADDROP_FILE_LOCATION must be a string")
+    
+    if not os.path.exists(configs.DEADDROP_FILE_LOCATION):
+        os.makedirs(configs.DEADDROP_FILE_LOCATION, exist_ok=True)
+    
+    if not os.path.isdir(configs.DEADDROP_FILE_LOCATION):
+        raise NotADirectoryError(f"Deaddrop file location is not a valid directory: {configs.DEADDROP_FILE_LOCATION}")
+    
+    if not isinstance(configs.DEADDROP_MAX_SIZE, int):
+        raise ValueError("DEADDROP_MAX_SIZE must be an integer")
 
 
 validate_configs()

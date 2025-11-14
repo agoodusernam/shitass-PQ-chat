@@ -46,7 +46,7 @@ except ImportError as exc_:
     raise ImportError("Please install the required libraries with pip install -r requirements.txt") from exc_
 
 # Protocol constants
-PROTOCOL_VERSION: Final[str] = "7.0.1"
+PROTOCOL_VERSION: Final[str] = "7.1.0"
 # Protocol compatibility is denoted by version number
 # Breaking.Minor.Patch - only Breaking versions are checked for compatibility.
 # Breaking version changes introduce breaking changes that are not compatible with previous versions of the same major version.
@@ -198,6 +198,25 @@ class MessageType(IntEnum):
     KEY_VERIFICATION = 62
     NICKNAME_CHANGE = 63
     REKEY = 64
+    
+    # Dead drop functionality
+    DEADDROP_START = 70
+    DEADDROP_KE_RESPONSE = 71
+    
+    DEADDROP_CHECK = 72
+    DEADDROP_CHECK_RESPONSE = 73
+    
+    DEADDROP_UPLOAD = 74
+    
+    DEADDROP_DOWNLOAD = 75
+    
+    DEADDROP_ACCEPT = 76
+    DEADDROP_DENY = 77
+    
+    DEADDROP_DATA = 78
+    DEADDROP_MESSAGE = 79
+    DEADDROP_PROVE = 80
+    
     
     @classmethod
     def _missing_(cls, value):
@@ -1692,7 +1711,7 @@ class SecureChatProtocol:
                     yield file_chunk
     
     @staticmethod
-    def process_file_metadata(message: dict) -> FileMetadata:
+    def process_file_metadata(message: dict[Any, Any]) -> FileMetadata:
         """Process a file metadata message."""
         try:
             return {
@@ -1701,13 +1720,13 @@ class SecureChatProtocol:
                 "file_size":      message["file_size"],
                 "file_hash":      message["file_hash"],
                 "total_chunks":   message["total_chunks"],
-                "compressed":     message.get("compressed", True),
-                "processed_size": message.get("processed_size", message.get("compressed_size", 0))
+                "compressed":     message.get("compressed", False),
+                "processed_size": message.get("processed_size", message["file_size"])
             }
         except KeyError:
             raise KeyError("Invalid file metadata message")
     
-    def process_file_chunk(self, encrypted_data: bytes) -> dict:
+    def process_file_chunk(self, encrypted_data: bytes) -> dict[Any, Any]:
         """Process an optimised file chunk message with binary format and DH double ratchet.
         Expects frame: [4-byte counter][12-byte nonce][32-byte eph_pub][ciphertext].
         """
@@ -1806,7 +1825,8 @@ class SecureChatProtocol:
         }
     
     def add_file_chunk(self, transfer_id: str, chunk_index: int, chunk_data: bytes, total_chunks: int) -> bool:
-        """Add a received file chunk and return True if file is complete.
+        """
+        Add a received file chunk and return True if file is complete.
         
         Instead of storing chunks in memory, this method writes them directly to a temporary file.
         It keeps track of which chunks have been received using a set of indices.

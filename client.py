@@ -1014,7 +1014,7 @@ class SecureChatClient:
         received_chunks = len(self.protocol.received_chunks.get(transfer_id, set()))
         progress = (received_chunks / metadata["total_chunks"]) * 100
         
-        # Initialize progress tracking for this transfer if not exists
+        # Initialise progress tracking for this transfer if not exists
         if transfer_id not in self._last_progress_shown:
             self._last_progress_shown[transfer_id] = -1
         
