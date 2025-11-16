@@ -2,6 +2,7 @@
 Secure Chat Client with End-to-End Encryption
 It uses KRYSTALS KYBER protocol + X25519 for secure key exchange and message encryption.
 """
+import base64
 import binascii
 # pylint: disable=trailing-whitespace, broad-exception-caught
 import socket
@@ -14,9 +15,16 @@ import time
 from copy import deepcopy
 from typing import Any
 
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+from cryptography.hazmat.primitives.kdf.concatkdf import ConcatKDFHash
+from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
+from pqcrypto.kem import ml_kem_1024  # type: ignore
+
 import shared
 from shared import (SecureChatProtocol, send_message, receive_message, MessageType,
-                    PROTOCOL_VERSION, FileMetadata, FileTransfer)
+                    PROTOCOL_VERSION, FileMetadata, FileTransfer, SEND_CHUNK_SIZE,
+                    DoubleEncryptor)
 
 
 # noinspection PyBroadException
@@ -97,6 +105,16 @@ class SecureChatClient:
         
         # Server version information
         self.server_protocol_version: str = "0.0.0"
+        self.server_identifier: str = ""
+        # Deaddrop session state
+        self.deaddrop_shared_secret: bytes | None = None
+        self.deaddrop_supported: bool = False
+        self.deaddrop_max_size: int = 0
+        self._deaddrop_in_progress: bool = False
+        self._deaddrop_chunks: dict[int, bytes] = {}
+        self._deaddrop_file_size: int = 0
+        self._deaddrop_name: str = ""
+        self._deaddrop_password_hash: str = ""
         
         # Rate limiting
         self._rl_window_start: float = 0.0
@@ -146,6 +164,9 @@ class SecureChatClient:
                                              MessageType.ERROR]
         
         match mt:
+            case MessageType.SERVER_VERSION_INFO:
+                # Allow server identifier in version info announcement
+                return base | {"identifier"}
             case MessageType.KEY_EXCHANGE_INIT:
                 return base | {"mlkem_public_key", "dh_public_key", "hqc_public_key"}
             case MessageType.KEY_EXCHANGE_RESPONSE:
@@ -157,6 +178,12 @@ class SecureChatClient:
                 return base | {"verified"}
             case MessageType.KEY_EXCHANGE_RESET:
                 return base | {"message"}
+            case MessageType.DEADDROP_START:
+                # Plaintext handshake: may include capability fields
+                return base | {"supported", "max_file_size", "mlkem_public"}
+            case MessageType.DEADDROP_MESSAGE:
+                # Encrypted deaddrop envelope
+                return base | {"nonce", "ciphertext"}
         
         if mt in server_control:
             # Allow common server control fields
@@ -337,6 +364,11 @@ class SecureChatClient:
             case MessageType.SERVER_DISCONNECT:
                 reason = message_json.get('reason', 'Server initiated disconnect')
                 self.on_server_disconnect(reason)
+            case MessageType.DEADDROP_START:
+                # Handle server response to deaddrop start
+                self._handle_deaddrop_start_response(message_json)
+            case MessageType.DEADDROP_MESSAGE:
+                self._handle_deaddrop_encrypted_message(message_json)
             case _:
                 self.display_error_message(f"Unknown message type: {message_type}")
         return
@@ -1081,18 +1113,289 @@ class SecureChatClient:
         print("\nServer is full. Cannot connect at this time.")
         print("Please try again later or contact the server administrator.")
         self.disconnect()
+
+    def start_deaddrop_handshake(self) -> None:
+        """Initiate deaddrop handshake with the server.
+
+        This sends a plaintext DEADDROP_START message; the server replies with either
+        unsupported/deny or a DEADDROP_START containing capabilities and an ML-KEM
+        public key. The actual ML-KEM encryption and shared-secret derivation are
+        performed in ``_handle_deaddrop_start_response``.
+        """
+        if not self.connected:
+            self.display_error_message("Cannot start deaddrop - not connected")
+            return
+
+        if self._deaddrop_in_progress:
+            self.display_error_message("Deaddrop already in progress")
+            return
+
+        self.display_system_message("Starting deaddrop handshake")
+
+        msg = {"type": MessageType.DEADDROP_START}
+        send_message(self.socket, json.dumps(msg).encode("utf-8"))
+
+    def _handle_deaddrop_start_response(self, message: dict[str, Any]) -> None:
+        """Process server's response to DEADDROP_START.
+
+        On success, derives a 32-byte shared secret via ML-KEM and SHA3-512-based
+        ConcatKDFHash using ``b"deaddrop key exchange"`` as otherinfo.
+        """
+        supported = bool(message.get("supported", False))
+        if not supported:
+            # Either deaddrop is disabled or server refused
+            reason = message.get("reason", "Server does not support deaddrop")
+            self.display_error_message(reason)
+            self.deaddrop_shared_secret = None
+            self.deaddrop_supported = False
+            self._deaddrop_in_progress = False
+            return
+
+        try:
+            mlkem_public_b64 = str(message["mlkem_public"])
+            mlkem_public = base64.b64decode(mlkem_public_b64, validate=True)
+        except KeyError:
+            self.display_error_message("Invalid deaddrop start response: missing mlkem_public")
+            return
+        except binascii.Error:
+            self.display_error_message("Invalid deaddrop start response: bad mlkem_public encoding")
+            return
+
+        # Perform ML-KEM encapsulation
+        mlkem_ciphertext, kem_shared_secret = ml_kem_1024.encrypt(mlkem_public)
+
+        # Derive the 32-byte shared secret using SHA3-512 via ConcatKDFHash
+        kdf = ConcatKDFHash(algorithm=hashes.SHA3_512(), length=32,
+                            otherinfo=b"deaddrop key exchange")
+        self.deaddrop_shared_secret = kdf.derive(kem_shared_secret)
+        self.deaddrop_supported = True
+        self.deaddrop_max_size = int(message.get("max_file_size", 0))
+
+        # Send key exchange response back to server
+        resp = {
+            "type": MessageType.DEADDROP_KE_RESPONSE,
+            "mlkem_ct": base64.b64encode(mlkem_ciphertext).decode("utf-8"),
+        }
+        send_message(self.socket, json.dumps(resp).encode("utf-8"))
+        self.display_system_message("Deaddrop handshake complete")
+
+    def _encrypt_deaddrop_inner(self, inner: bytes) -> dict[str, Any]:
+        """Encrypt inner deaddrop JSON bytes into a DEADDROP_MESSAGE envelope."""
+        if not self.deaddrop_shared_secret:
+            raise ValueError("Deaddrop shared secret not established")
+        nonce = os.urandom(12)
+        aad = {
+            "type": MessageType.DEADDROP_MESSAGE,
+            "nonce": base64.b64encode(nonce).decode("utf-8"),
+        }
+        aad_raw = json.dumps(aad).encode("utf-8")
+        aead = ChaCha20Poly1305(self.deaddrop_shared_secret)
+        ciphertext = aead.encrypt(nonce, inner, aad_raw)
+        return {
+            "type": MessageType.DEADDROP_MESSAGE,
+            "nonce": base64.b64encode(nonce).decode("utf-8"),
+            "ciphertext": base64.b64encode(ciphertext).decode("utf-8"),
+        }
+
+    def _handle_deaddrop_encrypted_message(self, outer: dict[str, Any]) -> None:
+        """Handle DEADDROP_MESSAGE from server (encrypted channel wrapper).
+
+        For now we only need to support DEADDROP_ACCEPT, DEADDROP_DENY and
+        DEADDROP_REDOWNLOAD during uploads; further flows can be added later.
+        """
+        if not self.deaddrop_shared_secret:
+            self.display_error_message("Received deaddrop message before handshake was complete")
+            return
+
+        try:
+            nonce_b64 = str(outer["nonce"])
+            ct_b64 = str(outer["ciphertext"])
+            nonce = base64.b64decode(nonce_b64, validate=True)
+            ciphertext = base64.b64decode(ct_b64, validate=True)
+        except KeyError:
+            self.display_error_message("Malformed deaddrop message from server")
+            return
+        except binascii.Error:
+            self.display_error_message("Invalid base64 in deaddrop message from server")
+            return
+
+        aad_raw = json.dumps({
+            "type": MessageType.DEADDROP_MESSAGE,
+            "nonce": nonce_b64,
+        }).encode("utf-8")
+
+        try:
+            aead = ChaCha20Poly1305(self.deaddrop_shared_secret)
+            inner_bytes = aead.decrypt(nonce, ciphertext, aad_raw)
+            inner = json.loads(inner_bytes.decode("utf-8"))
+        except Exception:
+            self.display_error_message("Failed to decrypt deaddrop message from server")
+            return
+
+        inner_type = MessageType(int(inner.get("type", MessageType.NONE)))
+        if inner_type == MessageType.DEADDROP_ACCEPT:
+            # Server accepted upload, nothing further to track here.
+            self._deaddrop_in_progress = True
+            self.display_system_message("Deaddrop upload accepted by server")
+        elif inner_type == MessageType.DEADDROP_DENY:
+            reason = inner.get("reason", "Deaddrop request denied")
+            self.display_error_message(reason)
+            self._deaddrop_in_progress = False
+        elif inner_type == MessageType.DEADDROP_REDOWNLOAD:
+            # Server requests retransmission of specific chunk indexes.
+            # We rely on stored chunks from the last upload invocation.
+            indexes = inner.get("chunk_indexes", [])
+            if not isinstance(indexes, list):
+                return
+            for idx in indexes:
+                try:
+                    i_int = int(idx)
+                except (ValueError, TypeError):
+                    continue
+                chunk = self._deaddrop_chunks.get(i_int)
+                if chunk is None:
+                    continue
+                ct_b64 = base64.b64encode(chunk).decode("utf-8")
+                inner_msg = {
+                    "type": MessageType.DEADDROP_DATA,
+                    "chunk_index": i_int,
+                    "ct": ct_b64,
+                }
+                outer_msg = self._encrypt_deaddrop_inner(json.dumps(inner_msg).encode("utf-8"))
+                send_message(self.socket, json.dumps(outer_msg).encode("utf-8"))
+        elif inner_type == MessageType.DEADDROP_COMPLETE:
+            self.display_system_message("Deaddrop upload completed successfully")
+            self._deaddrop_in_progress = False
+        # Other deaddrop flows (download/prove/check) not yet implemented
+
+    def _derive_deaddrop_file_key(self, password: str) -> bytes:
+        """Derive a 64-byte DoubleEncryptor key from password using SHA3-512.
+
+        This is separate from the Argon2id-based password_hash that is sent to
+        the server for authentication.
+        """
+        digest = hashes.Hash(hashes.SHA3_512())
+        digest.update(password.encode("utf-8"))
+        # Optionally also mix server identifier to tie encryption to this server
+        if self.server_identifier:
+            digest.update(self.server_identifier.encode("utf-8"))
+        return digest.finalize()
+
+    def _hash_deaddrop_password(self, password: str) -> str:
+        """Compute Argon2id hash of password using server identifier as salt.
+
+        Parameters as specified in deaddrop.txt: hash_len=64, memory_cost=4 GiB,
+        parallelism=4, iterations=10. The result is returned as hex.
+        """
+        salt = self.server_identifier.encode("utf-8") if self.server_identifier else b""
+        hasher = Argon2id(
+            salt=salt,
+            memory_cost=1024 * 1024 * 4,
+            iterations = 10,
+            lanes=4,
+            length=64
+        )
+        return base64.b64encode(hasher.derive(password.encode("utf-8"))).decode("utf-8")
+
+    def deaddrop_upload(self, name: str, password: str, file_path: str) -> None:
+        """Perform deaddrop upload of a file.
+
+        This assumes that ``start_deaddrop_handshake`` has been called and the
+        shared secret derived. It encrypts the file with DoubleEncryptor using a
+        SHA3-512-derived key from the provided password and uploads it in chunks
+        via DEADDROP_DATA messages wrapped inside DEADDROP_MESSAGE.
+        """
+        if not self.deaddrop_shared_secret:
+            self.display_error_message("Deaddrop not initialised - handshake required")
+            return
+
+        if not os.path.isfile(file_path):
+            self.display_error_message(f"File not found: {file_path}")
+            return
+
+        file_size = os.path.getsize(file_path)
+        if self.deaddrop_max_size and file_size > self.deaddrop_max_size:
+            self.display_error_message("File exceeds maximum deaddrop size allowed by server")
+            return
+
+        # Compute file hash (SHA256 hex) for integrity metadata
+        h = hashes.Hash(hashes.SHA256())
+        with open(file_path, "rb") as f:
+            while True:
+                chunk = f.read(8192)
+                if not chunk:
+                    break
+                h.update(chunk)
+        file_hash_hex = h.finalize().hex()
+
+        password_hash = self._hash_deaddrop_password(password)
+        self._deaddrop_file_size = file_size
+        self._deaddrop_name = name
+        self._deaddrop_password_hash = password_hash
+
+        # Send DEADDROP_UPLOAD metadata over encrypted deaddrop channel
+        inner_meta = {
+            "type": MessageType.DEADDROP_UPLOAD,
+            "name": name,
+            "file_size": file_size,
+            "file_hash": file_hash_hex,
+            "file_password_hash": password_hash,
+        }
+        outer_meta = self._encrypt_deaddrop_inner(json.dumps(inner_meta).encode("utf-8"))
+        send_message(self.socket, json.dumps(outer_meta).encode("utf-8"))
+
+        # Encrypt file contents with DoubleEncryptor under password-derived key
+        key = self._derive_deaddrop_file_key(password)
+        otp_secret = key  # reuse same material for OTP keystream salt
+        encryptor = DoubleEncryptor(key, otp_secret, message_counter=0)
+        self._deaddrop_chunks.clear()
+
+        chunk_index = 0
+        with open(file_path, "rb") as f:
+            while True:
+                plaintext_chunk = f.read(SEND_CHUNK_SIZE)
+                if not plaintext_chunk:
+                    break
+                nonce = os.urandom(12)
+                aad = json.dumps({
+                    "type": MessageType.DEADDROP_DATA,
+                    "chunk_index": chunk_index,
+                }).encode("utf-8")
+                ct = encryptor.encrypt(nonce, plaintext_chunk, aad)
+                # Store encrypted chunk for potential redownload
+                self._deaddrop_chunks[chunk_index] = ct
+                ct_b64 = base64.b64encode(ct).decode("utf-8")
+                inner = {
+                    "type": MessageType.DEADDROP_DATA,
+                    "chunk_index": chunk_index,
+                    "ct": ct_b64,
+                }
+                outer = self._encrypt_deaddrop_inner(json.dumps(inner).encode("utf-8"))
+                send_message(self.socket, json.dumps(outer).encode("utf-8"))
+                chunk_index += 1
+
+        # Notify completion of upload
+        complete_inner = {"type": MessageType.DEADDROP_COMPLETE}
+        complete_outer = self._encrypt_deaddrop_inner(json.dumps(complete_inner).encode("utf-8"))
+        send_message(self.socket, json.dumps(complete_outer).encode("utf-8"))
+        self.display_system_message("Deaddrop upload complete")
     
     def handle_server_version_info(self, message_data: bytes) -> None:
         """Handle server version information."""
         message = json.loads(message_data)
         
         # Store server protocol version information
-        self.server_protocol_version = message.get("protocol_version", "0.0.0.0")
-        if self.server_protocol_version == "0.0.0.0":
+        self.server_protocol_version = message.get("protocol_version", "0.0.0")
+        if self.server_protocol_version == "0.0.0":
             self.display_error_message("Server returned invalid protocol version information, communication may " +
                                        "still work but may be unreliable or have missing features.")
         
         self.display_system_message(f"Server Protocol Version: v{self.server_protocol_version}")
+        # Parse and display server identifier if provided
+        identifier = message.get("identifier", "")
+        if isinstance(identifier, str) and identifier.strip():
+            self.server_identifier = identifier.strip()
+            self.display_system_message(f"Server Identifier: {self.server_identifier}")
         
         # Check compatibility
         if self.server_protocol_version != PROTOCOL_VERSION:
@@ -1151,6 +1454,7 @@ class SecureChatClient:
         print("  /quit - Exit the chat")
         print("  /verify - Start key verification")
         print("  /file <path> - Send a file")
+        print("  /deaddrop upload - Upload a file to deaddrop")
         print("  /help - Show this help message")
         print()
         
@@ -1172,8 +1476,30 @@ class SecureChatClient:
                         print("  /quit - Exit the chat")
                         print("  /verify - Start key verification")
                         print("  /file <path> - Send a file")
+                        print("  /deaddrop upload - Upload a file to deaddrop")
                         print("  /rekey - Initiate a rekey for fresh session keys")
                         print("  /help - Show this help message")
+                    elif message.lower().strip() == '/deaddrop upload':
+                        # Terminal deaddrop upload flow
+                        try:
+                            name = input("Deaddrop name: ").strip()
+                            password = input("Deaddrop password: ")
+                            file_path = input("File path: ").strip()
+                        except (EOFError, KeyboardInterrupt):
+                            print("Deaddrop upload cancelled.")
+                            continue
+                        if not (name and password and file_path):
+                            print("Deaddrop upload aborted: missing fields")
+                            continue
+                        # Start handshake then upload
+                        self.start_deaddrop_handshake()
+                        # Give the server a short moment; in a real UI this
+                        # would be event-driven. Here we sleep briefly.
+                        time.sleep(0.5)
+                        if not self.deaddrop_shared_secret:
+                            print("Deaddrop handshake failed.")
+                            continue
+                        self.deaddrop_upload(name, password, file_path)
                     elif message.lower().startswith('/file '):
                         file_path = message[6:].strip()
                         if file_path:

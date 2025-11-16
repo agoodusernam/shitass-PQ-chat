@@ -13,7 +13,7 @@ import uuid
 import wave
 from collections import deque
 from collections.abc import Iterable
-from tkinter import StringVar, filedialog, messagebox, scrolledtext
+from tkinter import StringVar, filedialog, messagebox, scrolledtext, simpledialog
 from typing import Any, Callable, Literal, ParamSpec
 
 import config_handler
@@ -1340,6 +1340,7 @@ class ChatGUI:
             self.append_to_chat("/n or /no - Deny key verification or reject file transfer")
             self.append_to_chat("/rekey - Generate a new key pair and restart key exchange (requires prior verification)")
             self.append_to_chat("/quit - Disconnect and exit the application")
+            self.append_to_chat("/deaddrop upload - Upload a file to the server-side deaddrop store")
             self.message_entry.delete("1.0", tk.END)
             return "break"
         
@@ -1364,6 +1365,39 @@ class ChatGUI:
             else:
                 self.append_to_chat("Cannot rekey - verification not complete")
             self.message_entry.delete("1.0", tk.END)
+            return "break"
+
+        if message.lower().strip() == '/deaddrop upload':
+            # GUI deaddrop upload flow: prompt for name/password then file selector
+            self.message_entry.delete("1.0", tk.END)
+
+            def do_flow() -> None:
+                # Prompt for deaddrop name and password
+                name = simpledialog.askstring("Deaddrop Upload", "Deaddrop name:", parent=self.root)
+                if not name:
+                    return
+                password = simpledialog.askstring("Deaddrop Upload", "Deaddrop password:", show='*', parent=self.root)
+                if password is None:
+                    return
+                file_path = filedialog.askopenfilename(title="Select file for deaddrop upload")
+                if not file_path:
+                    return
+
+                # Start handshake and then upload in a background thread to avoid blocking GUI
+                def worker() -> None:
+                    assert self.client is not None
+                    self.client.start_deaddrop_handshake()
+                    # In GUI we rely on the server responding promptly; poll briefly
+                    time.sleep(0.5)
+                    if not self.client.deaddrop_shared_secret:
+                        self.append_to_chat("Deaddrop handshake failed or not supported by server")
+                        return
+                    self.client.deaddrop_upload(name, password, file_path)
+
+                threading.Thread(target=worker, daemon=True).start()
+
+            # Run prompts on Tk thread
+            self.on_tk_thread(do_flow)
             return "break"
         
         # Handle verification commands

@@ -79,15 +79,16 @@ def validate_configs() -> None:
     
     if not isinstance(configs.DEADDROP_FILE_LOCATION, str):
         raise ValueError("DEADDROP_FILE_LOCATION must be a string")
-    
-    if not os.path.exists(configs.DEADDROP_FILE_LOCATION):
-        os.makedirs(configs.DEADDROP_FILE_LOCATION, exist_ok=True)
-    
-    if not os.path.isdir(configs.DEADDROP_FILE_LOCATION):
-        raise NotADirectoryError(f"Deaddrop file location is not a valid directory: {configs.DEADDROP_FILE_LOCATION}")
-    
-    if not isinstance(configs.DEADDROP_MAX_SIZE, int):
-        raise ValueError("DEADDROP_MAX_SIZE must be an integer")
+
+    if os.path.basename(__file__) == "server.py":
+        if not os.path.exists(configs.DEADDROP_FILE_LOCATION):
+            os.makedirs(configs.DEADDROP_FILE_LOCATION, exist_ok=True)
+
+        if not os.path.isdir(configs.DEADDROP_FILE_LOCATION):
+            raise NotADirectoryError(f"Deaddrop file location is not a valid directory: {configs.DEADDROP_FILE_LOCATION}")
+
+        if not isinstance(configs.DEADDROP_MAX_SIZE, int):
+            raise ValueError("DEADDROP_MAX_SIZE must be an integer")
 
 
 validate_configs()
