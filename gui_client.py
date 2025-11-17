@@ -1341,6 +1341,7 @@ class ChatGUI:
             self.append_to_chat("/rekey - Generate a new key pair and restart key exchange (requires prior verification)")
             self.append_to_chat("/quit - Disconnect and exit the application")
             self.append_to_chat("/deaddrop upload - Upload a file to the server-side deaddrop store")
+            self.append_to_chat("/deaddrop download <name> - Download a file from the server-side deaddrop store")
             self.message_entry.delete("1.0", tk.END)
             return "break"
         
@@ -1398,6 +1399,36 @@ class ChatGUI:
 
             # Run prompts on Tk thread
             self.on_tk_thread(do_flow)
+            return "break"
+
+        if message.lower().startswith('/deaddrop download'):
+            self.message_entry.delete("1.0", tk.END)
+
+            def do_download_flow() -> None:
+                parts = message.split(maxsplit=2)
+                name = parts[2] if len(parts) >= 3 else ""
+                if not name:
+                    self.append_to_chat("Usage: /deaddrop download <name>")
+                    return
+                # Prompt for password via popup
+                password = simpledialog.askstring("Deaddrop Download", f"Password for '{name}':", show='*', parent=self.root)
+                if password is None or password == "":
+                    self.append_to_chat("Deaddrop download cancelled or missing password.")
+                    return
+
+                assert self.client is not None
+                self.client.start_deaddrop_handshake()
+
+                def worker() -> None:
+                    time.sleep(0.5)
+                    if not self.client.deaddrop_shared_secret:
+                        self.append_to_chat("Deaddrop handshake failed or not supported by server")
+                        return
+                    self.client.deaddrop_download(name, password)
+
+                threading.Thread(target=worker, daemon=True).start()
+
+            self.on_tk_thread(do_download_flow)
             return "break"
         
         # Handle verification commands

@@ -46,7 +46,7 @@ except ImportError as exc_:
     raise ImportError("Please install the required libraries with pip install -r requirements.txt") from exc_
 
 # Protocol constants
-PROTOCOL_VERSION: Final[str] = "7.1.0"
+PROTOCOL_VERSION: Final[str] = "7.1.1"
 # Protocol compatibility is denoted by version number
 # Breaking.Minor.Patch - only Breaking versions are checked for compatibility.
 # Breaking version changes introduce breaking changes that are not compatible with previous versions of the same major version.
@@ -108,28 +108,33 @@ class DoubleEncryptor:
         self._OTP_secret = OTP_secret
         self.message_counter = message_counter
         
-    def encrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None) -> bytes:
-        padder = PKCS7(512).padder()
-        padded_data = padder.update(data) + padder.finalize()
+    def encrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None, pad: bool = True) -> bytes:
+        if pad:
+            padder = PKCS7(512).padder()
+            new_data = padder.update(data) + padder.finalize()
+        else:
+            new_data = data
         
         aes_nonce = xor_bytes(nonce, self._key[:12])
         chacha_nonce = xor_bytes(nonce, self._key[-12:])
         
-        layer0 = xor_bytes(padded_data, self._derive_OTP_keystream(len(padded_data), aes_nonce + chacha_nonce))
+        layer0 = xor_bytes(new_data, self._derive_OTP_keystream(len(new_data), aes_nonce + chacha_nonce))
         layer1 = self._aes.encrypt(aes_nonce, layer0, associated_data)
         layer2 = self._chacha.encrypt(chacha_nonce, layer1, associated_data)
         return layer2
     
-    def decrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None) -> bytes:
+    def decrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None, pad: bool = True) -> bytes:
         aes_nonce = xor_bytes(nonce, self._key[:12])
         chacha_nonce = xor_bytes(nonce, self._key[-12:])
-        unpadder = PKCS7(512).unpadder()
         
         layer2 = self._chacha.decrypt(chacha_nonce, data, associated_data)
         layer1 = self._aes.decrypt(aes_nonce, layer2, associated_data)
         layer0 = xor_bytes(layer1, self._derive_OTP_keystream(len(layer1), aes_nonce + chacha_nonce))
-        
-        return unpadder.update(layer0) + unpadder.finalize()
+
+        if pad:
+            unpadder = PKCS7(512).unpadder()
+            return unpadder.update(layer0) + unpadder.finalize()
+        return layer0
     
     def _derive_OTP_keystream(self, length: int, additional_salt: bytes) -> bytes:
         """Generate keystream from HQC shared secret using message counter."""

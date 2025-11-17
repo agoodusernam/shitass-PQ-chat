@@ -171,7 +171,7 @@ class DeadDropManager:
     def chunk_file(self, name: str) -> Generator[bytes, None, None]:
         with self.get_file(name) as f:
             while True:
-                data = f.read(1024*1024)
+                data = f.read(1024*1024 + 32)
                 if not data:
                     break
                 yield data
@@ -490,8 +490,8 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             # Deaddrop encrypted channel
             if message_type == MessageType.DEADDROP_MESSAGE:
                 try:
-                    nonce_b64 = str(message["nonce"])  # base64 string
-                    ct_b64 = str(message["ciphertext"])  # base64 string
+                    nonce_b64 = str(message["nonce"])
+                    ct_b64 = str(message["ciphertext"])
                     nonce = base64.b64decode(nonce_b64, validate=True)
                     ciphertext = base64.b64decode(ct_b64, validate=True)
                 except KeyError:
@@ -1009,7 +1009,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
 
         try:
             chunk_index = int(message["chunk_index"])
-            ct_b64 = str(message["ct"])  # encrypted by client separately
+            ct_b64 = str(message["ct"])
             chunk_data = base64.b64decode(ct_b64, validate=True)
         except KeyError:
             self.send_deaddrop_message(json.dumps({
@@ -1032,16 +1032,8 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         if chunk_index > self.pending_deaddrop_max_index:
             self.pending_deaddrop_max_index = chunk_index
 
-        # Update received stats; write chunk to appropriate offset
         try:
-            # Calculate write offset using inferred chunk size; for last chunk it's fine to be shorter
-            chunk_size_for_calc = self.pending_deaddrop_chunk_size or len(chunk_data)
-            file_path = self.server.deaddrop_manager[self.pending_deaddrop_upload_name]
-            if file_path is None:
-                raise FileNotFoundError("Deaddrop file path not found")
-            with open(file_path, "r+b") as f:
-                f.seek(chunk_index * chunk_size_for_calc)
-                f.write(chunk_data)
+            self.server.deaddrop_manager.append(self.pending_deaddrop_upload_name, chunk_data)
         except Exception as e:
             self.send_deaddrop_message(json.dumps({
                 "type": MessageType.DEADDROP_DENY,
@@ -1077,7 +1069,6 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             }))
             return
 
-        # Determine expected last chunk index based on inferred chunk size
         if self.pending_deaddrop_chunk_size <= 0:
             # Cannot verify without at least one chunk; fail
             self._fail_current_upload("No data received")
@@ -1101,20 +1092,11 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             self._fail_current_upload("Missing chunks after redownload")
             return
 
-        # Finalize file size by truncating any overrun
-        try:
-            file_path = self.server.deaddrop_manager[self.pending_deaddrop_upload_name]
-            if file_path is not None:
-                with open(file_path, "r+b") as f:
-                    f.truncate(self.pending_deaddrop_expected_size)
-        except Exception:
-            # Failure to truncate is non-fatal for spec compliance; continue
-            pass
-
         # Success
         self.send_deaddrop_message({
             "type": MessageType.DEADDROP_COMPLETE
         })
+        self.server.deaddrop_manager.remove_file(self.pending_deaddrop_download)
         # Reset state and release server busy flag
         self._end_deaddrop_session()
 

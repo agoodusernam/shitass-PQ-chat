@@ -4,6 +4,7 @@ It uses KRYSTALS KYBER protocol + X25519 for secure key exchange and message enc
 """
 import base64
 import binascii
+import hashlib
 # pylint: disable=trailing-whitespace, broad-exception-caught
 import socket
 import string
@@ -15,10 +16,12 @@ import time
 from copy import deepcopy
 from typing import Any
 
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives.kdf.concatkdf import ConcatKDFHash
 from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from pqcrypto.kem import ml_kem_1024  # type: ignore
 
 import shared
@@ -115,6 +118,14 @@ class SecureChatClient:
         self._deaddrop_file_size: int = 0
         self._deaddrop_name: str = ""
         self._deaddrop_password_hash: str = ""
+        # Download-specific state
+        self._deaddrop_download_in_progress: bool = False
+        self._deaddrop_download_name: str = ""
+        self._deaddrop_download_expected_hash: str | None = None
+        self._deaddrop_download_chunks: dict[int, bytes] = {}
+        self._deaddrop_download_max_index: int = -1
+        self._deaddrop_download_key: bytes | None = None
+        self._deaddrop_download_otp_secret: bytes | None = None
         
         # Rate limiting
         self._rl_window_start: float = 0.0
@@ -123,7 +134,7 @@ class SecureChatClient:
     @property
     def file_transfer_active(self) -> bool:
         """Whether any file transfers are currently in progress."""
-        return bool(self.pending_file_transfers or self.active_file_metadata)
+        return bool(self.pending_file_transfers or self.active_file_metadata or self._deaddrop_download_in_progress)
     
     @property
     def bypass_rate_limits(self) -> bool:
@@ -1200,8 +1211,12 @@ class SecureChatClient:
     def _handle_deaddrop_encrypted_message(self, outer: dict[str, Any]) -> None:
         """Handle DEADDROP_MESSAGE from server (encrypted channel wrapper).
 
-        For now we only need to support DEADDROP_ACCEPT, DEADDROP_DENY and
-        DEADDROP_REDOWNLOAD during uploads; further flows can be added later.
+        Supports upload and download flows including:
+        - DEADDROP_CHECK_RESPONSE
+        - DEADDROP_ACCEPT / DEADDROP_DENY
+        - DEADDROP_PROVE (salt during download)
+        - DEADDROP_DATA / DEADDROP_COMPLETE
+        - DEADDROP_REDOWNLOAD
         """
         if not self.deaddrop_shared_secret:
             self.display_error_message("Received deaddrop message before handshake was complete")
@@ -1233,14 +1248,34 @@ class SecureChatClient:
             return
 
         inner_type = MessageType(int(inner.get("type", MessageType.NONE)))
-        if inner_type == MessageType.DEADDROP_ACCEPT:
-            # Server accepted upload, nothing further to track here.
+        if inner_type == MessageType.DEADDROP_CHECK_RESPONSE:
+            exists = bool(inner.get("exists", False))
+            name = self._deaddrop_name or inner.get("name", "")
+            if exists:
+                self.display_system_message(f"Deaddrop '{name}' exists on server.")
+            else:
+                self.display_error_message(f"Deaddrop '{name}' does not exist on server.")
+        elif inner_type == MessageType.DEADDROP_ACCEPT:
+            # Server accepted upload or download. For uploads, nothing more to
+            # track here; for downloads we must acknowledge with our own
+            # DEADDROP_ACCEPT so the server starts streaming the file.
             self._deaddrop_in_progress = True
-            self.display_system_message("Deaddrop upload accepted by server")
+            if self._deaddrop_download_in_progress:
+                # Download accepted: store expected file hash for integrity check
+                self._deaddrop_download_expected_hash = str(inner.get("file_hash", ""))
+                self.display_system_message("Deaddrop download accepted by server; confirming and waiting for data...")
+
+                # Confirm we are ready to receive the file as per spec.
+                confirm_inner = {"type": MessageType.DEADDROP_ACCEPT}
+                confirm_outer = self._encrypt_deaddrop_inner(json.dumps(confirm_inner).encode("utf-8"))
+                send_message(self.socket, json.dumps(confirm_outer).encode("utf-8"))
+            else:
+                self.display_system_message("Deaddrop upload accepted by server")
         elif inner_type == MessageType.DEADDROP_DENY:
             reason = inner.get("reason", "Deaddrop request denied")
             self.display_error_message(reason)
             self._deaddrop_in_progress = False
+            self._deaddrop_download_in_progress = False
         elif inner_type == MessageType.DEADDROP_REDOWNLOAD:
             # Server requests retransmission of specific chunk indexes.
             # We rely on stored chunks from the last upload invocation.
@@ -1263,10 +1298,62 @@ class SecureChatClient:
                 }
                 outer_msg = self._encrypt_deaddrop_inner(json.dumps(inner_msg).encode("utf-8"))
                 send_message(self.socket, json.dumps(outer_msg).encode("utf-8"))
+        elif inner_type == MessageType.DEADDROP_PROVE:
+            # Server is asking us to prove deaddrop password knowledge.
+            # This is part of the download flow.
+            salt_b64 = inner.get("salt")
+            if not isinstance(salt_b64, str):
+                self.display_error_message("Invalid deaddrop prove message from server")
+                return
+            try:
+                download_salt = base64.b64decode(salt_b64, validate=True)
+            except binascii.Error:
+                self.display_error_message("Invalid base64 salt in deaddrop prove message")
+                return
+
+            if not self._deaddrop_password_hash:
+                self.display_error_message("No stored deaddrop password hash for download")
+                return
+
+            # Derive PBKDF2-SHA3-512 hash over the Argon2id hash from _hash_deaddrop_password
+            pbk = PBKDF2HMAC(
+                algorithm=hashes.SHA3_512(),
+                length=32,
+                salt=download_salt,
+                iterations=800000,
+            )
+            og_hash_bytes = self._deaddrop_password_hash.encode("utf-8")
+            client_hash = pbk.derive(og_hash_bytes)
+            inner_msg = {
+                "type": MessageType.DEADDROP_PROVE,
+                "hash": base64.b64encode(client_hash).decode("utf-8"),
+            }
+            outer_msg = self._encrypt_deaddrop_inner(json.dumps(inner_msg).encode("utf-8"))
+            send_message(self.socket, json.dumps(outer_msg).encode("utf-8"))
+        elif inner_type == MessageType.DEADDROP_DATA:
+            # Downloaded encrypted chunk from server during deaddrop download.
+            if not self._deaddrop_download_in_progress:
+                # Ignore stray data
+                return
+            try:
+                chunk_index = int(inner["chunk_index"])
+                ct_b64 = str(inner["ct"])
+                chunk_data = base64.b64decode(ct_b64, validate=True)
+            except (KeyError, ValueError, TypeError, binascii.Error):
+                self.display_error_message("Malformed deaddrop data from server")
+                return
+
+            self._deaddrop_download_chunks[chunk_index] = chunk_data
+            if chunk_index > self._deaddrop_download_max_index:
+                self._deaddrop_download_max_index = chunk_index
         elif inner_type == MessageType.DEADDROP_COMPLETE:
-            self.display_system_message("Deaddrop upload completed successfully")
+            # Deaddrop upload or download completed.
+            if self._deaddrop_download_in_progress:
+                self._finalise_deaddrop_download()
+            else:
+                self.display_system_message("Deaddrop upload completed successfully")
             self._deaddrop_in_progress = False
-        # Other deaddrop flows (download/prove/check) not yet implemented
+            self._deaddrop_download_in_progress = False
 
     def _derive_deaddrop_file_key(self, password: str) -> bytes:
         """Derive a 64-byte DoubleEncryptor key from password using SHA3-512.
@@ -1274,12 +1361,13 @@ class SecureChatClient:
         This is separate from the Argon2id-based password_hash that is sent to
         the server for authentication.
         """
-        digest = hashes.Hash(hashes.SHA3_512())
+        digest = hashlib.sha3_512()
         digest.update(password.encode("utf-8"))
         # Optionally also mix server identifier to tie encryption to this server
         if self.server_identifier:
             digest.update(self.server_identifier.encode("utf-8"))
-        return digest.finalize()
+
+        return digest.digest()
 
     def _hash_deaddrop_password(self, password: str) -> str:
         """Compute Argon2id hash of password using server identifier as salt.
@@ -1287,11 +1375,13 @@ class SecureChatClient:
         Parameters as specified in deaddrop.txt: hash_len=64, memory_cost=4 GiB,
         parallelism=4, iterations=10. The result is returned as hex.
         """
+        self.display_system_message("Hashing deaddrop password, program may be unresponsive.")
+        time.sleep(0.2)
         salt = self.server_identifier.encode("utf-8") if self.server_identifier else b""
         hasher = Argon2id(
             salt=salt,
             memory_cost=1024 * 1024 * 4,
-            iterations = 10,
+            iterations = 2,
             lanes=4,
             length=64
         )
@@ -1319,14 +1409,14 @@ class SecureChatClient:
             return
 
         # Compute file hash (SHA256 hex) for integrity metadata
-        h = hashes.Hash(hashes.SHA256())
+        h = hashlib.sha256(usedforsecurity=False)
         with open(file_path, "rb") as f:
             while True:
                 chunk = f.read(8192)
                 if not chunk:
                     break
                 h.update(chunk)
-        file_hash_hex = h.finalize().hex()
+        file_hash_hex = h.digest().hex()
 
         password_hash = self._hash_deaddrop_password(password)
         self._deaddrop_file_size = file_size
@@ -1348,22 +1438,30 @@ class SecureChatClient:
         key = self._derive_deaddrop_file_key(password)
         otp_secret = key  # reuse same material for OTP keystream salt
         encryptor = DoubleEncryptor(key, otp_secret, message_counter=0)
+        print(f"{key=}")
         self._deaddrop_chunks.clear()
 
         chunk_index = 0
+        file_ext = os.path.splitext(file_path)[1][:12]
+        header = file_ext.encode("utf-8").ljust(12, b"\x00")
+
         with open(file_path, "rb") as f:
+            first = True
             while True:
-                plaintext_chunk = f.read(SEND_CHUNK_SIZE)
-                if not plaintext_chunk:
+                if first:
+                    chunk_data = f.read(SEND_CHUNK_SIZE - 12)
+                    plaintext_chunk = header + chunk_data
+                    first = False
+                else:
+                    chunk_data = f.read(SEND_CHUNK_SIZE)
+                    plaintext_chunk = chunk_data
+                if not chunk_data:
                     break
-                nonce = os.urandom(12)
                 aad = json.dumps({
                     "type": MessageType.DEADDROP_DATA,
                     "chunk_index": chunk_index,
                 }).encode("utf-8")
-                ct = encryptor.encrypt(nonce, plaintext_chunk, aad)
-                # Store encrypted chunk for potential redownload
-                self._deaddrop_chunks[chunk_index] = ct
+                ct = encryptor.encrypt(chunk_index.to_bytes(12, "little"), plaintext_chunk, aad, pad=False)
                 ct_b64 = base64.b64encode(ct).decode("utf-8")
                 inner = {
                     "type": MessageType.DEADDROP_DATA,
@@ -1379,6 +1477,110 @@ class SecureChatClient:
         complete_outer = self._encrypt_deaddrop_inner(json.dumps(complete_inner).encode("utf-8"))
         send_message(self.socket, json.dumps(complete_outer).encode("utf-8"))
         self.display_system_message("Deaddrop upload complete")
+    
+    def deaddrop_download(self, name: str, password: str) -> None:
+        """
+        Initiate client-side deaddrop download flow for the given name.
+
+        Follows deaddrop.txt: first checks existence, then proves password, and
+        finally receives DoubleEncryptor-encrypted chunks which are decrypted
+        locally using a SHA3-512-derived key.
+        """
+        if not self.deaddrop_shared_secret:
+            self.display_error_message("Deaddrop not initialised - handshake required")
+            return
+
+        self._deaddrop_name = name
+        self._deaddrop_password_hash = self._hash_deaddrop_password(password)
+        self._deaddrop_download_in_progress = True
+        self._deaddrop_download_chunks.clear()
+        self._deaddrop_download_max_index = -1
+        self._deaddrop_download_expected_hash = None
+        # Prepare DoubleEncryptor for subsequent decryption; we keep key/secret
+        # and nonce per chunk will be reconstructed from metadata.
+        key = self._derive_deaddrop_file_key(password)
+        self._deaddrop_download_key = key
+        self._deaddrop_download_otp_secret = key
+
+        # First, check if the deaddrop with this name exists.
+        inner_check = {
+            "type": MessageType.DEADDROP_CHECK,
+            "name": name,
+        }
+        outer_check = self._encrypt_deaddrop_inner(json.dumps(inner_check).encode("utf-8"))
+        send_message(self.socket, json.dumps(outer_check).encode("utf-8"))
+
+        # Immediately request download; server is allowed to claim non-existence
+        # regardless, but per spec the communication can resume from here.
+        inner_dl = {
+            "type": MessageType.DEADDROP_DOWNLOAD,
+            "name": name,
+        }
+        outer_dl = self._encrypt_deaddrop_inner(json.dumps(inner_dl).encode("utf-8"))
+        send_message(self.socket, json.dumps(outer_dl).encode("utf-8"))
+
+    def _finalise_deaddrop_download(self) -> None:
+        """
+        Reassemble and decrypt received deaddrop chunks, then write file.
+
+        This uses DoubleEncryptor with SHA3-512-derived key; the first 12 bytes
+        of the first decrypted chunk encode the original file extension.
+        """
+        if not self._deaddrop_download_chunks:
+            self.display_error_message("No deaddrop data received from server")
+            return
+
+        if self._deaddrop_download_key is None or self._deaddrop_download_otp_secret is None:
+            self.display_error_message("Missing deaddrop decryption key material")
+            return
+
+        encryptor = DoubleEncryptor(self._deaddrop_download_key, self._deaddrop_download_otp_secret, message_counter=0)
+
+        # Decrypt chunks in order starting from index 0
+        chunks: list[bytes] = []
+        for idx in range(self._deaddrop_download_max_index + 1):
+            ct = self._deaddrop_download_chunks.get(idx)
+            if ct is None:
+                # TODO: mark as missing chunk, then redownload
+                self.display_error_message("Missing deaddrop chunk; download failed")
+                return
+
+            aad = json.dumps({
+                "type": MessageType.DEADDROP_DATA,
+                "chunk_index": idx,
+            }).encode("utf-8")
+            try:
+                pt = encryptor.decrypt(idx.to_bytes(12, "little"), ct, aad, pad=False)
+            except InvalidTag:
+                self.display_error_message("Failed to decrypt deaddrop chunk")
+                return
+            chunks.append(pt)
+
+        if not chunks:
+            self.display_error_message("No deaddrop chunks after decryption")
+            return
+
+        first_chunk = chunks[0]
+        if len(first_chunk) < 12:
+            self.display_error_message("First deaddrop chunk too small to contain header")
+            return
+
+        header = first_chunk[:12]
+        body0 = first_chunk[12:]
+        file_ext = header.rstrip(b"\x00").decode("utf-8", errors="ignore")
+        file_body = body0 + b"".join(chunks[1:])
+
+        # Construct output file name using deaddrop name and extracted extension
+        safe_name = "".join(c for c in self._deaddrop_name if c.isalnum() or c in ("-", "_")) or "deaddrop"
+        filename = safe_name + (file_ext if file_ext.startswith(".") else ("." + file_ext if file_ext else ""))
+        try:
+            with open(filename, "wb") as f:
+                f.write(file_body)
+        except Exception as exc:
+            self.display_error_message(f"Failed to write deaddrop file: {exc}")
+            return
+
+        self.display_system_message(f"Deaddrop download complete, saved to: {filename}")
     
     def handle_server_version_info(self, message_data: bytes) -> None:
         """Handle server version information."""
@@ -1455,6 +1657,7 @@ class SecureChatClient:
         print("  /verify - Start key verification")
         print("  /file <path> - Send a file")
         print("  /deaddrop upload - Upload a file to deaddrop")
+        print("  /deaddrop download <name> - Download a deaddrop file")
         print("  /help - Show this help message")
         print()
         
@@ -1477,6 +1680,7 @@ class SecureChatClient:
                         print("  /verify - Start key verification")
                         print("  /file <path> - Send a file")
                         print("  /deaddrop upload - Upload a file to deaddrop")
+                        print("  /deaddrop download <name> - Download a deaddrop file")
                         print("  /rekey - Initiate a rekey for fresh session keys")
                         print("  /help - Show this help message")
                     elif message.lower().strip() == '/deaddrop upload':
@@ -1500,6 +1704,28 @@ class SecureChatClient:
                             print("Deaddrop handshake failed.")
                             continue
                         self.deaddrop_upload(name, password, file_path)
+
+                    elif message.lower().startswith('/deaddrop download'):
+                        parts = message.split(maxsplit=2)
+                        name = parts[2] if len(parts) >= 3 else ""
+                        if not name:
+                            print("Usage: /deaddrop download <name>")
+                            continue
+                        try:
+                            password = input("Deaddrop password: ")
+                        except (EOFError, KeyboardInterrupt):
+                            print("Deaddrop download cancelled.")
+                            continue
+                        if not password:
+                            print("Deaddrop download aborted: missing password")
+                            continue
+                        self.start_deaddrop_handshake()
+                        time.sleep(0.5)
+                        if not self.deaddrop_shared_secret:
+                            print("Deaddrop handshake failed.")
+                            continue
+                        self.deaddrop_download(name, password)
+
                     elif message.lower().startswith('/file '):
                         file_path = message[6:].strip()
                         if file_path:
