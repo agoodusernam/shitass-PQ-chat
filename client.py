@@ -126,6 +126,8 @@ class SecureChatClient:
         self._deaddrop_download_max_index: int = -1
         self._deaddrop_download_key: bytes | None = None
         self._deaddrop_download_otp_secret: bytes | None = None
+        # Event to signal completion of the deaddrop handshake
+        self._deaddrop_handshake_event: threading.Event | None = None
         
         # Rate limiting
         self._rl_window_start: float = 0.0
@@ -1141,10 +1143,43 @@ class SecureChatClient:
             self.display_error_message("Deaddrop already in progress")
             return
 
+        # Reset handshake state and (re)initialise the event so callers can
+        # wait for completion in a thread-safe manner.
+        self.deaddrop_shared_secret = None
+        self.deaddrop_supported = False
+        if self._deaddrop_handshake_event is None:
+            self._deaddrop_handshake_event = threading.Event()
+        else:
+            self._deaddrop_handshake_event.clear()
+
         self.display_system_message("Starting deaddrop handshake")
 
         msg = {"type": MessageType.DEADDROP_START}
         send_message(self.socket, json.dumps(msg).encode("utf-8"))
+
+    def wait_for_deaddrop_handshake(self, timeout: float = 3.0) -> bool:
+        """Block until the deaddrop handshake completes or ``timeout`` elapses.
+
+        Returns ``True`` if a shared secret was successfully established, and
+        ``False`` if the handshake failed, was not supported, or timed out.
+        """
+        if not self.connected:
+            self.display_error_message("Cannot wait for deaddrop handshake - not connected")
+            return False
+
+        if self._deaddrop_handshake_event is None:
+            # Handshake was never started for this wait call.
+            self.display_error_message("Deaddrop handshake has not been started")
+            return False
+
+        completed = self._deaddrop_handshake_event.wait(timeout)
+        if not completed:
+            self.display_error_message("Deaddrop handshake timed out")
+            return False
+
+        # If the event was set but no shared secret is present, treat as failure
+        # or unsupported deaddrop.
+        return bool(self.deaddrop_shared_secret)
 
     def _handle_deaddrop_start_response(self, message: dict[str, Any]) -> None:
         """Process server's response to DEADDROP_START.
@@ -1160,6 +1195,8 @@ class SecureChatClient:
             self.deaddrop_shared_secret = None
             self.deaddrop_supported = False
             self._deaddrop_in_progress = False
+            if self._deaddrop_handshake_event is not None:
+                self._deaddrop_handshake_event.set()
             return
 
         try:
@@ -1167,9 +1204,13 @@ class SecureChatClient:
             mlkem_public = base64.b64decode(mlkem_public_b64, validate=True)
         except KeyError:
             self.display_error_message("Invalid deaddrop start response: missing mlkem_public")
+            if self._deaddrop_handshake_event is not None:
+                self._deaddrop_handshake_event.set()
             return
         except binascii.Error:
             self.display_error_message("Invalid deaddrop start response: bad mlkem_public encoding")
+            if self._deaddrop_handshake_event is not None:
+                self._deaddrop_handshake_event.set()
             return
 
         # Perform ML-KEM encapsulation
@@ -1189,6 +1230,8 @@ class SecureChatClient:
         }
         send_message(self.socket, json.dumps(resp).encode("utf-8"))
         self.display_system_message("Deaddrop handshake complete")
+        if self._deaddrop_handshake_event is not None:
+            self._deaddrop_handshake_event.set()
 
     def _encrypt_deaddrop_inner(self, inner: bytes) -> dict[str, Any]:
         """Encrypt inner deaddrop JSON bytes into a DEADDROP_MESSAGE envelope."""
@@ -1438,7 +1481,6 @@ class SecureChatClient:
         key = self._derive_deaddrop_file_key(password)
         otp_secret = key  # reuse same material for OTP keystream salt
         encryptor = DoubleEncryptor(key, otp_secret, message_counter=0)
-        print(f"{key=}")
         self._deaddrop_chunks.clear()
 
         chunk_index = 0
@@ -1478,6 +1520,29 @@ class SecureChatClient:
         send_message(self.socket, json.dumps(complete_outer).encode("utf-8"))
         self.display_system_message("Deaddrop upload complete")
     
+    def deaddrop_check(self, name: str) -> None:
+        """Check whether a deaddrop with ``name`` exists on the server.
+
+        This uses the existing deaddrop encrypted channel established via
+        :meth:`start_deaddrop_handshake`. It deliberately does *not* start a
+        new handshake, so multiple checks can be performed without
+        renegotiating keys. Callers are responsible for ensuring that the
+        handshake has completed successfully before invoking this method.
+        """
+        if not self.deaddrop_shared_secret:
+            self.display_error_message("Deaddrop not initialised - handshake required")
+            return
+
+        # Remember last queried name so DEADDROP_CHECK_RESPONSE can refer to it
+        self._deaddrop_name = name
+
+        inner = {
+            "type": MessageType.DEADDROP_CHECK,
+            "name": name,
+        }
+        outer = self._encrypt_deaddrop_inner(json.dumps(inner).encode("utf-8"))
+        send_message(self.socket, json.dumps(outer).encode("utf-8"))
+
     def deaddrop_download(self, name: str, password: str) -> None:
         """
         Initiate client-side deaddrop download flow for the given name.
@@ -1502,16 +1567,6 @@ class SecureChatClient:
         self._deaddrop_download_key = key
         self._deaddrop_download_otp_secret = key
 
-        # First, check if the deaddrop with this name exists.
-        inner_check = {
-            "type": MessageType.DEADDROP_CHECK,
-            "name": name,
-        }
-        outer_check = self._encrypt_deaddrop_inner(json.dumps(inner_check).encode("utf-8"))
-        send_message(self.socket, json.dumps(outer_check).encode("utf-8"))
-
-        # Immediately request download; server is allowed to claim non-existence
-        # regardless, but per spec the communication can resume from here.
         inner_dl = {
             "type": MessageType.DEADDROP_DOWNLOAD,
             "name": name,
@@ -1657,6 +1712,7 @@ class SecureChatClient:
         print("  /verify - Start key verification")
         print("  /file <path> - Send a file")
         print("  /deaddrop upload - Upload a file to deaddrop")
+        print("  /deaddrop check <name> - Check if a deaddrop exists")
         print("  /deaddrop download <name> - Download a deaddrop file")
         print("  /help - Show this help message")
         print()
@@ -1680,6 +1736,7 @@ class SecureChatClient:
                         print("  /verify - Start key verification")
                         print("  /file <path> - Send a file")
                         print("  /deaddrop upload - Upload a file to deaddrop")
+                        print("  /deaddrop check <name> - Check if a deaddrop exists")
                         print("  /deaddrop download <name> - Download a deaddrop file")
                         print("  /rekey - Initiate a rekey for fresh session keys")
                         print("  /help - Show this help message")
@@ -1697,13 +1754,28 @@ class SecureChatClient:
                             continue
                         # Start handshake then upload
                         self.start_deaddrop_handshake()
-                        # Give the server a short moment; in a real UI this
-                        # would be event-driven. Here we sleep briefly.
-                        time.sleep(0.5)
-                        if not self.deaddrop_shared_secret:
+                        if not self.wait_for_deaddrop_handshake(3.0):
                             print("Deaddrop handshake failed.")
                             continue
                         self.deaddrop_upload(name, password, file_path)
+
+                    elif message.lower().startswith('/deaddrop check'):
+                        parts = message.split(maxsplit=2)
+                        name = parts[2] if len(parts) >= 3 else ""
+                        if not name:
+                            print("Usage: /deaddrop check <name>")
+                            continue
+
+                        # Start handshake only if we don't already have a
+                        # deaddrop shared secret; this avoids rehandshakes on
+                        # every check and allows multiple checks per session.
+                        if not self.deaddrop_shared_secret:
+                            self.start_deaddrop_handshake()
+                            if not self.wait_for_deaddrop_handshake(3.0):
+                                print("Deaddrop handshake failed.")
+                                continue
+
+                        self.deaddrop_check(name)
 
                     elif message.lower().startswith('/deaddrop download'):
                         parts = message.split(maxsplit=2)
@@ -1720,8 +1792,7 @@ class SecureChatClient:
                             print("Deaddrop download aborted: missing password")
                             continue
                         self.start_deaddrop_handshake()
-                        time.sleep(0.5)
-                        if not self.deaddrop_shared_secret:
+                        if not self.wait_for_deaddrop_handshake(3.0):
                             print("Deaddrop handshake failed.")
                             continue
                         self.deaddrop_download(name, password)

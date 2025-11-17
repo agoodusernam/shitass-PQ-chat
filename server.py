@@ -65,7 +65,9 @@ class DeadDropManager:
         for file in files:
             if file.endswith(".bin"):
                 name = os.path.basename(file)[:-4]
-                self.deaddrop_files[name] = file
+                path = os.path.join(configs.DEADDROP_FILE_LOCATION, file)
+                self.deaddrop_files[name] = path
+
     
     def __getitem__(self, item: str) -> str | None:
         """
@@ -75,10 +77,10 @@ class DeadDropManager:
         """
         if not configs.DEADDROP_ENABLED:
             return None
-        
+
         if not self.check_file(item):
             return None
-        
+
         return self.deaddrop_files[item]
     
     def append(self, name: str, data: bytes) -> None:
@@ -152,11 +154,7 @@ class DeadDropManager:
         
         # Remove main file
         os.remove(self.deaddrop_files[name])
-        # Try to remove metadata if present
-        try:
-            os.remove(self.deaddrop_files[name] + ".metadata")
-        except FileNotFoundError:
-            pass
+        os.remove(self.deaddrop_files[name] + ".metadata")
         del self.deaddrop_files[name]
     
     def check_file(self, name: str) -> bool:
@@ -1096,7 +1094,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         self.send_deaddrop_message({
             "type": MessageType.DEADDROP_COMPLETE
         })
-        self.server.deaddrop_manager.remove_file(self.pending_deaddrop_download)
+
         # Reset state and release server busy flag
         self._end_deaddrop_session()
 

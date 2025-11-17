@@ -1341,6 +1341,7 @@ class ChatGUI:
             self.append_to_chat("/rekey - Generate a new key pair and restart key exchange (requires prior verification)")
             self.append_to_chat("/quit - Disconnect and exit the application")
             self.append_to_chat("/deaddrop upload - Upload a file to the server-side deaddrop store")
+            self.append_to_chat("/deaddrop check <name> - Check if a deaddrop exists on the server")
             self.append_to_chat("/deaddrop download <name> - Download a file from the server-side deaddrop store")
             self.message_entry.delete("1.0", tk.END)
             return "break"
@@ -1388,9 +1389,8 @@ class ChatGUI:
                 def worker() -> None:
                     assert self.client is not None
                     self.client.start_deaddrop_handshake()
-                    # In GUI we rely on the server responding promptly; poll briefly
-                    time.sleep(0.5)
-                    if not self.client.deaddrop_shared_secret:
+                    # Wait (with timeout) for the deaddrop handshake to complete
+                    if not self.client.wait_for_deaddrop_handshake(3.0):
                         self.append_to_chat("Deaddrop handshake failed or not supported by server")
                         return
                     self.client.deaddrop_upload(name, password, file_path)
@@ -1399,6 +1399,39 @@ class ChatGUI:
 
             # Run prompts on Tk thread
             self.on_tk_thread(do_flow)
+            return "break"
+
+        if message.lower().startswith('/deaddrop check'):
+            self.message_entry.delete("1.0", tk.END)
+
+            def do_check_flow() -> None:
+                parts = message.split(maxsplit=2)
+                name = parts[2] if len(parts) >= 3 else ""
+                if not name:
+                    # If the user didn't provide a name inline, prompt for it.
+                    name_prompt = simpledialog.askstring("Deaddrop Check", "Deaddrop name:", parent=self.root)
+                    if not name_prompt:
+                        return
+                    name = name_prompt.strip()
+                    if not name:
+                        return
+
+                assert self.client is not None
+
+                def worker() -> None:
+                    # Only initiate handshake if we don't already have a
+                    # shared secret; this avoids rehandshake on every check.
+                    if not self.client.deaddrop_shared_secret:
+                        self.client.start_deaddrop_handshake()
+                        if not self.client.wait_for_deaddrop_handshake(3.0):
+                            self.append_to_chat("Deaddrop handshake failed or not supported by server")
+                            return
+
+                    self.client.deaddrop_check(name)
+
+                threading.Thread(target=worker, daemon=True).start()
+
+            self.on_tk_thread(do_check_flow)
             return "break"
 
         if message.lower().startswith('/deaddrop download'):
@@ -1420,8 +1453,8 @@ class ChatGUI:
                 self.client.start_deaddrop_handshake()
 
                 def worker() -> None:
-                    time.sleep(0.5)
-                    if not self.client.deaddrop_shared_secret:
+                    # Wait (with timeout) for the deaddrop handshake to complete
+                    if not self.client.wait_for_deaddrop_handshake(3.0):
                         self.append_to_chat("Deaddrop handshake failed or not supported by server")
                         return
                     self.client.deaddrop_download(name, password)
