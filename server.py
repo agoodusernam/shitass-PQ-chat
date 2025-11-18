@@ -460,6 +460,8 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                 message = json.loads(message_data)
                 message_type = message.get("type")
             except (json.JSONDecodeError, UnicodeDecodeError):
+                with open("message.txt", "wb") as f:
+                    f.write(message_data)
                 print(f"Failed to parse message from {self.client_id}")
                 self.handle_unexpected_message("failed to parse message")
                 return
