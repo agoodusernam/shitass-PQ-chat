@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import typing
+import warnings
 from collections import deque
 from enum import IntEnum, unique
 from typing import Final, Any, SupportsIndex, SupportsBytes, TypedDict, NotRequired
@@ -33,7 +34,8 @@ try:
     
     from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305, AESGCMSIV
     from cryptography.hazmat.primitives.padding import PKCS7
-    
+    from cryptography.hazmat.primitives.ciphers import algorithms, modes, Cipher, CipherContext
+
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.kdf.hkdf import HKDF
     from cryptography.hazmat.primitives.hmac import HMAC
@@ -46,7 +48,7 @@ except ImportError as exc_:
     raise ImportError("Please install the required libraries with pip install -r requirements.txt") from exc_
 
 # Protocol constants
-PROTOCOL_VERSION: Final[str] = "7.0.1"
+PROTOCOL_VERSION: Final[str] = "7.1.1"
 # Protocol compatibility is denoted by version number
 # Breaking.Minor.Patch - only Breaking versions are checked for compatibility.
 # Breaking version changes introduce breaking changes that are not compatible with previous versions of the same major version.
@@ -102,34 +104,39 @@ class DoubleEncryptor:
             message_counter: Monotonically increasing counter mixed into the keystream to ensure per-message
                              uniqueness.
         """
-        self._key = key
-        self._aes = AESGCMSIV(key[:32])
-        self._chacha = ChaCha20Poly1305(key[32:])
-        self._OTP_secret = OTP_secret
-        self.message_counter = message_counter
+        self._key: bytes = key
+        self._aes: AESGCMSIV = AESGCMSIV(key[:32])
+        self._chacha: ChaCha20Poly1305 = ChaCha20Poly1305(key[32:])
+        self._OTP_secret: bytes = OTP_secret
+        self.message_counter: int = message_counter
         
-    def encrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None) -> bytes:
-        padder = PKCS7(512).padder()
-        padded_data = padder.update(data) + padder.finalize()
+    def encrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None, pad: bool = True) -> bytes:
+        if pad:
+            padder = PKCS7(512).padder()
+            new_data = padder.update(data) + padder.finalize()
+        else:
+            new_data = data
         
         aes_nonce = xor_bytes(nonce, self._key[:12])
         chacha_nonce = xor_bytes(nonce, self._key[-12:])
         
-        layer0 = xor_bytes(padded_data, self._derive_OTP_keystream(len(padded_data), aes_nonce + chacha_nonce))
+        layer0 = xor_bytes(new_data, self._derive_OTP_keystream(len(new_data), aes_nonce + chacha_nonce))
         layer1 = self._aes.encrypt(aes_nonce, layer0, associated_data)
         layer2 = self._chacha.encrypt(chacha_nonce, layer1, associated_data)
         return layer2
     
-    def decrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None) -> bytes:
+    def decrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None, pad: bool = True) -> bytes:
         aes_nonce = xor_bytes(nonce, self._key[:12])
         chacha_nonce = xor_bytes(nonce, self._key[-12:])
-        unpadder = PKCS7(512).unpadder()
         
         layer2 = self._chacha.decrypt(chacha_nonce, data, associated_data)
         layer1 = self._aes.decrypt(aes_nonce, layer2, associated_data)
         layer0 = xor_bytes(layer1, self._derive_OTP_keystream(len(layer1), aes_nonce + chacha_nonce))
-        
-        return unpadder.update(layer0) + unpadder.finalize()
+
+        if pad:
+            unpadder = PKCS7(512).unpadder()
+            return unpadder.update(layer0) + unpadder.finalize()
+        return layer0
     
     def _derive_OTP_keystream(self, length: int, additional_salt: bytes) -> bytes:
         """Generate keystream from HQC shared secret using message counter."""
@@ -148,6 +155,47 @@ class DoubleEncryptor:
         
         del self._aes
         del self._chacha
+
+class StreamingDoubleEncryptor:
+    """
+    Similar to DoubleEncryptor except not authenticated.
+    This is for the DeadDrop feature in which chunks are not always
+    guaranteed to be decrypted in the same size as encrypted.
+
+    Conforms to DoubleEncryptor interface.
+    """
+    def __init__(self, key: bytes, OTP_secret: bytes | None = None, message_counter: int | None = None):
+        self._key = key
+        _ = OTP_secret
+        _ = message_counter
+
+    def encrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None, pad: bool = False) -> bytes:
+        if associated_data is not None:
+            warnings.warn("StreamingDoubleEncryptor does not support associated data and is NOT authenticated.",
+                          RuntimeWarning)
+
+        if pad:
+            warnings.warn("StreamingDoubleEncryptor does not support padding.", RuntimeWarning)
+
+        chacha_encryptor: CipherContext = Cipher(algorithms.ChaCha20(self._key[32:], nonce), None).encryptor()
+        aes_encryptor: CipherContext = Cipher(algorithms.AES(self._key[:32]), modes.CTR(nonce)).encryptor()
+        layer1 = chacha_encryptor.update(data) + chacha_encryptor.finalize()
+        layer2 = aes_encryptor.update(layer1) + aes_encryptor.finalize()
+        return layer2
+
+    def decrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None, pad: bool = False) -> bytes:
+        if associated_data is not None:
+            warnings.warn("StreamingDoubleEncryptor does not support associated data and is NOT authenticated.",
+                          RuntimeWarning)
+
+        if pad:
+            warnings.warn("StreamingDoubleEncryptor does not support padding.", RuntimeWarning)
+
+        chacha_decryptor: CipherContext = Cipher(algorithms.ChaCha20(self._key[32:], nonce), None).decryptor()
+        aes_decryptor: CipherContext = Cipher(algorithms.AES(self._key[:32]), modes.CTR(nonce)).decryptor()
+        layer2 = aes_decryptor.update(data) + aes_decryptor.finalize()
+        layer1 = chacha_decryptor.update(layer2) + chacha_decryptor.finalize()
+        return layer1
 
 @unique
 class MessageType(IntEnum):
@@ -198,6 +246,27 @@ class MessageType(IntEnum):
     KEY_VERIFICATION = 62
     NICKNAME_CHANGE = 63
     REKEY = 64
+    
+    # Dead drop functionality
+    DEADDROP_START = 70
+    DEADDROP_KE_RESPONSE = 71
+    
+    DEADDROP_CHECK = 72
+    DEADDROP_CHECK_RESPONSE = 73
+    
+    DEADDROP_UPLOAD = 74
+    
+    DEADDROP_DOWNLOAD = 75
+    DEADDROP_REDOWNLOAD = 76
+    
+    DEADDROP_ACCEPT = 77
+    DEADDROP_DENY = 78
+    
+    DEADDROP_DATA = 79
+    DEADDROP_COMPLETE = 80
+    DEADDROP_MESSAGE = 81
+    DEADDROP_PROVE = 82
+    
     
     @classmethod
     def _missing_(cls, value):
@@ -341,11 +410,11 @@ def bytes_to_human_readable(size: int) -> str:
     if size < 1024:
         return f"{size} B"
     if size < 1024 ** 2:
-        return f"{size / 1024:.1f} KB"
+        return f"{size / 1024:.1f} KiB"
     if size < 1024 ** 3:
-        return f"{size / 1024 ** 2:.1f} MB"
+        return f"{size / 1024 ** 2:.1f} MiB"
     
-    return f"{size / 1024 ** 3:.1f} GB"
+    return f"{size / 1024 ** 3:.2f} GiB"
 
 
 def xor_bytes(a: bytes, b: bytes) -> bytes:
@@ -1692,7 +1761,7 @@ class SecureChatProtocol:
                     yield file_chunk
     
     @staticmethod
-    def process_file_metadata(message: dict) -> FileMetadata:
+    def process_file_metadata(message: dict[Any, Any]) -> FileMetadata:
         """Process a file metadata message."""
         try:
             return {
@@ -1701,13 +1770,13 @@ class SecureChatProtocol:
                 "file_size":      message["file_size"],
                 "file_hash":      message["file_hash"],
                 "total_chunks":   message["total_chunks"],
-                "compressed":     message.get("compressed", True),
-                "processed_size": message.get("processed_size", message.get("compressed_size", 0))
+                "compressed":     message.get("compressed", False),
+                "processed_size": message.get("processed_size", message["file_size"])
             }
         except KeyError:
             raise KeyError("Invalid file metadata message")
     
-    def process_file_chunk(self, encrypted_data: bytes) -> dict:
+    def process_file_chunk(self, encrypted_data: bytes) -> dict[Any, Any]:
         """Process an optimised file chunk message with binary format and DH double ratchet.
         Expects frame: [4-byte counter][12-byte nonce][32-byte eph_pub][ciphertext].
         """
@@ -1806,7 +1875,8 @@ class SecureChatProtocol:
         }
     
     def add_file_chunk(self, transfer_id: str, chunk_index: int, chunk_data: bytes, total_chunks: int) -> bool:
-        """Add a received file chunk and return True if file is complete.
+        """
+        Add a received file chunk and return True if file is complete.
         
         Instead of storing chunks in memory, this method writes them directly to a temporary file.
         It keeps track of which chunks have been received using a set of indices.

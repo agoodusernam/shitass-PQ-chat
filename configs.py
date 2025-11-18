@@ -83,3 +83,18 @@ See pyaudio documentation for more details.
 MAX_UNEXPECTED_MSGS: Final[int] = 10
 # Maximum number of unexpected messages a client can send before being disconnected.
 # Default: 10
+
+DEADDROP_FILE_LOCATION: Final[str] = "deaddrop_files"
+# Directory where deaddrop files are stored.
+# Must be a relative or absolute path.
+# Path must be surrounded by quotes. (" or ')
+# Default: "deaddrop_files"
+
+DEADDROP_MAX_SIZE: Final[int] = 1024 * 1024 * 1024 * 10
+# Maximum size of deaddrop files in bytes
+# Default: 10 GiB
+
+DEADDROP_ENABLED: Final[bool] = True
+# Whether deaddrop is enabled.
+# Must be True or False
+# Default: False
