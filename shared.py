@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import typing
+import warnings
 from collections import deque
 from enum import IntEnum, unique
 from typing import Final, Any, SupportsIndex, SupportsBytes, TypedDict, NotRequired
@@ -33,7 +34,8 @@ try:
     
     from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305, AESGCMSIV
     from cryptography.hazmat.primitives.padding import PKCS7
-    
+    from cryptography.hazmat.primitives.ciphers import algorithms, modes, Cipher, CipherContext
+
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.kdf.hkdf import HKDF
     from cryptography.hazmat.primitives.hmac import HMAC
@@ -102,11 +104,11 @@ class DoubleEncryptor:
             message_counter: Monotonically increasing counter mixed into the keystream to ensure per-message
                              uniqueness.
         """
-        self._key = key
-        self._aes = AESGCMSIV(key[:32])
-        self._chacha = ChaCha20Poly1305(key[32:])
-        self._OTP_secret = OTP_secret
-        self.message_counter = message_counter
+        self._key: bytes = key
+        self._aes: AESGCMSIV = AESGCMSIV(key[:32])
+        self._chacha: ChaCha20Poly1305 = ChaCha20Poly1305(key[32:])
+        self._OTP_secret: bytes = OTP_secret
+        self.message_counter: int = message_counter
         
     def encrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None, pad: bool = True) -> bytes:
         if pad:
@@ -153,6 +155,47 @@ class DoubleEncryptor:
         
         del self._aes
         del self._chacha
+
+class StreamingDoubleEncryptor:
+    """
+    Similar to DoubleEncryptor except not authenticated.
+    This is for the DeadDrop feature in which chunks are not always
+    guaranteed to be decrypted in the same size as encrypted.
+
+    Conforms to DoubleEncryptor interface.
+    """
+    def __init__(self, key: bytes, OTP_secret: bytes | None = None, message_counter: int | None = None):
+        self._key = key
+        _ = OTP_secret
+        _ = message_counter
+
+    def encrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None, pad: bool = False) -> bytes:
+        if associated_data is not None:
+            warnings.warn("StreamingDoubleEncryptor does not support associated data and is NOT authenticated.",
+                          RuntimeWarning)
+
+        if pad:
+            warnings.warn("StreamingDoubleEncryptor does not support padding.", RuntimeWarning)
+
+        chacha_encryptor: CipherContext = Cipher(algorithms.ChaCha20(self._key[32:], nonce), None).encryptor()
+        aes_encryptor: CipherContext = Cipher(algorithms.AES(self._key[:32]), modes.CTR(nonce)).encryptor()
+        layer1 = chacha_encryptor.update(data) + chacha_encryptor.finalize()
+        layer2 = aes_encryptor.update(layer1) + aes_encryptor.finalize()
+        return layer2
+
+    def decrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None, pad: bool = False) -> bytes:
+        if associated_data is not None:
+            warnings.warn("StreamingDoubleEncryptor does not support associated data and is NOT authenticated.",
+                          RuntimeWarning)
+
+        if pad:
+            warnings.warn("StreamingDoubleEncryptor does not support padding.", RuntimeWarning)
+
+        chacha_decryptor: CipherContext = Cipher(algorithms.ChaCha20(self._key[32:], nonce), None).decryptor()
+        aes_decryptor: CipherContext = Cipher(algorithms.AES(self._key[:32]), modes.CTR(nonce)).decryptor()
+        layer2 = aes_decryptor.update(data) + aes_decryptor.finalize()
+        layer1 = chacha_decryptor.update(layer2) + chacha_decryptor.finalize()
+        return layer1
 
 @unique
 class MessageType(IntEnum):
@@ -367,11 +410,11 @@ def bytes_to_human_readable(size: int) -> str:
     if size < 1024:
         return f"{size} B"
     if size < 1024 ** 2:
-        return f"{size / 1024:.1f} KB"
+        return f"{size / 1024:.1f} KiB"
     if size < 1024 ** 3:
-        return f"{size / 1024 ** 2:.1f} MB"
+        return f"{size / 1024 ** 2:.1f} MiB"
     
-    return f"{size / 1024 ** 3:.1f} GB"
+    return f"{size / 1024 ** 3:.2f} GiB"
 
 
 def xor_bytes(a: bytes, b: bytes) -> bytes:

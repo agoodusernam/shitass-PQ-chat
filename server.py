@@ -169,7 +169,7 @@ class DeadDropManager:
     def chunk_file(self, name: str) -> Generator[bytes, None, None]:
         with self.get_file(name) as f:
             while True:
-                data = f.read(1024*1024 + 32)
+                data = f.read(1024*1024)
                 if not data:
                     break
                 yield data
@@ -441,6 +441,8 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
     def handle(self):
         try:
             self._handle()
+        except ConnectionError:
+            self.disconnect("Unexpected disconnect", notify = False)
         finally:
             if not self.announced_disconnect:
                 self.disconnect()
@@ -631,7 +633,10 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                 
                 if not self.connected:
                     break
-                
+
+                if self.server.deaddrop_busy:
+                    continue
+
                 if self.waiting_for_keepalive_response:
                     self.keepalive_failures += 1
                     if self.keepalive_failures >= 3:
@@ -702,11 +707,8 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             self.connected = False
             
             # End any active deaddrop session and cleanup exclusivity
-            try:
-                if self.upload_accepted or (self.server.deaddrop_owner == self.client_id):
-                    self._end_deaddrop_session()
-            except Exception:
-                pass
+            if self.upload_accepted or (self.server.deaddrop_owner == self.client_id):
+                self._end_deaddrop_session()
 
             # Attempt to notify client about server-initiated disconnect
             if notify:

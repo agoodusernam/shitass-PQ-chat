@@ -14,9 +14,8 @@ import sys
 import os
 import time
 from copy import deepcopy
-from typing import Any
+from typing import Any, BinaryIO
 
-from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives.kdf.concatkdf import ConcatKDFHash
@@ -27,7 +26,7 @@ from pqcrypto.kem import ml_kem_1024  # type: ignore
 import shared
 from shared import (SecureChatProtocol, send_message, receive_message, MessageType,
                     PROTOCOL_VERSION, FileMetadata, FileTransfer, SEND_CHUNK_SIZE,
-                    DoubleEncryptor)
+                    StreamingDoubleEncryptor)
 
 
 # noinspection PyBroadException
@@ -126,6 +125,12 @@ class SecureChatClient:
         self._deaddrop_download_max_index: int = -1
         self._deaddrop_download_key: bytes | None = None
         self._deaddrop_download_otp_secret: bytes | None = None
+        # Streaming download state (for deaddrop)
+        self._deaddrop_dl_encryptor: StreamingDoubleEncryptor | None = None
+        self._deaddrop_dl_next_nonce: bytes | None = None
+        self._deaddrop_dl_expected_index: int = 0
+        self._deaddrop_dl_part_path: str | None = None
+        self._deaddrop_dl_file: BinaryIO | None = None  # file handle for .part writing
         # Event to signal completion of the deaddrop handshake
         self._deaddrop_handshake_event: threading.Event | None = None
         
@@ -328,7 +333,7 @@ class SecureChatClient:
         
         # First, try to parse as JSON (for control messages including keepalive)
         try:
-            message_json: dict[Any, Any] = json.loads(message_data.decode('utf-8'))
+            message_json: dict[Any, Any] = json.loads(message_data)
             message_type = MessageType(int(message_json.get("type")))  # type: ignore
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
             # If JSON parsing failed, check if this might be a binary file chunk message
@@ -1386,9 +1391,8 @@ class SecureChatClient:
                 self.display_error_message("Malformed deaddrop data from server")
                 return
 
-            self._deaddrop_download_chunks[chunk_index] = chunk_data
-            if chunk_index > self._deaddrop_download_max_index:
-                self._deaddrop_download_max_index = chunk_index
+            # Stream-decrypt and write directly to disk
+            self._process_deaddrop_data_streaming(chunk_index, chunk_data)
         elif inner_type == MessageType.DEADDROP_COMPLETE:
             # Deaddrop upload or download completed.
             if self._deaddrop_download_in_progress:
@@ -1413,18 +1417,16 @@ class SecureChatClient:
         return digest.digest()
 
     def _hash_deaddrop_password(self, password: str) -> str:
-        """Compute Argon2id hash of password using server identifier as salt.
-
-        Parameters as specified in deaddrop.txt: hash_len=64, memory_cost=4 GiB,
-        parallelism=4, iterations=10. The result is returned as hex.
+        """
+        Compute Argon2id hash of password using server identifier as salt.
         """
         self.display_system_message("Hashing deaddrop password, program may be unresponsive.")
-        time.sleep(0.2)
+        time.sleep(0.2) # Wait a moment to allow the display to update
         salt = self.server_identifier.encode("utf-8") if self.server_identifier else b""
         hasher = Argon2id(
             salt=salt,
             memory_cost=1024 * 1024 * 4,
-            iterations = 2,
+            iterations=4,
             lanes=4,
             length=64
         )
@@ -1479,31 +1481,32 @@ class SecureChatClient:
 
         # Encrypt file contents with DoubleEncryptor under password-derived key
         key = self._derive_deaddrop_file_key(password)
-        otp_secret = key  # reuse same material for OTP keystream salt
-        encryptor = DoubleEncryptor(key, otp_secret, message_counter=0)
+        encryptor = StreamingDoubleEncryptor(key)
         self._deaddrop_chunks.clear()
 
         chunk_index = 0
         file_ext = os.path.splitext(file_path)[1][:12]
         header = file_ext.encode("utf-8").ljust(12, b"\x00")
-
+        first_nonce = hashlib.sha3_256(self.server_identifier.encode("utf-8")).digest()[:16]
+        second_nonce = os.urandom(16)
+        header += first_nonce
         with open(file_path, "rb") as f:
             first = True
             while True:
                 if first:
-                    chunk_data = f.read(SEND_CHUNK_SIZE - 12)
+
+                    chunk_data = f.read(SEND_CHUNK_SIZE - 24)
                     plaintext_chunk = header + chunk_data
                     first = False
+                    nonce = first_nonce
                 else:
                     chunk_data = f.read(SEND_CHUNK_SIZE)
                     plaintext_chunk = chunk_data
+                    nonce = second_nonce
                 if not chunk_data:
                     break
-                aad = json.dumps({
-                    "type": MessageType.DEADDROP_DATA,
-                    "chunk_index": chunk_index,
-                }).encode("utf-8")
-                ct = encryptor.encrypt(chunk_index.to_bytes(12, "little"), plaintext_chunk, aad, pad=False)
+
+                ct = encryptor.encrypt(nonce, plaintext_chunk)
                 ct_b64 = base64.b64encode(ct).decode("utf-8")
                 inner = {
                     "type": MessageType.DEADDROP_DATA,
@@ -1511,8 +1514,16 @@ class SecureChatClient:
                     "ct": ct_b64,
                 }
                 outer = self._encrypt_deaddrop_inner(json.dumps(inner).encode("utf-8"))
-                send_message(self.socket, json.dumps(outer).encode("utf-8"))
+                ok, err = send_message(self.socket, json.dumps(outer).encode("utf-8"))
+                if not ok:
+                    self.display_error_message(f"Failed to send chunk: {err}")
+                    chunk_index += 1
+                    continue
+
                 chunk_index += 1
+                if chunk_index % 50 == 0:
+                    self.display_system_message(f"{shared.bytes_to_human_readable(chunk_index * 1024 * 1024)}/" +
+                                                f"{shared.bytes_to_human_readable(file_size)} sent")
 
         # Notify completion of upload
         complete_inner = {"type": MessageType.DEADDROP_COMPLETE}
@@ -1558,6 +1569,7 @@ class SecureChatClient:
         self._deaddrop_name = name
         self._deaddrop_password_hash = self._hash_deaddrop_password(password)
         self._deaddrop_download_in_progress = True
+        # Reset old buffered approach state (no longer used) and init streaming state
         self._deaddrop_download_chunks.clear()
         self._deaddrop_download_max_index = -1
         self._deaddrop_download_expected_hash = None
@@ -1566,6 +1578,18 @@ class SecureChatClient:
         key = self._derive_deaddrop_file_key(password)
         self._deaddrop_download_key = key
         self._deaddrop_download_otp_secret = key
+        # Reset streaming variables
+        self._deaddrop_dl_encryptor = None
+        self._deaddrop_dl_next_nonce = None
+        self._deaddrop_dl_expected_index = 0
+        # Clean up any prior partial file for same name
+        self._deaddrop_dl_part_path = None
+        if self._deaddrop_dl_file:
+            try:
+                self._deaddrop_dl_file.close()
+            except Exception:
+                pass
+            self._deaddrop_dl_file = None
 
         inner_dl = {
             "type": MessageType.DEADDROP_DOWNLOAD,
@@ -1576,66 +1600,132 @@ class SecureChatClient:
 
     def _finalise_deaddrop_download(self) -> None:
         """
-        Reassemble and decrypt received deaddrop chunks, then write file.
-
-        This uses DoubleEncryptor with SHA3-512-derived key; the first 12 bytes
-        of the first decrypted chunk encode the original file extension.
+        Finalise deaddrop download: close .part file and atomically rename to final
+        name by removing the .part extension. All decryption and writing occurs during
+        streaming in _process_deaddrop_data_streaming.
         """
-        if not self._deaddrop_download_chunks:
-            self.display_error_message("No deaddrop data received from server")
-            return
-
-        if self._deaddrop_download_key is None or self._deaddrop_download_otp_secret is None:
-            self.display_error_message("Missing deaddrop decryption key material")
-            return
-
-        encryptor = DoubleEncryptor(self._deaddrop_download_key, self._deaddrop_download_otp_secret, message_counter=0)
-
-        # Decrypt chunks in order starting from index 0
-        chunks: list[bytes] = []
-        for idx in range(self._deaddrop_download_max_index + 1):
-            ct = self._deaddrop_download_chunks.get(idx)
-            if ct is None:
-                # TODO: mark as missing chunk, then redownload
-                self.display_error_message("Missing deaddrop chunk; download failed")
-                return
-
-            aad = json.dumps({
-                "type": MessageType.DEADDROP_DATA,
-                "chunk_index": idx,
-            }).encode("utf-8")
+        # Close any open file handle
+        if self._deaddrop_dl_file:
             try:
-                pt = encryptor.decrypt(idx.to_bytes(12, "little"), ct, aad, pad=False)
-            except InvalidTag:
-                self.display_error_message("Failed to decrypt deaddrop chunk")
-                return
-            chunks.append(pt)
+                self._deaddrop_dl_file.close()
+            except Exception:
+                pass
+            finally:
+                self._deaddrop_dl_file = None
 
-        if not chunks:
-            self.display_error_message("No deaddrop chunks after decryption")
+        if not self._deaddrop_dl_part_path:
+            self.display_error_message("No deaddrop partial file to finalise")
             return
 
-        first_chunk = chunks[0]
-        if len(first_chunk) < 12:
-            self.display_error_message("First deaddrop chunk too small to contain header")
-            return
-
-        header = first_chunk[:12]
-        body0 = first_chunk[12:]
-        file_ext = header.rstrip(b"\x00").decode("utf-8", errors="ignore")
-        file_body = body0 + b"".join(chunks[1:])
-
-        # Construct output file name using deaddrop name and extracted extension
-        safe_name = "".join(c for c in self._deaddrop_name if c.isalnum() or c in ("-", "_")) or "deaddrop"
-        filename = safe_name + (file_ext if file_ext.startswith(".") else ("." + file_ext if file_ext else ""))
+        part_path = self._deaddrop_dl_part_path
+        final_path = part_path[:-5] if part_path.lower().endswith(".part") else part_path
         try:
-            with open(filename, "wb") as f:
-                f.write(file_body)
+            # On Windows, os.replace will overwrite if exists
+            os.replace(part_path, final_path)
         except Exception as exc:
-            self.display_error_message(f"Failed to write deaddrop file: {exc}")
+            self.display_error_message(f"Failed to finalise deaddrop file: {exc}")
             return
 
-        self.display_system_message(f"Deaddrop download complete, saved to: {filename}")
+        self.display_system_message(f"Deaddrop download complete, saved to: {final_path}")
+        # Reset streaming state
+        self._deaddrop_dl_encryptor = None
+        self._deaddrop_dl_next_nonce = None
+        self._deaddrop_dl_expected_index = 0
+        self._deaddrop_dl_part_path = None
+
+    def _process_deaddrop_data_streaming(self, chunk_index: int, chunk_data: bytes) -> None:
+        """
+        Stream-decrypt incoming deaddrop chunk and write plaintext to a .part file.
+
+        First chunk (index 0) contains 12-byte extension header and 16-byte next nonce.
+        It is decrypted using the initial nonce derived from server_identifier. The
+        remainder of the first chunk (after 28 bytes) is written to disk, and output
+        .part file is created as: [deaddrop name].[extension].part
+
+        Subsequent chunks are decrypted with the extracted next nonce and appended.
+        """
+        # Enforce in-order chunks for simplicity
+        if chunk_index != self._deaddrop_dl_expected_index:
+            # For minimal change, just ignore unexpected chunks
+            self.display_error_message(
+                f"Unexpected deaddrop chunk index {chunk_index}, expected {self._deaddrop_dl_expected_index}")
+            return
+
+        if self._deaddrop_download_key is None:
+            self.display_error_message("Deaddrop key not initialised")
+            return
+
+        if self._deaddrop_dl_encryptor is None:
+            self._deaddrop_dl_encryptor = StreamingDoubleEncryptor(self._deaddrop_download_key)
+
+        try:
+            if chunk_index == 0:
+                # Decrypt with initial nonce
+                first_nonce = hashlib.sha3_256(self.server_identifier.encode("utf-8")).digest()[:16]
+                pt = self._deaddrop_dl_encryptor.decrypt(first_nonce, chunk_data)
+                if len(pt) < 28:
+                    self.display_error_message("First deaddrop chunk too small to contain header")
+                    return
+                ext_header = pt[:12]
+                self._deaddrop_dl_next_nonce = pt[12:28]
+                body = pt[28:]
+
+                # Build output .part path
+                file_ext = ext_header.rstrip(b"\x00").decode("utf-8", errors="ignore")
+                safe_name = "".join(c for c in self._deaddrop_name if c.isalnum() or c in ("-", "_")) or "deaddrop"
+                if file_ext:
+                    final_name = safe_name + (file_ext if file_ext.startswith(".") else ("." + file_ext))
+                else:
+                    final_name = safe_name
+                part_path = final_name + ".part"
+
+                # Open file for writing
+                try:
+                    f = open(part_path, "wb")
+                except Exception as exc:
+                    self.display_error_message(f"Failed to open deaddrop output file: {exc}")
+                    return
+                self._deaddrop_dl_file = f
+                self._deaddrop_dl_part_path = part_path
+
+                # Write body
+                if body:
+                    try:
+                        f.write(body)
+                    except Exception as exc:
+                        self.display_error_message(f"Failed to write to deaddrop file: {exc}")
+                        try:
+                            f.close()
+                        except Exception:
+                            pass
+                        self._deaddrop_dl_file = None
+                        # Try to remove partial file
+                        try:
+                            os.remove(part_path)
+                        except Exception:
+                            pass
+                        return
+            else:
+                # Subsequent chunks use the second nonce extracted from first chunk
+                if not self._deaddrop_dl_next_nonce:
+                    self.display_error_message("Missing deaddrop streaming nonce")
+                    return
+                if not self._deaddrop_dl_file:
+                    self.display_error_message("Deaddrop output file not open")
+                    return
+                pt = self._deaddrop_dl_encryptor.decrypt(self._deaddrop_dl_next_nonce, chunk_data)
+                try:
+                    self._deaddrop_dl_file.write(pt)
+                except Exception as exc:
+                    self.display_error_message(f"Failed to write to deaddrop file: {exc}")
+                    return
+        except Exception as exc:
+            self.display_error_message(f"Failed to process deaddrop chunk: {exc}")
+            return
+        finally:
+            # Increment expected index only if this chunk was the expected one
+            if chunk_index == self._deaddrop_dl_expected_index:
+                self._deaddrop_dl_expected_index += 1
     
     def handle_server_version_info(self, message_data: bytes) -> None:
         """Handle server version information."""
