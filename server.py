@@ -441,6 +441,8 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
     def handle(self):
         try:
             self._handle()
+        except ConnectionResetError:
+            self.disconnect("Connection reset", notify = False)
         except ConnectionError:
             self.disconnect("Unexpected disconnect", notify = False)
         finally:

@@ -18,6 +18,7 @@ from typing import Any, BinaryIO
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+from cryptography.hazmat.primitives.hmac import HMAC
 from cryptography.hazmat.primitives.kdf.concatkdf import ConcatKDFHash
 from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -1403,7 +1404,8 @@ class SecureChatClient:
             self._deaddrop_download_in_progress = False
 
     def _derive_deaddrop_file_key(self, password: str) -> bytes:
-        """Derive a 64-byte DoubleEncryptor key from password using SHA3-512.
+        """
+        Derive a 64-byte DoubleEncryptor key from password using SHA3-512.
 
         This is separate from the Argon2id-based password_hash that is sent to
         the server for authentication.
@@ -1453,15 +1455,12 @@ class SecureChatClient:
             self.display_error_message("File exceeds maximum deaddrop size allowed by server")
             return
 
-        # Compute file hash (SHA256 hex) for integrity metadata
-        h = hashlib.sha256(usedforsecurity=False)
+        key = self._derive_deaddrop_file_key(password)
+        h = HMAC(key, hashes.SHA3_512())
         with open(file_path, "rb") as f:
-            while True:
-                chunk = f.read(8192)
-                if not chunk:
-                    break
+            while chunk := f.read(8192):
                 h.update(chunk)
-        file_hash_hex = h.digest().hex()
+        file_hash = base64.b64encode(h.finalize()).decode("utf-8")
 
         password_hash = self._hash_deaddrop_password(password)
         self._deaddrop_file_size = file_size
@@ -1473,14 +1472,12 @@ class SecureChatClient:
             "type": MessageType.DEADDROP_UPLOAD,
             "name": name,
             "file_size": file_size,
-            "file_hash": file_hash_hex,
+            "file_hash": file_hash,
             "file_password_hash": password_hash,
         }
         outer_meta = self._encrypt_deaddrop_inner(json.dumps(inner_meta).encode("utf-8"))
         send_message(self.socket, json.dumps(outer_meta).encode("utf-8"))
 
-        # Encrypt file contents with DoubleEncryptor under password-derived key
-        key = self._derive_deaddrop_file_key(password)
         encryptor = StreamingDoubleEncryptor(key)
         self._deaddrop_chunks.clear()
 
@@ -1489,13 +1486,12 @@ class SecureChatClient:
         header = file_ext.encode("utf-8").ljust(12, b"\x00")
         first_nonce = hashlib.sha3_256(self.server_identifier.encode("utf-8")).digest()[:16]
         second_nonce = os.urandom(16)
-        header += first_nonce
+        header += second_nonce
         with open(file_path, "rb") as f:
             first = True
             while True:
                 if first:
-
-                    chunk_data = f.read(SEND_CHUNK_SIZE - 24)
+                    chunk_data = f.read(SEND_CHUNK_SIZE - 28)
                     plaintext_chunk = header + chunk_data
                     first = False
                     nonce = first_nonce
@@ -1626,6 +1622,38 @@ class SecureChatClient:
             self.display_error_message(f"Failed to finalise deaddrop file: {exc}")
             return
 
+        expected_b64 = self._deaddrop_download_expected_hash or ""
+        key = self._deaddrop_download_key
+        if not expected_b64:
+            self.display_system_message("Deaddrop: no expected HMAC provided by server; skipped verification.")
+            return
+        elif key is None:
+            self.display_error_message("Deaddrop: missing key for HMAC verification; file kept as-is.")
+            return
+
+        if isinstance(expected_b64, str) and expected_b64.startswith("b'") and expected_b64.endswith("'"):
+            expected_b64 = expected_b64[2:-1]
+        try:
+            expected_hmac = base64.b64decode(expected_b64, validate=True)
+        except binascii.Error:
+            self.display_error_message("Deaddrop: invalid base64 expected HMAC provided by server; file kept as-is.")
+            return
+
+        h = HMAC(key, hashes.SHA3_512())
+        with open(final_path, "rb") as f:
+            while chunk := f.read(8192):
+                h.update(chunk)
+        computed_hmac = h.finalize()
+
+        if computed_hmac == expected_hmac:
+            self.display_system_message("Deaddrop file integrity verified (HMAC OK).")
+        else:
+            self.display_error_message("Deaddrop file HMAC verification failed, file will be kept as-is."
+                                       f"Computed HMAC: {base64.b64encode(computed_hmac).decode('utf-8')},"
+                                       f"Expected HMAC: {base64.b64encode(expected_hmac).decode('utf-8')}")
+
+
+
         self.display_system_message(f"Deaddrop download complete, saved to: {final_path}")
         # Reset streaming state
         self._deaddrop_dl_encryptor = None
@@ -1650,6 +1678,11 @@ class SecureChatClient:
             self.display_error_message(
                 f"Unexpected deaddrop chunk index {chunk_index}, expected {self._deaddrop_dl_expected_index}")
             return
+
+        if chunk_index+1 % 100 == 0:
+            if self._deaddrop_dl_part_path is not None:
+                size_so_far = shared.bytes_to_human_readable(os.path.getsize(self._deaddrop_dl_part_path))
+                self.display_system_message(f"Received {size_so_far} so far")
 
         if self._deaddrop_download_key is None:
             self.display_error_message("Deaddrop key not initialised")
