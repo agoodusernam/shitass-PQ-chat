@@ -132,6 +132,7 @@ class SecureChatClient:
         self._deaddrop_dl_expected_index: int = 0
         self._deaddrop_dl_part_path: str | None = None
         self._deaddrop_dl_file: BinaryIO | None = None  # file handle for .part writing
+        self._deaddrop_dl_bytes_downloaded: int = 0
         # Event to signal completion of the deaddrop handshake
         self._deaddrop_handshake_event: threading.Event | None = None
         
@@ -1679,10 +1680,9 @@ class SecureChatClient:
                 f"Unexpected deaddrop chunk index {chunk_index}, expected {self._deaddrop_dl_expected_index}")
             return
 
-        if chunk_index+1 % 100 == 0:
-            if self._deaddrop_dl_part_path is not None:
-                size_so_far = shared.bytes_to_human_readable(os.path.getsize(self._deaddrop_dl_part_path))
-                self.display_system_message(f"Received {size_so_far} so far")
+        if (chunk_index+1) % 100 == 0:
+            size_so_far = shared.bytes_to_human_readable(self._deaddrop_dl_bytes_downloaded)
+            self.display_system_message(f"Received {size_so_far} so far")
 
         if self._deaddrop_download_key is None:
             self.display_error_message("Deaddrop key not initialised")
@@ -1702,6 +1702,7 @@ class SecureChatClient:
                 ext_header = pt[:12]
                 self._deaddrop_dl_next_nonce = pt[12:28]
                 body = pt[28:]
+                self._deaddrop_dl_bytes_downloaded += len(body)
 
                 # Build output .part path
                 file_ext = ext_header.rstrip(b"\x00").decode("utf-8", errors="ignore")
@@ -1747,6 +1748,7 @@ class SecureChatClient:
                     self.display_error_message("Deaddrop output file not open")
                     return
                 pt = self._deaddrop_dl_encryptor.decrypt(self._deaddrop_dl_next_nonce, chunk_data)
+                self._deaddrop_dl_bytes_downloaded += len(pt)
                 try:
                     self._deaddrop_dl_file.write(pt)
                 except Exception as exc:
