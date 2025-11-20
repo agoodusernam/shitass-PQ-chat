@@ -25,9 +25,17 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from pqcrypto.kem import ml_kem_1024  # type: ignore
 
 import shared
-from shared import (SecureChatProtocol, send_message, receive_message, MessageType,
-                    PROTOCOL_VERSION, FileMetadata, FileTransfer, SEND_CHUNK_SIZE,
-                    StreamingDoubleEncryptor)
+from shared import (
+    SecureChatProtocol,
+    send_message,
+    receive_message,
+    MessageType,
+    PROTOCOL_VERSION,
+    FileMetadata,
+    FileTransfer,
+    SEND_CHUNK_SIZE,
+    ChunkIndependentDoubleEncryptor
+)
 
 
 # noinspection PyBroadException
@@ -127,7 +135,7 @@ class SecureChatClient:
         self._deaddrop_download_key: bytes | None = None
         self._deaddrop_download_otp_secret: bytes | None = None
         # Streaming download state (for deaddrop)
-        self._deaddrop_dl_encryptor: StreamingDoubleEncryptor | None = None
+        self._deaddrop_dl_encryptor: ChunkIndependentDoubleEncryptor | None = None
         self._deaddrop_dl_next_nonce: bytes | None = None
         self._deaddrop_dl_expected_index: int = 0
         self._deaddrop_dl_part_path: str | None = None
@@ -1479,7 +1487,7 @@ class SecureChatClient:
         outer_meta = self._encrypt_deaddrop_inner(json.dumps(inner_meta).encode("utf-8"))
         send_message(self.socket, json.dumps(outer_meta).encode("utf-8"))
 
-        encryptor = StreamingDoubleEncryptor(key)
+        encryptor = ChunkIndependentDoubleEncryptor(key)
         self._deaddrop_chunks.clear()
 
         chunk_index = 0
@@ -1689,7 +1697,7 @@ class SecureChatClient:
             return
 
         if self._deaddrop_dl_encryptor is None:
-            self._deaddrop_dl_encryptor = StreamingDoubleEncryptor(self._deaddrop_download_key)
+            self._deaddrop_dl_encryptor = ChunkIndependentDoubleEncryptor(self._deaddrop_download_key)
 
         try:
             if chunk_index == 0:

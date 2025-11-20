@@ -57,6 +57,8 @@ PROTOCOL_VERSION: Final[str] = "7.1.1"
 
 # File transfer constants
 SEND_CHUNK_SIZE: Final[int] = 1024 * 1024  # 1 MiB chunks for sending
+MAGIC_NUMBER_FILE_TRANSFER: Final[bytes] = b'\x89'
+MAGIC_NUMBER_DEADDROPS: Final[bytes] = b'\x45'
 
 # Incompressible file types where compression is wasteful
 INCOMPRESSIBLE_EXTENSIONS: Final[set[str]] = {
@@ -156,7 +158,7 @@ class DoubleEncryptor:
         del self._aes
         del self._chacha
 
-class StreamingDoubleEncryptor:
+class ChunkIndependentDoubleEncryptor:
     """
     Similar to DoubleEncryptor except not authenticated.
     This is for the DeadDrop feature in which chunks are not always
@@ -171,11 +173,11 @@ class StreamingDoubleEncryptor:
 
     def encrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None, pad: bool = False) -> bytes:
         if associated_data is not None:
-            warnings.warn("StreamingDoubleEncryptor does not support associated data and is NOT authenticated.",
+            warnings.warn("ChunkIndependentDoubleEncryptor does not support associated data and is NOT authenticated.",
                           RuntimeWarning)
 
         if pad:
-            warnings.warn("StreamingDoubleEncryptor does not support padding.", RuntimeWarning)
+            warnings.warn("ChunkIndependentDoubleEncryptor does not support padding.", RuntimeWarning)
 
         chacha_encryptor: CipherContext = Cipher(algorithms.ChaCha20(self._key[32:], nonce), None).encryptor()
         aes_encryptor: CipherContext = Cipher(algorithms.AES(self._key[:32]), modes.CTR(nonce)).encryptor()
@@ -1630,7 +1632,8 @@ class SecureChatProtocol:
         return self.encrypt_message(json.dumps(message))
     
     def create_file_chunk_message(self, transfer_id: str, chunk_index: int, chunk_data: bytes) -> bytes:
-        """Create an optimized file chunk message with direct binary encryption and DH double ratchet.
+        """
+        Create an optimised file chunk message with direct binary encryption and DH double ratchet.
         Frame layout: [4-byte counter][12-byte nonce][32-byte eph_pub][ciphertext]
         AAD covers type, counter, nonce, and dh_public_key.
         """

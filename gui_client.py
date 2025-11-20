@@ -21,7 +21,11 @@ import config_manager
 import configs
 import shared
 from client import SecureChatClient
-from shared import FileMetadata, MessageType, bytes_to_human_readable
+from shared import (
+    FileMetadata,
+    MessageType,
+    bytes_to_human_readable
+)
 
 assert config_manager  # remove unused import warning
 

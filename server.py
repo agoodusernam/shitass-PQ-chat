@@ -13,12 +13,12 @@ Classes:
     SecureChatServer: A threaded TCP server that supports secure communication between two
     clients, including key exchange and message routing.
 """
+# pylint: disable=trailing-whitespace, broad-exception-caught, too-many-instance-attributes
 import base64
 import binascii
 import io
 import os
 import os.path
-# pylint: disable=trailing-whitespace, broad-exception-caught, bare-except, too-many-instance-attributes
 import socket
 import socketserver
 import threading
@@ -35,7 +35,15 @@ from cryptography.hazmat.primitives.kdf.concatkdf import ConcatKDFHash
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from pqcrypto.kem import ml_kem_1024 # type: ignore
 
-from shared import send_message, receive_message, create_reset_message, MessageType, PROTOCOL_VERSION
+from shared import (
+    send_message,
+    receive_message,
+    create_reset_message,
+    MessageType,
+    PROTOCOL_VERSION,
+    MAGIC_NUMBER_DEADDROPS,
+    MAGIC_NUMBER_FILE_TRANSFER
+)
 import config_manager
 import configs
 
@@ -464,10 +472,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                 message = json.loads(message_data)
                 message_type = message.get("type")
             except (json.JSONDecodeError, UnicodeDecodeError):
-                with open("message.txt", "wb") as f:
-                    f.write(message_data)
-                print(f"Failed to parse message from {self.client_id}")
-                self.handle_unexpected_message("failed to parse message")
+                self.server.route_message(self.client_id, message_data)
                 return
             
             if message_type == MessageType.KEEP_ALIVE_RESPONSE:
@@ -491,68 +496,10 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                 self.handle_deaddrop_ke_response(message)
                 continue
 
-            # Deaddrop encrypted channel
             if message_type == MessageType.DEADDROP_MESSAGE:
-                try:
-                    nonce_b64 = str(message["nonce"])
-                    ct_b64 = str(message["ciphertext"])
-                    nonce = base64.b64decode(nonce_b64, validate=True)
-                    ciphertext = base64.b64decode(ct_b64, validate=True)
-                except KeyError:
-                    self.handle_unexpected_message("deaddrop message missing fields")
-                    continue
-                except binascii.Error:
-                    self.handle_unexpected_message("deaddrop message invalid b64")
-                    continue
-
-                if not self.shared_secret:
-                    self.handle_unexpected_message("deaddrop message before handshake")
-                    continue
-
-                try:
-                    decryptor = ChaCha20Poly1305(self.shared_secret)
-                    aad_raw = json.dumps({
-                        "type": MessageType.DEADDROP_MESSAGE,
-                        "nonce": nonce_b64,
-                    }).encode("utf-8")
-                    inner_bytes = decryptor.decrypt(nonce, ciphertext, aad_raw)
-                except Exception:
-                    self.handle_unexpected_message("failed to decrypt deaddrop message")
-                    continue
-
-                # Try parse as JSON; for raw binary chunks we wrap inside json anyhow
-                try:
-                    inner = json.loads(inner_bytes)
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    self.handle_unexpected_message("invalid inner deaddrop message")
-                    continue
-
-                inner_type = inner.get("type", MessageType.NONE)
-                if inner_type == MessageType.DEADDROP_CHECK:
-                    self.handle_deaddrop_check(inner)
-                    continue
-                if inner_type == MessageType.DEADDROP_UPLOAD:
-                    self.handle_deaddrop_upload(inner)
-                    continue
-                if inner_type == MessageType.DEADDROP_DOWNLOAD:
-                    self.handle_deaddrop_download(inner)
-                    continue
-                if inner_type == MessageType.DEADDROP_PROVE:
-                    self.handle_deaddrop_prove(inner)
-                    continue
-                if inner_type == MessageType.DEADDROP_ACCEPT:
-                    self.handle_deaddrop_accept()
-                    continue
-                if inner_type == MessageType.DEADDROP_DATA:
-                    self.handle_deaddrop_data(inner)
-                    continue
-                if inner_type == MessageType.DEADDROP_COMPLETE:
-                    self.handle_deaddrop_complete()
-                    continue
-
-                # Unknown inner deaddrop msg
-                self.handle_unexpected_message("unknown deaddrop inner message type")
+                self.handle_deaddrop_message(message)
                 continue
+
 
             if not self.key_exchange_complete:
                 if message_type in (MessageType.KEY_EXCHANGE_INIT, MessageType.KEY_EXCHANGE_RESPONSE,
@@ -581,6 +528,77 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         else:
             self.server.broadcast_error("Key exchange failed - no other client")
 
+    def handle_maybe_bin_data(self, message_data: bytes) -> None:
+        """
+        Handle data that may be raw binary like deaddrops.
+        """
+        magic = message_data[0:1]
+        if magic == MAGIC_NUMBER_FILE_TRANSFER:
+            self.server.route_message(self.client_id, message_data)
+            return
+
+        if magic == MAGIC_NUMBER_DEADDROPS:
+            self.handle_deaddrop_data(int.from_bytes(message_data[1:5], "little"), message_data[5:])
+
+    def handle_deaddrop_message(self, message: dict[Any, Any]) -> None:
+        """Handle encrypted deaddrop messages."""
+        try:
+            nonce_b64 = str(message["nonce"])
+            ct_b64 = str(message["ciphertext"])
+            nonce = base64.b64decode(nonce_b64, validate=True)
+            ciphertext = base64.b64decode(ct_b64, validate=True)
+        except KeyError:
+            self.handle_unexpected_message("deaddrop message missing fields")
+            return
+        except binascii.Error:
+            self.handle_unexpected_message("deaddrop message invalid b64")
+            return
+
+        if not self.shared_secret:
+            self.handle_unexpected_message("deaddrop message before handshake")
+            return
+
+        try:
+            decryptor = ChaCha20Poly1305(self.shared_secret)
+            aad_raw = json.dumps({
+                "type": MessageType.DEADDROP_MESSAGE,
+                "nonce": nonce_b64,
+            }).encode("utf-8")
+            inner_bytes = decryptor.decrypt(nonce, ciphertext, aad_raw)
+        except Exception:
+            self.handle_unexpected_message("failed to decrypt deaddrop message")
+            return
+
+        # Try parse as JSON; for raw binary chunks we wrap inside json anyhow
+        try:
+            inner = json.loads(inner_bytes)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self.handle_unexpected_message("invalid inner deaddrop message")
+            return
+
+        inner_type = inner.get("type", MessageType.NONE)
+        if inner_type == MessageType.DEADDROP_CHECK:
+            self.handle_deaddrop_check(inner)
+            return
+        if inner_type == MessageType.DEADDROP_UPLOAD:
+            self.handle_deaddrop_upload(inner)
+            return
+        if inner_type == MessageType.DEADDROP_DOWNLOAD:
+            self.handle_deaddrop_download(inner)
+            return
+        if inner_type == MessageType.DEADDROP_PROVE:
+            self.handle_deaddrop_prove(inner)
+            return
+        if inner_type == MessageType.DEADDROP_ACCEPT:
+            self.handle_deaddrop_accept()
+            return
+        if inner_type == MessageType.DEADDROP_COMPLETE:
+            self.handle_deaddrop_complete()
+            return
+
+        # Unknown inner deaddrop msg
+        self.handle_unexpected_message("unknown deaddrop inner message type")
+        return
     
     def route_verification_message(self, message_data: bytes) -> None:
         """Route key verification messages between clients."""
@@ -1003,28 +1021,11 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         self.pending_deaddrop_max_index = -1
         self.send_deaddrop_message(json.dumps({"type": MessageType.DEADDROP_ACCEPT}).encode('utf-8'))
 
-    def handle_deaddrop_data(self, message: dict[Any, Any]) -> None:
+    def handle_deaddrop_data(self, chunk_index: int, chunk_data: bytes) -> None:
         if not self.upload_accepted or not self.pending_deaddrop_upload_name:
             self.send_deaddrop_message(json.dumps({
                 "type": MessageType.DEADDROP_DENY,
                 "reason": "No active deaddrop upload"
-            }))
-            return
-
-        try:
-            chunk_index = int(message["chunk_index"])
-            ct_b64 = str(message["ct"])
-            chunk_data = base64.b64decode(ct_b64, validate=True)
-        except KeyError:
-            self.send_deaddrop_message(json.dumps({
-                "type": MessageType.DEADDROP_DENY,
-                "reason": "Missing fields in deaddrop data"
-            }))
-            return
-        except (binascii.Error, ValueError, TypeError):
-            self.send_deaddrop_message(json.dumps({
-                "type": MessageType.DEADDROP_DENY,
-                "reason": "Invalid deaddrop data fields"
             }))
             return
 
