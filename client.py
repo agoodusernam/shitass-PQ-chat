@@ -16,6 +16,7 @@ import time
 from copy import deepcopy
 from typing import Any, BinaryIO
 
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives.hmac import HMAC
@@ -405,14 +406,22 @@ class SecureChatClient:
     def handle_maybe_binary_chunk(self, message_data: bytes) -> bool:
         if not (len(message_data) >= 48 and self.key_exchange_complete):
             return False
-        try:
-            # Try to process as binary file chunk
-            result = self.protocol.process_file_chunk(message_data)
-            self.handle_file_chunk_binary(result)
-            return True
-        except ValueError:
-            # Not a binary file chunk either
-            return False
+        magic: bytes = message_data[0:1]
+        if magic == shared.MAGIC_NUMBER_FILE_TRANSFER:
+            try:
+                # Try to process as binary file chunk
+                result = self.protocol.process_file_chunk(message_data)
+                self.handle_file_chunk_binary(result)
+                return True
+            except ValueError:
+                return False
+        elif magic == shared.MAGIC_NUMBER_DEADDROPS:
+            try:
+                self._handle_deaddrop_binary_chunk(message_data)
+                return True
+            except ValueError:
+                return False
+        return False
     
     def handle_keepalive(self) -> None:
         """Handle keepalive messages from the server."""
@@ -1023,6 +1032,7 @@ class SecureChatClient:
         """Handle incoming voice call initiation, GUI exclusive"""
         self.protocol.queue_message(("encrypt_json", {"type": MessageType.VOICE_CALL_REJECT}))
         self.display_system_message("Incoming voice call rejected: voice calls not supported on terminal client.")
+        _ = init_msg
     
     def handle_voice_call_accept(self, message: dict[Any, Any]) -> None:
         """Handle incoming voice call acceptance, GUI exclusive"""
@@ -1031,15 +1041,15 @@ class SecureChatClient:
     def handle_voice_call_reject(self) -> None:
         """Handle incoming voice call rejection, GUI exclusive"""
         pass
-    
+
     def handle_voice_call_data(self, data: dict[Any, Any]) -> None:
         """Handle incoming voice call data, GUI exclusive"""
         pass
-    
+
     def handle_voice_call_end(self) -> None:
         """Handle incoming voice call end, GUI exclusive"""
         pass
-    
+
     def handle_nickname_change(self, message: dict[Any, Any]) -> None:
         """Handle incoming nickname change from peer."""
         # Disable nickname changes when keys are unverified
@@ -1265,6 +1275,20 @@ class SecureChatClient:
             "nonce": base64.b64encode(nonce).decode("utf-8"),
             "ciphertext": base64.b64encode(ciphertext).decode("utf-8"),
         }
+
+    def _encrypt_deaddrop_chunk(self, chunk: bytes, nonce: bytes) -> bytes:
+        """
+        Encrypts the raw chunk data to be sent as is
+        :param chunk: The data
+        :param nonce: The nonce
+        :return: [1-byte magic][12-byte nonce][ciphertext]
+        """
+        if not self.deaddrop_shared_secret:
+            raise ValueError("Deaddrop shared secret not established")
+
+        aead = ChaCha20Poly1305(self.deaddrop_shared_secret)
+        ciphertext = aead.encrypt(nonce, chunk, nonce)
+        return shared.MAGIC_NUMBER_DEADDROPS + nonce + ciphertext
 
     def _handle_deaddrop_encrypted_message(self, outer: dict[str, Any]) -> None:
         """Handle DEADDROP_MESSAGE from server (encrypted channel wrapper).
@@ -1669,6 +1693,27 @@ class SecureChatClient:
         self._deaddrop_dl_next_nonce = None
         self._deaddrop_dl_expected_index = 0
         self._deaddrop_dl_part_path = None
+
+    def _handle_deaddrop_binary_chunk(self, message_data: bytes):
+        """
+        Handle raw deaddrop data
+        Expects frame: [1-byte magic number][12-byte nonce][ciphertext]
+        :param message_data: The raw data received
+        :return:
+        """
+        if not self._deaddrop_download_in_progress or self.deaddrop_shared_secret is None:
+            return
+
+        aead = ChaCha20Poly1305(self.deaddrop_shared_secret)
+        nonce = message_data[1:13]
+        ct = message_data[13:]
+        try:
+            decrypted = aead.decrypt(nonce, ct, nonce)
+        except InvalidTag:
+            raise ValueError("Deaddrop chunk decryption failed")
+
+        # Stream-decrypt and write directly to disk
+        self._process_deaddrop_data_streaming(int.from_bytes(decrypted[:4]), decrypted[4:])
 
     def _process_deaddrop_data_streaming(self, chunk_index: int, chunk_data: bytes) -> None:
         """

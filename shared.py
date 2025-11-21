@@ -1556,8 +1556,7 @@ class SecureChatProtocol:
     
     
     # File transfer methods
-    def create_file_metadata_message(self, file_path: str,
-                                     compress: bool = True) -> FileMetadata:
+    def create_file_metadata_message(self, file_path: str, compress: bool = True) -> FileMetadata:
         """Create a file metadata message for file transfer initiation.
         Automatically disables compression for known incompressible types.
         """
@@ -1634,7 +1633,7 @@ class SecureChatProtocol:
     def create_file_chunk_message(self, transfer_id: str, chunk_index: int, chunk_data: bytes) -> bytes:
         """
         Create an optimised file chunk message with direct binary encryption and DH double ratchet.
-        Frame layout: [4-byte counter][12-byte nonce][32-byte eph_pub][ciphertext]
+        Frame layout: [1-byte magic number][4-byte counter][12-byte nonce][32-byte eph_pub][ciphertext]
         AAD covers type, counter, nonce, and dh_public_key.
         """
         if not self.shared_key or not self.send_chain_key:
@@ -1692,7 +1691,7 @@ class SecureChatProtocol:
         
         # Pack: counter (4 bytes) + nonce (12 bytes) + eph_pub (32 bytes) + ciphertext
         counter_bytes = struct.pack('!I', self.message_counter)
-        return counter_bytes + nonce + eph_pub_bytes + ciphertext
+        return MAGIC_NUMBER_FILE_TRANSFER + counter_bytes + nonce + eph_pub_bytes + ciphertext
     
     @staticmethod
     def chunk_file(file_path: str, compress: bool = True) -> Generator[bytes, None, None]:
@@ -1780,25 +1779,26 @@ class SecureChatProtocol:
             raise KeyError("Invalid file metadata message")
     
     def process_file_chunk(self, encrypted_data: bytes) -> dict[Any, Any]:
-        """Process an optimised file chunk message with binary format and DH double ratchet.
-        Expects frame: [4-byte counter][12-byte nonce][32-byte eph_pub][ciphertext].
+        """
+        Process an optimised file chunk message with binary format and DH double ratchet.
+        Expects frame: [1-byte magic number][4-byte counter][12-byte nonce][32-byte eph_pub][ciphertext].
         """
         if not self.shared_key or not self.receive_chain_key:
             raise ValueError("No shared key or receive chain key established")
-        if len(encrypted_data) < 4 + 12 + 32:
+        if len(encrypted_data) < 1 + 4 + 12 + 32:
             raise ValueError("Invalid chunk message format")
         
         try:
             # Extract counter, nonce, peer ephemeral, and ciphertext from the message
-            counter = int(struct.unpack('!I', encrypted_data[:4])[0])
+            counter = int(struct.unpack('!I', encrypted_data[1:5])[0])
         except struct.error:
             raise ValueError("Invalid chunk message format")
         except ValueError:
             raise ValueError("Invalid counter in chunk message")
         
-        nonce = encrypted_data[4:16]
-        peer_eph_pub = encrypted_data[16:48]
-        ciphertext = encrypted_data[48:]
+        nonce = encrypted_data[5:17]
+        peer_eph_pub = encrypted_data[17:49]
+        ciphertext = encrypted_data[49:]
         
         # Check for replay attacks or very old messages
         if counter <= self.peer_counter:

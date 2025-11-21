@@ -28,6 +28,7 @@ from collections.abc import Generator
 from typing import Final, Any
 import datetime
 
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives.constant_time import bytes_eq
@@ -472,8 +473,8 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                 message = json.loads(message_data)
                 message_type = message.get("type")
             except (json.JSONDecodeError, UnicodeDecodeError):
-                self.server.route_message(self.client_id, message_data)
-                return
+                self.handle_maybe_bin_data(message_data)
+                continue
             
             if message_type == MessageType.KEEP_ALIVE_RESPONSE:
                 self.handle_keepalive_response()
@@ -530,7 +531,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
 
     def handle_maybe_bin_data(self, message_data: bytes) -> None:
         """
-        Handle data that may be raw binary like deaddrops.
+        Handle data that may be raw binary like deaddrops or file transfers
         """
         magic = message_data[0:1]
         if magic == MAGIC_NUMBER_FILE_TRANSFER:
@@ -538,7 +539,27 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             return
 
         if magic == MAGIC_NUMBER_DEADDROPS:
-            self.handle_deaddrop_data(int.from_bytes(message_data[1:5], "little"), message_data[5:])
+            decrypted = self.decrypt_deaddrop_data(message_data[1:13], message_data[13:])
+
+            self.handle_deaddrop_data(int.from_bytes(decrypted[0:4], byteorder='little'), message_data[4:])
+            return
+
+        self.handle_unexpected_message("unexpected binary message")
+
+    def decrypt_deaddrop_data(self, nonce: bytes, ciphertext: bytes) -> bytes:
+        """
+        Decrypt incoming binary deaddrop data
+        :param nonce: The chunk's nonce
+        :param ciphertext: The ciphertext of the chunk
+        :return: The decrypted chunk
+        :raises InvalidTag: If decryption fails.
+        :raises ValueError: If there is no shared key.
+        """
+        if not self.shared_secret:
+            raise ValueError("No shared secret for deaddrop decryption")
+        decryptor = ChaCha20Poly1305(self.shared_secret)
+        data = decryptor.decrypt(nonce, ciphertext, associated_data = nonce)
+        return data
 
     def handle_deaddrop_message(self, message: dict[Any, Any]) -> None:
         """Handle encrypted deaddrop messages."""
@@ -946,19 +967,8 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             return
 
         for chunk_index, chunk in enumerate(chunks):
-            # Each chunk is sent as an inner DEADDROP_DATA message that is then
-            # wrapped by send_deaddrop_message() in a DEADDROP_MESSAGE envelope
-            # and encrypted with ChaCha20-Poly1305 using the shared secret.
-            #
-            # The chunk payload itself is base64-encoded so the inner message
-            # remains valid JSON. The actual file contents are opaque to the
-            # server (they may already be encrypted client-side).
-            inner = {
-                "type": MessageType.DEADDROP_DATA,
-                "chunk_index": chunk_index,
-                "ct": base64.b64encode(chunk).decode("utf-8"),
-            }
-            self.send_deaddrop_message(inner)
+            index_bytes = chunk_index.to_bytes(4, byteorder="little")
+            self.send_raw_deaddrop_data(index_bytes + chunk)
 
         # Inform the client that all chunks have been transmitted.
         self.send_deaddrop_message({
@@ -1022,6 +1032,12 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         self.send_deaddrop_message(json.dumps({"type": MessageType.DEADDROP_ACCEPT}).encode('utf-8'))
 
     def handle_deaddrop_data(self, chunk_index: int, chunk_data: bytes) -> None:
+        """
+        Writes decrypted deaddrop chunk data to the pending upload file.
+        :param chunk_index: The index of the chunk being received.
+        :param chunk_data: The data of the chunk
+        :return: None
+        """
         if not self.upload_accepted or not self.pending_deaddrop_upload_name:
             self.send_deaddrop_message(json.dumps({
                 "type": MessageType.DEADDROP_DENY,
@@ -1078,6 +1094,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             # Cannot verify without at least one chunk; fail
             self._fail_current_upload("No data received")
             return
+
         expected_last_index = (self.pending_deaddrop_expected_size - 1) // self.pending_deaddrop_chunk_size
         expected_indexes = set(range(0, expected_last_index + 1))
         missing = sorted(list(expected_indexes - self.pending_deaddrop_received_chunks))
@@ -1158,6 +1175,14 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             "ciphertext": base64.b64encode(encryptor.encrypt(nonce, msg, aad_raw)).decode('utf-8')
         }
         send_message(self.request, json.dumps(to_send).encode('utf-8'))
+
+    def send_raw_deaddrop_data(self, message: bytes) -> None:
+        """Send a raw deaddrop data message to the client."""
+        encryptor = ChaCha20Poly1305(self.shared_secret)
+        nonce = os.urandom(12)
+        encrypted = encryptor.encrypt(nonce, message, nonce)
+        to_send = MAGIC_NUMBER_DEADDROPS + nonce + encrypted
+        send_message(self.request, to_send)
 
 def main() -> None:
     """Main entry point to start the secure chat server."""
