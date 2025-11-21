@@ -541,7 +541,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         if magic == MAGIC_NUMBER_DEADDROPS:
             decrypted = self.decrypt_deaddrop_data(message_data[1:13], message_data[13:])
 
-            self.handle_deaddrop_data(int.from_bytes(decrypted[0:4], byteorder='little'), message_data[4:])
+            self.handle_deaddrop_data(int.from_bytes(decrypted[0:4], byteorder='little'), decrypted[4:])
             return
 
         self.handle_unexpected_message("unexpected binary message")

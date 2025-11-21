@@ -404,7 +404,7 @@ class SecureChatClient:
         
     
     def handle_maybe_binary_chunk(self, message_data: bytes) -> bool:
-        if not (len(message_data) >= 48 and self.key_exchange_complete):
+        if not len(message_data) >= 48:
             return False
         magic: bytes = message_data[0:1]
         if magic == shared.MAGIC_NUMBER_FILE_TRANSFER:
@@ -1359,27 +1359,8 @@ class SecureChatClient:
             self._deaddrop_in_progress = False
             self._deaddrop_download_in_progress = False
         elif inner_type == MessageType.DEADDROP_REDOWNLOAD:
-            # Server requests retransmission of specific chunk indexes.
-            # We rely on stored chunks from the last upload invocation.
-            indexes = inner.get("chunk_indexes", [])
-            if not isinstance(indexes, list):
-                return
-            for idx in indexes:
-                try:
-                    i_int = int(idx)
-                except (ValueError, TypeError):
-                    continue
-                chunk = self._deaddrop_chunks.get(i_int)
-                if chunk is None:
-                    continue
-                ct_b64 = base64.b64encode(chunk).decode("utf-8")
-                inner_msg = {
-                    "type": MessageType.DEADDROP_DATA,
-                    "chunk_index": i_int,
-                    "ct": ct_b64,
-                }
-                outer_msg = self._encrypt_deaddrop_inner(json.dumps(inner_msg).encode("utf-8"))
-                send_message(self.socket, json.dumps(outer_msg).encode("utf-8"))
+            # TODO: handle redownload
+            pass
         elif inner_type == MessageType.DEADDROP_PROVE:
             # Server is asking us to prove deaddrop password knowledge.
             # This is part of the download flow.
@@ -1536,14 +1517,14 @@ class SecureChatClient:
                     break
 
                 ct = encryptor.encrypt(nonce, plaintext_chunk)
-                ct_b64 = base64.b64encode(ct).decode("utf-8")
-                inner = {
-                    "type": MessageType.DEADDROP_DATA,
-                    "chunk_index": chunk_index,
-                    "ct": ct_b64,
-                }
-                outer = self._encrypt_deaddrop_inner(json.dumps(inner).encode("utf-8"))
-                ok, err = send_message(self.socket, json.dumps(outer).encode("utf-8"))
+
+                # Construct payload: [chunk_index][ct]
+                payload = chunk_index.to_bytes(4, byteorder='little') + ct
+                
+                outer_nonce = os.urandom(12)
+                frame = self._encrypt_deaddrop_chunk(payload, outer_nonce)
+                
+                ok, err = send_message(self.socket, frame)
                 if not ok:
                     self.display_error_message(f"Failed to send chunk: {err}")
                     chunk_index += 1
@@ -1703,7 +1684,6 @@ class SecureChatClient:
         """
         if not self._deaddrop_download_in_progress or self.deaddrop_shared_secret is None:
             return
-
         aead = ChaCha20Poly1305(self.deaddrop_shared_secret)
         nonce = message_data[1:13]
         ct = message_data[13:]
@@ -1713,7 +1693,7 @@ class SecureChatClient:
             raise ValueError("Deaddrop chunk decryption failed")
 
         # Stream-decrypt and write directly to disk
-        self._process_deaddrop_data_streaming(int.from_bytes(decrypted[:4]), decrypted[4:])
+        self._process_deaddrop_data_streaming(int.from_bytes(decrypted[:4], "little"), decrypted[4:])
 
     def _process_deaddrop_data_streaming(self, chunk_index: int, chunk_data: bytes) -> None:
         """
