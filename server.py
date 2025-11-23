@@ -400,6 +400,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                  server: SecureChatServer) -> None:
         self.client_id: str = ""
         self.connected: bool = True
+        self.sender_lock: threading.Lock = threading.Lock()
         self.key_exchange_complete: bool = False
         self.announced_disconnect: bool = False
         self.upload_accepted: bool = False
@@ -467,8 +468,12 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         self.start_keepalive()
         
         while self.connected:
-            message_data = receive_message(self.request)
-            
+            try:
+                message_data = receive_message(self.request)
+            except OSError as e:
+                self.disconnect(f"Error receiving message: {e}", notify=False)
+                break
+
             try:
                 message = json.loads(message_data)
                 message_type = message.get("type")
@@ -700,7 +705,8 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                 "timestamp": time.time()
             }
             message_data = json.dumps(keepalive_message).encode('utf-8')
-            send_message(self.request, message_data)
+            with self.sender_lock:
+                send_message(self.request, message_data)
             self.waiting_for_keepalive_response = True
             self.last_keepalive_time = time.time()
         except (OSError, ConnectionError) as e:
@@ -729,7 +735,8 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                 "identifier":       self.server.server_identifier,
             }
             message_data = json.dumps(version_message).encode('utf-8')
-            send_message(self.request, message_data)
+            with self.sender_lock:
+                send_message(self.request, message_data)
         except (OSError, ConnectionError) as e:
             print(f"Error sending protocol version info to {self.client_id} (socket): {e}")
         except Exception as e:
@@ -765,7 +772,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                 self.server.remove_client(self.client_id)
             try:
                 self.request.close()
-            except (OSError, ConnectionError, socket.error):
+            except (OSError, socket.error):
                 # ignore: closing a dead socket
                 pass
     
@@ -782,11 +789,13 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                 "type": MessageType.DEADDROP_START,
                 "supported": False
             }
-            send_message(self.request, json.dumps(deny_msg).encode('utf-8'))
+            with self.sender_lock:
+                send_message(self.request, json.dumps(deny_msg).encode('utf-8'))
             return
 
         if self.get_other_client():
-            send_message(self.request, json.dumps({
+            with self.sender_lock:
+                send_message(self.request, json.dumps({
                 "type": MessageType.DEADDROP_DENY,
                 "reason": "Cannot start deaddrop while another client is connected."
             }).encode('utf-8'))
@@ -799,7 +808,8 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             "max_file_size": configs.DEADDROP_MAX_SIZE,
             "mlkem_public": base64.b64encode(public_key).decode('utf-8')
         }
-        send_message(self.request, json.dumps(msg).encode('utf-8'))
+        with self.sender_lock:
+            send_message(self.request, json.dumps(msg).encode('utf-8'))
         # Mark server as busy with deaddrop until session ends
         with self.server.clients_lock:
             self.server.deaddrop_busy = True
@@ -812,13 +822,15 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         try:
             client_mlkem_ct = base64.b64decode(message_data["mlkem_ct"], validate = True)
         except KeyError:
-            send_message(self.request, json.dumps({
+            with self.sender_lock:
+                send_message(self.request, json.dumps({
                 "type": MessageType.DEADDROP_DENY,
                 "reason": "Missing mlkem_ct in deaddrop ke response message"
             }).encode('utf-8'))
             return
         except binascii.Error:
-            send_message(self.request, json.dumps({
+            with self.sender_lock:
+                send_message(self.request, json.dumps({
                 "type": MessageType.DEADDROP_DENY,
                 "reason": "Invalid mlkem_ct in deaddrop ke response message"
             }).encode('utf-8'))
@@ -1174,7 +1186,8 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             "nonce": base64.b64encode(nonce).decode('utf-8'),
             "ciphertext": base64.b64encode(encryptor.encrypt(nonce, msg, aad_raw)).decode('utf-8')
         }
-        send_message(self.request, json.dumps(to_send).encode('utf-8'))
+        with self.sender_lock:
+            send_message(self.request, json.dumps(to_send).encode('utf-8'))
 
     def send_raw_deaddrop_data(self, message: bytes) -> None:
         """Send a raw deaddrop data message to the client."""
@@ -1182,7 +1195,8 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         nonce = os.urandom(12)
         encrypted = encryptor.encrypt(nonce, message, nonce)
         to_send = MAGIC_NUMBER_DEADDROPS + nonce + encrypted
-        send_message(self.request, to_send)
+        with self.sender_lock:
+            send_message(self.request, to_send)
 
 def main() -> None:
     """Main entry point to start the secure chat server."""
