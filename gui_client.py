@@ -21,7 +21,11 @@ import config_manager
 import configs
 import shared
 from client import SecureChatClient
-from shared import FileMetadata, MessageType, bytes_to_human_readable
+from shared import (
+    FileMetadata,
+    MessageType,
+    bytes_to_human_readable
+)
 
 assert config_manager  # remove unused import warning
 
@@ -2144,7 +2148,7 @@ class GUISecureChatClient(SecureChatClient):
         }
         self.protocol.queue_message(("encrypt_json", to_send))
     
-    def handle_voice_call_init(self, init_msg: dict) -> None:
+    def handle_voice_call_init(self, init_msg: dict[Any, Any]) -> None:
         """
         Handle incoming voice call request.
         Store peer params and prompt the user to accept or reject the call (unless disabled).

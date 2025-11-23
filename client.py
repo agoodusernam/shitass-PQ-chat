@@ -16,6 +16,7 @@ import time
 from copy import deepcopy
 from typing import Any, BinaryIO
 
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives.hmac import HMAC
@@ -25,9 +26,17 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from pqcrypto.kem import ml_kem_1024  # type: ignore
 
 import shared
-from shared import (SecureChatProtocol, send_message, receive_message, MessageType,
-                    PROTOCOL_VERSION, FileMetadata, FileTransfer, SEND_CHUNK_SIZE,
-                    StreamingDoubleEncryptor)
+from shared import (
+    SecureChatProtocol,
+    send_message,
+    receive_message,
+    MessageType,
+    PROTOCOL_VERSION,
+    FileMetadata,
+    FileTransfer,
+    SEND_CHUNK_SIZE,
+    ChunkIndependentDoubleEncryptor
+)
 
 
 # noinspection PyBroadException
@@ -127,7 +136,7 @@ class SecureChatClient:
         self._deaddrop_download_key: bytes | None = None
         self._deaddrop_download_otp_secret: bytes | None = None
         # Streaming download state (for deaddrop)
-        self._deaddrop_dl_encryptor: StreamingDoubleEncryptor | None = None
+        self._deaddrop_dl_encryptor: ChunkIndependentDoubleEncryptor | None = None
         self._deaddrop_dl_next_nonce: bytes | None = None
         self._deaddrop_dl_expected_index: int = 0
         self._deaddrop_dl_part_path: str | None = None
@@ -395,16 +404,24 @@ class SecureChatClient:
         
     
     def handle_maybe_binary_chunk(self, message_data: bytes) -> bool:
-        if not (len(message_data) >= 48 and self.key_exchange_complete):
+        if not len(message_data) >= 48:
             return False
-        try:
-            # Try to process as binary file chunk
-            result = self.protocol.process_file_chunk(message_data)
-            self.handle_file_chunk_binary(result)
-            return True
-        except ValueError:
-            # Not a binary file chunk either
-            return False
+        magic: bytes = message_data[0:1]
+        if magic == shared.MAGIC_NUMBER_FILE_TRANSFER:
+            try:
+                # Try to process as binary file chunk
+                result = self.protocol.process_file_chunk(message_data)
+                self.handle_file_chunk_binary(result)
+                return True
+            except ValueError:
+                return False
+        elif magic == shared.MAGIC_NUMBER_DEADDROPS:
+            try:
+                self._handle_deaddrop_binary_chunk(message_data)
+                return True
+            except ValueError:
+                return False
+        return False
     
     def handle_keepalive(self) -> None:
         """Handle keepalive messages from the server."""
@@ -1015,6 +1032,7 @@ class SecureChatClient:
         """Handle incoming voice call initiation, GUI exclusive"""
         self.protocol.queue_message(("encrypt_json", {"type": MessageType.VOICE_CALL_REJECT}))
         self.display_system_message("Incoming voice call rejected: voice calls not supported on terminal client.")
+        _ = init_msg
     
     def handle_voice_call_accept(self, message: dict[Any, Any]) -> None:
         """Handle incoming voice call acceptance, GUI exclusive"""
@@ -1023,15 +1041,15 @@ class SecureChatClient:
     def handle_voice_call_reject(self) -> None:
         """Handle incoming voice call rejection, GUI exclusive"""
         pass
-    
+
     def handle_voice_call_data(self, data: dict[Any, Any]) -> None:
         """Handle incoming voice call data, GUI exclusive"""
         pass
-    
+
     def handle_voice_call_end(self) -> None:
         """Handle incoming voice call end, GUI exclusive"""
         pass
-    
+
     def handle_nickname_change(self, message: dict[Any, Any]) -> None:
         """Handle incoming nickname change from peer."""
         # Disable nickname changes when keys are unverified
@@ -1258,6 +1276,20 @@ class SecureChatClient:
             "ciphertext": base64.b64encode(ciphertext).decode("utf-8"),
         }
 
+    def _encrypt_deaddrop_chunk(self, chunk: bytes, nonce: bytes) -> bytes:
+        """
+        Encrypts the raw chunk data to be sent as is
+        :param chunk: The data
+        :param nonce: The nonce
+        :return: [1-byte magic][12-byte nonce][ciphertext]
+        """
+        if not self.deaddrop_shared_secret:
+            raise ValueError("Deaddrop shared secret not established")
+
+        aead = ChaCha20Poly1305(self.deaddrop_shared_secret)
+        ciphertext = aead.encrypt(nonce, chunk, nonce)
+        return shared.MAGIC_NUMBER_DEADDROPS + nonce + ciphertext
+
     def _handle_deaddrop_encrypted_message(self, outer: dict[str, Any]) -> None:
         """Handle DEADDROP_MESSAGE from server (encrypted channel wrapper).
 
@@ -1327,27 +1359,8 @@ class SecureChatClient:
             self._deaddrop_in_progress = False
             self._deaddrop_download_in_progress = False
         elif inner_type == MessageType.DEADDROP_REDOWNLOAD:
-            # Server requests retransmission of specific chunk indexes.
-            # We rely on stored chunks from the last upload invocation.
-            indexes = inner.get("chunk_indexes", [])
-            if not isinstance(indexes, list):
-                return
-            for idx in indexes:
-                try:
-                    i_int = int(idx)
-                except (ValueError, TypeError):
-                    continue
-                chunk = self._deaddrop_chunks.get(i_int)
-                if chunk is None:
-                    continue
-                ct_b64 = base64.b64encode(chunk).decode("utf-8")
-                inner_msg = {
-                    "type": MessageType.DEADDROP_DATA,
-                    "chunk_index": i_int,
-                    "ct": ct_b64,
-                }
-                outer_msg = self._encrypt_deaddrop_inner(json.dumps(inner_msg).encode("utf-8"))
-                send_message(self.socket, json.dumps(outer_msg).encode("utf-8"))
+            # TODO: handle redownload
+            pass
         elif inner_type == MessageType.DEADDROP_PROVE:
             # Server is asking us to prove deaddrop password knowledge.
             # This is part of the download flow.
@@ -1479,7 +1492,7 @@ class SecureChatClient:
         outer_meta = self._encrypt_deaddrop_inner(json.dumps(inner_meta).encode("utf-8"))
         send_message(self.socket, json.dumps(outer_meta).encode("utf-8"))
 
-        encryptor = StreamingDoubleEncryptor(key)
+        encryptor = ChunkIndependentDoubleEncryptor(key)
         self._deaddrop_chunks.clear()
 
         chunk_index = 0
@@ -1504,14 +1517,14 @@ class SecureChatClient:
                     break
 
                 ct = encryptor.encrypt(nonce, plaintext_chunk)
-                ct_b64 = base64.b64encode(ct).decode("utf-8")
-                inner = {
-                    "type": MessageType.DEADDROP_DATA,
-                    "chunk_index": chunk_index,
-                    "ct": ct_b64,
-                }
-                outer = self._encrypt_deaddrop_inner(json.dumps(inner).encode("utf-8"))
-                ok, err = send_message(self.socket, json.dumps(outer).encode("utf-8"))
+
+                # Construct payload: [chunk_index][ct]
+                payload = chunk_index.to_bytes(4, byteorder='little') + ct
+                
+                outer_nonce = os.urandom(12)
+                frame = self._encrypt_deaddrop_chunk(payload, outer_nonce)
+                
+                ok, err = send_message(self.socket, frame)
                 if not ok:
                     self.display_error_message(f"Failed to send chunk: {err}")
                     chunk_index += 1
@@ -1662,6 +1675,26 @@ class SecureChatClient:
         self._deaddrop_dl_expected_index = 0
         self._deaddrop_dl_part_path = None
 
+    def _handle_deaddrop_binary_chunk(self, message_data: bytes):
+        """
+        Handle raw deaddrop data
+        Expects frame: [1-byte magic number][12-byte nonce][ciphertext]
+        :param message_data: The raw data received
+        :return:
+        """
+        if not self._deaddrop_download_in_progress or self.deaddrop_shared_secret is None:
+            return
+        aead = ChaCha20Poly1305(self.deaddrop_shared_secret)
+        nonce = message_data[1:13]
+        ct = message_data[13:]
+        try:
+            decrypted = aead.decrypt(nonce, ct, nonce)
+        except InvalidTag:
+            raise ValueError("Deaddrop chunk decryption failed")
+
+        # Stream-decrypt and write directly to disk
+        self._process_deaddrop_data_streaming(int.from_bytes(decrypted[:4], "little"), decrypted[4:])
+
     def _process_deaddrop_data_streaming(self, chunk_index: int, chunk_data: bytes) -> None:
         """
         Stream-decrypt incoming deaddrop chunk and write plaintext to a .part file.
@@ -1689,7 +1722,7 @@ class SecureChatClient:
             return
 
         if self._deaddrop_dl_encryptor is None:
-            self._deaddrop_dl_encryptor = StreamingDoubleEncryptor(self._deaddrop_download_key)
+            self._deaddrop_dl_encryptor = ChunkIndependentDoubleEncryptor(self._deaddrop_download_key)
 
         try:
             if chunk_index == 0:
