@@ -2,7 +2,7 @@ import base64
 import json
 import unittest
 
-from shared import SecureChatProtocol
+from protocol.shared import SecureChatProtocol
 
 class ProtocolCryptoTests(unittest.TestCase):
     def setUp(self):

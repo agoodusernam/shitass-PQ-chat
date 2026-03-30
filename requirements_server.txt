@@ -1,2 +1,2 @@
-cryptography~=46.0.3
-pqcrypto~=0.3.4
+cryptography~=46.0.5
+pqcrypto~=0.4.0

@@ -42,7 +42,7 @@ import json
 import os
 from datetime import datetime
 
-from shared import SecureChatProtocol
+from protocol.shared import SecureChatProtocol
 
 
 # ---------------------------------- Data Structures ---------------------------------- #

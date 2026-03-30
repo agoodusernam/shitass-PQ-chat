@@ -25,10 +25,11 @@ import threading
 import json
 import time
 from collections.abc import Generator
+from pathlib import Path
 from typing import Final, Any
 import datetime
+import secrets
 
-from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives.constant_time import bytes_eq
@@ -36,17 +37,10 @@ from cryptography.hazmat.primitives.kdf.concatkdf import ConcatKDFHash
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from pqcrypto.kem import ml_kem_1024 # type: ignore
 
-from shared import (
-    send_message,
-    receive_message,
-    create_reset_message,
-    MessageType,
-    PROTOCOL_VERSION,
-    MAGIC_NUMBER_DEADDROPS,
-    MAGIC_NUMBER_FILE_TRANSFER
-)
-import config_manager
-import configs
+from network_utils import send_message, encode_send_message, receive_message
+from protocol.create_messages import create_reset_message
+from protocol.constants import PROTOCOL_VERSION, MAGIC_NUMBER_FILE_TRANSFER, MAGIC_NUMBER_DEADDROPS, MessageType
+from config import config_manager, configs
 
 assert config_manager  # Remove unused import warning
 
@@ -67,18 +61,17 @@ class DeadDropManager:
         """
         Initialise the DeadDropManager.
         """
-        self.deaddrop_files: dict[str, str] = {}
+        self.deaddrop_files: dict[str, Path] = {}
         if not configs.DEADDROP_ENABLED:
             return
-        files = os.listdir(configs.DEADDROP_FILE_LOCATION)
+        files = Path(configs.DEADDROP_FILE_LOCATION).iterdir()
         for file in files:
-            if file.endswith(".bin"):
-                name = os.path.basename(file)[:-4]
-                path = os.path.join(configs.DEADDROP_FILE_LOCATION, file)
-                self.deaddrop_files[name] = path
+            if file.suffix == ".bin":
+                name = file.stem
+                self.deaddrop_files[name] = file.with_suffix("")
 
     
-    def __getitem__(self, item: str) -> str | None:
+    def __getitem__(self, item: str) -> Path | None:
         """
         Get the path of a deaddrop file.
         :param item: The name of the deaddrop file.
@@ -86,10 +79,10 @@ class DeadDropManager:
         """
         if not configs.DEADDROP_ENABLED:
             return None
-
+        
         if not self.check_file(item):
             return None
-
+        
         return self.deaddrop_files[item]
     
     def append(self, name: str, data: bytes) -> None:
@@ -127,14 +120,15 @@ class DeadDropManager:
         if not name.isalnum():
             raise ValueError(f"Invalid deaddrop name '{name}'")
         
-        path = os.path.join(configs.DEADDROP_FILE_LOCATION, name + ".bin")
-        if os.path.exists(path):
+        path = Path(configs.DEADDROP_FILE_LOCATION) / name
+        bin_path = path.with_suffix(".bin")
+        if bin_path.exists():
             raise FileExistsError(f"Deaddrop file '{name}' already exists")
         
         with open(path, "wb"):
             pass
         
-        with open(path + ".metadata", "w") as f:
+        with open(path.with_suffix(".metadata"), "w") as f:
             f.write(password + "\n")
             f.write(file_hash)
         
@@ -162,8 +156,8 @@ class DeadDropManager:
             raise IsADirectoryError(f"Deaddrop file '{name}' is a directory")
         
         # Remove main file
-        os.remove(self.deaddrop_files[name])
-        os.remove(self.deaddrop_files[name] + ".metadata")
+        os.remove(self.deaddrop_files[name].with_suffix(".bin"))
+        os.remove(self.deaddrop_files[name].with_suffix(".metadata"))
         del self.deaddrop_files[name]
     
     def check_file(self, name: str) -> bool:
@@ -173,21 +167,18 @@ class DeadDropManager:
         if not self.check_file(name):
             raise FileNotFoundError(f"Deaddrop file '{name}' does not exist")
         
-        return open(self.deaddrop_files[name], "rb")
+        return open(self.deaddrop_files[name].with_suffix('.bin'), "rb")
     
     def chunk_file(self, name: str) -> Generator[bytes, None, None]:
         with self.get_file(name) as f:
-            while True:
-                data = f.read(1024*1024)
-                if not data:
-                    break
+            while data := f.read(1024 * 1024):
                 yield data
 
     def get_password_hash(self, name: str) -> str:
         if not self.check_file(name):
             raise FileNotFoundError(f"Deaddrop file '{name}' does not exist")
 
-        with open(self.deaddrop_files[name] + ".metadata", "r") as f:
+        with open(self.deaddrop_files[name].with_suffix(".metadata"), "r") as f:
             lines = f.readlines()
             if len(lines) < 2:
                 raise ValueError(f"Deaddrop metadata for '{name}' is corrupted")
@@ -197,7 +188,7 @@ class DeadDropManager:
         if not self.check_file(name):
             raise FileNotFoundError(f"Deaddrop file '{name}' does not exist")
 
-        with open(self.deaddrop_files[name] + ".metadata", "r") as f:
+        with open(self.deaddrop_files[name].with_suffix(".metadata"), "r") as f:
             lines = f.readlines()
             if len(lines) < 2:
                 raise ValueError(f"Deaddrop metadata for '{name}' is corrupted")
@@ -248,15 +239,15 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
 
     # --- Identifier management ---
     @staticmethod
-    def _get_identifier_path() -> str:
+    def _get_identifier_path() -> Path:
         """Return path to identifier.txt in the project directory."""
-        base_dir = os.path.dirname(__file__)
-        return os.path.join(base_dir, "identifier.txt")
+        current_file = Path(__file__)
+        return current_file.parent / "identifier.txt"
 
     @staticmethod
-    def _get_wordlist_path() -> str:
-        base_dir = os.path.dirname(__file__)
-        return os.path.join(base_dir, configs.WORDLIST_FILE)
+    def _get_wordlist_path() -> Path:
+        current_file = Path(__file__)
+        return current_file.parent / configs.WORDLIST_FILE
 
     def _load_or_create_identifier(self) -> str:
         """Load server identifier from file or create a new 4-word identifier.
@@ -280,17 +271,14 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
             words = [line.strip() for line in f if line.strip()]
         if not words:
             raise ValueError("wordlist.txt is empty or not found")
-
-        # Use secrets for randomness
-        import secrets
+        
+        # Doesn't need to be cryptographically be secure, but we may as well do it anyway
         selected = [secrets.choice(words) for _ in range(4)]
         identifier = " ".join(selected)
-
+        
         # Write atomically: write to temp then replace
-        tmp_path = id_path + ".tmp"
-        with open(tmp_path, 'w', encoding='utf-8') as f:
-            f.write(identifier + "\n")
-        os.replace(tmp_path, id_path)
+        with open(id_path, 'w', encoding='utf-8') as f:
+            f.write(identifier)
         return identifier
     
     def add_client(self, client_handler: 'SecureChatRequestHandler') -> bool:
@@ -351,16 +339,16 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
     
     def route_message(self, sender_id: str, message_data: bytes) -> bool:
         """Route encrypted message from sender to the other client."""
-        attempts: list[tuple[bool, str]] = []
+        attempts: list[str | None] = []
         with self.clients_lock:
             for client_id, client_handler in self.clients.items():
                 if client_id != sender_id and client_handler.is_connected():
                     attempts.append(send_message(client_handler.request, message_data))
         
         all_sent = True
-        for success, error_text in attempts:
-            if not success:
-                print(f"Failed to route message to {sender_id}: {error_text}")
+        for success in attempts:
+            if success is not None:
+                print(f"Failed to route message to {sender_id}: {success}")
                 all_sent = False
         return all_sent
     
@@ -505,8 +493,8 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             if message_type == MessageType.DEADDROP_MESSAGE:
                 self.handle_deaddrop_message(message)
                 continue
-
-
+            
+            
             if not self.key_exchange_complete:
                 if message_type in (MessageType.KEY_EXCHANGE_INIT, MessageType.KEY_EXCHANGE_RESPONSE,
                                     MessageType.KEY_EXCHANGE_RESET, MessageType.INITIATE_KEY_EXCHANGE):
@@ -648,9 +636,9 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         message_data = json.dumps(complete_message).encode('utf-8')
         with self.server.clients_lock:
             for client_handler in self.server.clients.values():
-                ok, err = send_message(client_handler.request, message_data)
-                if not ok:
-                    print(f"Failed to notify key exchange complete to {client_handler.client_id}: {err}")
+                result = send_message(client_handler.request, message_data)
+                if result is not None:
+                    print(f"Failed to notify key exchange complete to {client_handler.client_id}: {result}")
     
     def get_other_client(self) -> "SecureChatRequestHandler | None":
         """Get the other connected client."""
@@ -764,8 +752,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                     "type":   MessageType.SERVER_DISCONNECT,
                     "reason": reason if reason else "Server disconnect",
                 }
-                message_data = json.dumps(disconnect_message).encode('utf-8')
-                send_message(self.request, message_data)
+                encode_send_message(self.request, disconnect_message)
             
             
             if self.client_id:
@@ -781,7 +768,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         self.unexpected_message_count += 1
         if self.unexpected_message_count >= configs.MAX_UNEXPECTED_MSGS:
             self.disconnect("Too many unexpected messages" + extra_info)
-
+    
     def handle_deaddrop_start(self) -> None:
         """Handle deaddrop start message from client."""
         if not configs.DEADDROP_ENABLED:
@@ -803,10 +790,10 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
 
         public_key, self.ml_kem_sk = ml_kem_1024.generate_keypair()
         msg = {
-            "type": MessageType.DEADDROP_START,
-            "supported": True,
+            "type":          MessageType.DEADDROP_START,
+            "supported":     True,
             "max_file_size": configs.DEADDROP_MAX_SIZE,
-            "mlkem_public": base64.b64encode(public_key).decode('utf-8')
+            "mlkem_public":  base64.b64encode(public_key).decode('utf-8')
         }
         with self.sender_lock:
             send_message(self.request, json.dumps(msg).encode('utf-8'))

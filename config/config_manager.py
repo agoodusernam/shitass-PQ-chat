@@ -40,7 +40,7 @@ except OSError as e:
 def validate_configs() -> None:
     """Validate configuration settings."""
     try:
-        import configs
+        from config import configs
     except ImportError as e:
         raise ImportError("configs.py could not be created. Contact the developer.") from e
     

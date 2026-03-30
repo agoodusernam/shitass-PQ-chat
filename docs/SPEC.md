@@ -220,7 +220,7 @@ Inner (plaintext JSON, examples):
 
 ### 8.4 State updates
 - Send path: Mix DH(ephemeral, peer base) into the send chain, derive per‑message key, ratchet the send chain forward.
-- Receive path: Advance a temp chain from receive_chain_key up to the counter, mix DH(peer ephemeral, own receive private), derive per‑message key, verify/decrypt, then commit the receive_chain_key to the new state and update peer_counter.
+- Receive path: Advance a temp chain from receive_chain_key up to the counter, mix DH(peer ephemeral, own receive private), derive per‑message key, verify/decrypt, then commit the receive_chain_key to the new state, and update peer_counter.
 
 ## 9. File transfer
 Implementations MAY support file transfer as specified here. Compression is OPTIONAL; see §9.4.

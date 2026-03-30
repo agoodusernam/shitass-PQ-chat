@@ -1,6 +1,6 @@
 """
 Secure Chat Client with End-to-End Encryption
-It uses KRYSTALS KYBER protocol + X25519 for secure key exchange and message encryption.
+It uses ML-KEM 1024, HQC, and X25519 for secure key exchange and message encryption.
 """
 import base64
 import binascii
@@ -25,18 +25,17 @@ from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from pqcrypto.kem import ml_kem_1024  # type: ignore
 
-import shared
-from shared import (
-    SecureChatProtocol,
-    send_message,
-    receive_message,
-    MessageType,
-    PROTOCOL_VERSION,
-    FileMetadata,
-    FileTransfer,
-    SEND_CHUNK_SIZE,
-    ChunkIndependentDoubleEncryptor
-)
+import network_utils
+from clients.checks import allowed_outer_fields, allowed_unverified_inner_fields, first_unexpected_field
+from protocol import constants, utils, types
+from protocol.create_messages import create_file_metadata_message
+from protocol.parse_messages import process_file_metadata
+from protocol.utils import chunk_file
+from protocol.shared import SecureChatProtocol
+from network_utils import send_message, receive_message
+from protocol.types import FileMetadata, FileTransfer
+from protocol.crypto_classes import ChunkIndependentDoubleEncryptor
+from protocol.constants import PROTOCOL_VERSION, SEND_CHUNK_SIZE, MessageType
 
 
 # noinspection PyBroadException
@@ -173,72 +172,6 @@ class SecureChatClient:
     def close_audio(self) -> None:
         pass
     
-    @staticmethod
-    def _first_unexpected_field(obj: dict[Any, Any], allowed: set[str]) -> str | None:
-        """Return the first key not in allowed or None if all keys allowed."""
-        for k in obj.keys():
-            if k not in allowed:
-                return shared.sanitize_str(k)
-        return None
-    
-    @staticmethod
-    def _allowed_outer_fields(msg_type: Any) -> set[str]:
-        """Whitelist of allowed top-level fields for pre-verification JSON messages."""
-        base = {"type", "protocol_version", "version"}
-        mt = MessageType(msg_type)
-        
-        server_control: list[MessageType] = [MessageType.KEEP_ALIVE, MessageType.KEY_EXCHANGE_COMPLETE,
-                                             MessageType.INITIATE_KEY_EXCHANGE, MessageType.SERVER_FULL,
-                                             MessageType.SERVER_VERSION_INFO, MessageType.SERVER_DISCONNECT,
-                                             MessageType.ERROR]
-        
-        match mt:
-            case MessageType.SERVER_VERSION_INFO:
-                # Allow server identifier in version info announcement
-                return base | {"identifier"}
-            case MessageType.KEY_EXCHANGE_INIT:
-                return base | {"mlkem_public_key", "dh_public_key", "hqc_public_key"}
-            case MessageType.KEY_EXCHANGE_RESPONSE:
-                return base | {"mlkem_ciphertext", "hqc_ciphertext", "mlkem_public_key", "hqc_public_key",
-                               "dh_public_key"}
-            case MessageType.ENCRYPTED_MESSAGE:
-                return base | {"counter", "nonce", "ciphertext", "dh_public_key", "verification"}
-            case MessageType.KEY_VERIFICATION:
-                return base | {"verified"}
-            case MessageType.KEY_EXCHANGE_RESET:
-                return base | {"message"}
-            case MessageType.DEADDROP_START:
-                # Plaintext handshake: may include capability fields
-                return base | {"supported", "max_file_size", "mlkem_public"}
-            case MessageType.DEADDROP_MESSAGE:
-                # Encrypted deaddrop envelope
-                return base | {"nonce", "ciphertext"}
-        
-        if mt in server_control:
-            # Allow common server control fields
-            return base | {"reason", "message", "timestamp"}
-        return base
-        
-    @staticmethod
-    def _allowed_unverified_inner_fields() -> set[str]:
-        """Whitelist superset of allowed decrypted JSON fields before verification."""
-        return {
-            # common
-            "type", "message", "reason", "text",
-            # delivery
-            "confirmed_counter",
-            # file transfer
-            "transfer_id", "filename", "file_size", "file_hash", "total_chunks", "processed_size", "compressed",
-            # rekey
-            "action", "public_key", "ciphertext",
-            # dummy
-            "data",
-            # ephemeral mode / nickname
-            "mode", "owner_id", "nickname",
-            # voice call (GUI/client variants may use these)
-            "rate", "chunk_size", "audio_format", "audio_data"
-        }
-        
     def connect(self, host: str, port: int) -> bool:
         """Connect to the chat server and start the message receiving thread.
         
@@ -279,7 +212,6 @@ class SecureChatClient:
             self.display_error_message(f"Failed to connect to server: {e}")
             self.socket.close()
             return False
-        
     
     def receive_messages(self) -> None:
         """Continuously receive and handle messages from the server.
@@ -335,7 +267,7 @@ class SecureChatClient:
                 self.display_error_message("Rate-limited peer: dropped message")
                 return
             self._rl_count += 1
-
+        
         if len(message_data) > 33260 and not self.bypass_rate_limits:
             # Prevent potential DoS with large messages
             self.display_error_message("Received overly large message without key verification. Dropping." +
@@ -352,14 +284,14 @@ class SecureChatClient:
             if not success:
                 self.display_error_message("Received message that could not be decoded.")
             return
-            
+        
         if message_type == MessageType.NONE:
             self.display_error_message("Received message with invalid type.")
             return
         
         # Validate unexpected fields when peer is unverified (outer JSON)
-        allowed = self._allowed_outer_fields(message_type)
-        unexpected = self._first_unexpected_field(message_json, allowed)
+        allowed = allowed_outer_fields(message_type)
+        unexpected = first_unexpected_field(message_json, allowed)
         if unexpected:
             self.display_error_message(f"Dropped message from unverified peer due to unexpected field '{unexpected}'.")
             return
@@ -401,13 +333,12 @@ class SecureChatClient:
             case _:
                 self.display_error_message(f"Unknown message type: {message_type}")
         return
-        
     
     def handle_maybe_binary_chunk(self, message_data: bytes) -> bool:
         if not len(message_data) >= 48:
             return False
         magic: bytes = message_data[0:1]
-        if magic == shared.MAGIC_NUMBER_FILE_TRANSFER:
+        if magic == constants.MAGIC_NUMBER_FILE_TRANSFER:
             try:
                 # Try to process as binary file chunk
                 result = self.protocol.process_file_chunk(message_data)
@@ -415,7 +346,7 @@ class SecureChatClient:
                 return True
             except ValueError:
                 return False
-        elif magic == shared.MAGIC_NUMBER_DEADDROPS:
+        elif magic == constants.MAGIC_NUMBER_DEADDROPS:
             try:
                 self._handle_deaddrop_binary_chunk(message_data)
                 return True
@@ -430,9 +361,9 @@ class SecureChatClient:
         response_data = json.dumps(response_message).encode('utf-8')
         
         # Send response to server
-        ok, err = send_message(self.socket, response_data)
-        if not ok:
-            self.display_error_message(f"Failed to send keepalive response: {err}")
+        result = send_message(self.socket, response_data)
+        if result is not None:
+            self.display_error_message(f"Failed to send keepalive response: {result}")
             self.display_system_message("Server may disconnect after 3 keepalive failures.")
     
     def handle_delivery_confirmation(self, message: dict[Any, Any]) -> None:
@@ -500,12 +431,11 @@ class SecureChatClient:
             # Display version warning if present
             if version_warning:
                 self.display_system_message(f"{version_warning}")
-                
+            
             self.display_system_message("Key exchange completed successfully.")
             return True
         self.display_system_message("Received key exchange response but no private key found")
         return False
-    
     
     def handle_key_exchange_complete(self) -> None:
         """Handle key exchange completion notification."""
@@ -576,10 +506,9 @@ class SecureChatClient:
         """Handle key verification message from peer."""
         try:
             peer_verified = self.protocol.process_key_verification_message(message_data)
-        except shared.DecodeError as e:
+        except types.DecodeError as e:
             self.display_error_message(e)
             return
-            
         
         if peer_verified:
             self.display_system_message("Peer has verified your key successfully.")
@@ -594,14 +523,15 @@ class SecureChatClient:
             print(f"\n{self.peer_nickname}: {message}")
     
     def display_error_message(self, message: str | Exception) -> None:
-        print(f"Error: {message}")
-        
+        print(f"[ERROR]: {message}")
+    
     def display_system_message(self, message: str) -> None:
         """Display a system message."""
         print(f"[SYSTEM]: {message}")
     
     def prompt_rekey_from_unverified(self) -> bool:
-        """Prompt the user whether to proceed with a rekey from an unverified peer.
+        """
+        Prompt the user whether to proceed with a rekey from an unverified peer.
         Returns True to proceed with rekey, False to disconnect.
         """
         self.display_system_message("WARNING: Rekey requested by an UNVERIFIED peer.")
@@ -612,7 +542,7 @@ class SecureChatClient:
                 resp = input("Do you want to commence the rekey? (yes = proceed, no = disconnect): ").strip().lower()
                 if resp in ("yes", "y"):  # proceed with rekey
                     return True
-                if resp in ("no", "n"):   # disconnect
+                if resp in ("no", "n"):  # disconnect
                     return False
                 print("Please answer 'yes'/'y' or 'no'/'n'.")
             except (EOFError, KeyboardInterrupt):
@@ -639,8 +569,8 @@ class SecureChatClient:
         
         # Validate unexpected fields when peer is unverified (inner JSON)
         if not self.protocol.peer_key_verified:
-            allowed_inner = self._allowed_unverified_inner_fields()
-            unexpected_inner = self._first_unexpected_field(message_json, allowed_inner)
+            allowed_inner = allowed_unverified_inner_fields()
+            unexpected_inner = first_unexpected_field(message_json, allowed_inner)
             if unexpected_inner:
                 self.display_error_message(f"Dropped decrypted message from unverified peer due to unexpected field '{unexpected_inner}'.")
                 return
@@ -658,7 +588,6 @@ class SecureChatClient:
         
         # Check if automatic rekey should be initiated after processing the message
         self.check_and_initiate_auto_rekey()
-    
     
     def handle_message_types(self, message_type: MessageType, message_json: dict[Any, Any],
                              received_message_counter: int) -> bool:
@@ -678,53 +607,53 @@ class SecureChatClient:
                     text = "".join(ch for ch in text if ch in string.printable)
                 self.display_regular_message(text)
                 self._send_delivery_confirmation(received_message_counter)
-                
+            
             case MessageType.EMERGENCY_CLOSE:
                 self.handle_emergency_close()
-                
+            
             case MessageType.DUMMY_MESSAGE:
                 pass
             
             case MessageType.FILE_METADATA:
                 self.handle_file_metadata(message_json)
-                
+            
             case MessageType.FILE_ACCEPT:
                 self.handle_file_accept(message_json)
-                
+            
             case MessageType.FILE_REJECT:
                 self.handle_file_reject(message_json)
-                
+            
             case MessageType.FILE_COMPLETE:
                 self.handle_file_complete(message_json)
-                
+            
             case MessageType.DELIVERY_CONFIRMATION:
                 if self.key_exchange_complete:
                     self.handle_delivery_confirmation(message_json)
-                    
+            
             case MessageType.EPHEMERAL_MODE_CHANGE:
                 self.handle_ephemeral_mode_change(message_json)
-                
+            
             case MessageType.REKEY:
                 self.handle_rekey(message_json)
-                
+            
             case MessageType.VOICE_CALL_INIT:
                 self.handle_voice_call_init(message_json)
-                
+            
             case MessageType.VOICE_CALL_ACCEPT:
                 self.handle_voice_call_accept(message_json)
-                
+            
             case MessageType.VOICE_CALL_REJECT:
                 self.handle_voice_call_reject()
-                
+            
             case MessageType.VOICE_CALL_DATA:
                 self.handle_voice_call_data(message_json)
-                
+            
             case MessageType.VOICE_CALL_END:
                 self.handle_voice_call_end()
-                
+            
             case MessageType.NICKNAME_CHANGE:
                 self.handle_nickname_change(message_json)
-                
+            
             case _:
                 self.display_error_message(f"Dropped message with unknown inside type: {message_type}")
                 return False
@@ -739,7 +668,7 @@ class SecureChatClient:
         message = {
             "type":              MessageType.DELIVERY_CONFIRMATION,
             "confirmed_counter": confirmed_counter,
-        }
+            }
         self.protocol.queue_message(("encrypt_json", message))
     
     def handle_key_exchange_reset(self, message_data: bytes) -> None:
@@ -764,7 +693,6 @@ class SecureChatClient:
         print("Waiting for a new client to connect...")
         print("A new key exchange will start automatically.")
         print(f"{'=' * 50}")
-        
     
     def handle_emergency_close(self) -> None:
         """Handle emergency close message from the other client."""
@@ -781,7 +709,7 @@ class SecureChatClient:
         # Clear any pending file transfers
         self.pending_file_transfers.clear()
         self.active_file_metadata.clear()
-        
+    
     def initiate_rekey(self) -> None:
         """Initiate a rekey to establish fresh session keys using the existing secure channel."""
         if not self.key_exchange_complete:
@@ -839,7 +767,7 @@ class SecureChatClient:
         """Send a file to the other client."""
         try:
             if not self.verification_complete:
-                print("Cannot send file: Key verification not complete")
+                self.display_error_message("Cannot send file: Key verification not complete")
                 return
             
             # Warn if keys are unverified (potential MitM vulnerability)
@@ -847,7 +775,7 @@ class SecureChatClient:
                 self.display_system_message("Warning: Sending file over an unverified connection. This is vulnerable to MitM attacks.")
             
             # Create file metadata message
-            metadata = self.protocol.create_file_metadata_message(file_path, compress=compress)
+            metadata = create_file_metadata_message(file_path, compress=compress)
             
             # Use the effective compression decided by the protocol (auto-detects incompressible types)
             compress = metadata["compressed"]
@@ -858,7 +786,7 @@ class SecureChatClient:
                 "file_path": file_path,
                 "metadata":  metadata,
                 "compress":  compress
-            }
+                }
             metadata_message = deepcopy(dict(metadata))
             metadata_message["type"] = MessageType.FILE_METADATA
             # Send metadata to peer via queue (loop will encrypt)
@@ -880,7 +808,7 @@ class SecureChatClient:
     def handle_file_metadata(self, decrypted_message: dict[Any, Any]) -> None:
         """Handle incoming file metadata."""
         try:
-            metadata = self.protocol.process_file_metadata(decrypted_message)
+            metadata = process_file_metadata(decrypted_message)
         except KeyError as e:
             self.display_error_message(e)
             return
@@ -891,7 +819,7 @@ class SecureChatClient:
                 "type":        MessageType.FILE_REJECT,
                 "transfer_id": transfer_id,
                 "reason":      "User disabled file transfers",
-            }))
+                }))
             return
         
         # Warn if keys are unverified (potential MitM vulnerability)
@@ -916,7 +844,7 @@ class SecureChatClient:
                     self.protocol.queue_message(("encrypt_json", {
                         "type":        MessageType.FILE_ACCEPT,
                         "transfer_id": transfer_id,
-                    }))
+                        }))
                     print("File transfer accepted. Waiting for file...")
                     self.protocol.send_dummy_messages = False
                 
@@ -926,7 +854,7 @@ class SecureChatClient:
                         "type":        MessageType.FILE_REJECT,
                         "transfer_id": transfer_id,
                         "reason":      "User declined",
-                    }))
+                        }))
                     print("File transfer rejected.")
                     del self.active_file_metadata[transfer_id]
                 else:
@@ -937,7 +865,7 @@ class SecureChatClient:
                     "type":        MessageType.FILE_REJECT,
                     "transfer_id": transfer_id,
                     "reason":      "User canceled",
-                }))
+                    }))
                 print("File transfer rejected.")
                 del self.active_file_metadata[transfer_id]
                 break
@@ -951,27 +879,27 @@ class SecureChatClient:
             self.display_error_message("Received acceptance without transfer ID")
             self.protocol.send_dummy_messages = True
             return
-            
+        
         if transfer_id not in self.pending_file_transfers:
             print("Received acceptance for unknown file transfer")
             self.protocol.send_dummy_messages = True
             return
-            
+        
         transfer_info = self.pending_file_transfers[transfer_id]
-
+        
         file_path = transfer_info["file_path"]
         
         print(f"File transfer accepted. Sending {transfer_info['metadata']['filename']}...")
         
         # Start tracking the sending transfer in the protocol
-        self.protocol.sending_transfers[transfer_id] = transfer_info['metadata']
+        self.protocol.file_handler.sending_transfers[transfer_id] = transfer_info['metadata']
         
         # Start sending file chunks in a separate thread to avoid blocking message processing
         chunk_thread = threading.Thread(
                 target=self._send_file_chunks,
                 args=(transfer_id, file_path),
-                daemon=True
-        )
+                daemon=True,
+                )
         chunk_thread.start()
     
     def handle_file_reject(self, message: dict[Any, Any]) -> None:
@@ -987,7 +915,7 @@ class SecureChatClient:
             filename = self.pending_file_transfers[transfer_id]["metadata"]["filename"]
             print(f"File transfer rejected: {filename} - {reason}")
             # Clean up transfer tracking
-            self.protocol.stop_sending_transfer(transfer_id)
+            self.protocol.file_handler.stop_sending_transfer(transfer_id)
             del self.pending_file_transfers[transfer_id]
         else:
             print("Received rejection for unknown file transfer")
@@ -1015,7 +943,7 @@ class SecureChatClient:
             # Send commit under old key; do not switch yet (wait for ack)
             self.protocol.queue_message(("encrypt_json", commit))
         elif action == "commit":
-            ack = {"type": MessageType.REKEY, "action": "commit_ack",}
+            ack = {"type": MessageType.REKEY, "action": "commit_ack", }
             # Send ack under old key, then switch to new keys
             self.protocol.queue_message(("encrypt_json_then_switch", ack))
             self.display_system_message("Rekey completed successfully.")
@@ -1041,15 +969,15 @@ class SecureChatClient:
     def handle_voice_call_reject(self) -> None:
         """Handle incoming voice call rejection, GUI exclusive"""
         pass
-
+    
     def handle_voice_call_data(self, data: dict[Any, Any]) -> None:
         """Handle incoming voice call data, GUI exclusive"""
         pass
-
+    
     def handle_voice_call_end(self) -> None:
         """Handle incoming voice call end, GUI exclusive"""
         pass
-
+    
     def handle_nickname_change(self, message: dict[Any, Any]) -> None:
         """Handle incoming nickname change from peer."""
         # Disable nickname changes when keys are unverified
@@ -1067,21 +995,21 @@ class SecureChatClient:
         transfer_id = chunk_info["transfer_id"]
         
         if transfer_id not in self.active_file_metadata:
-            print("Received chunk for unknown file transfer")
+            self.display_error_message("Received chunk for unknown file transfer")
             return
         
         metadata = self.active_file_metadata[transfer_id]
         
         # Add chunk to protocol buffer
-        is_complete = self.protocol.add_file_chunk(
+        is_complete = self.protocol.file_handler.add_file_chunk(
                 transfer_id,
                 chunk_info["chunk_index"],
                 chunk_info["chunk_data"],
-                metadata["total_chunks"]
-        )
+                metadata["total_chunks"],
+                )
         
         # Show progress - but only at significant intervals to avoid console spam
-        received_chunks = len(self.protocol.received_chunks.get(transfer_id, set()))
+        received_chunks = len(self.protocol.file_handler.received_chunks.get(transfer_id, set()))
         progress = (received_chunks / metadata["total_chunks"]) * 100
         
         # Initialise progress tracking for this transfer if not exists
@@ -1092,7 +1020,9 @@ class SecureChatClient:
         if (progress - self._last_progress_shown[transfer_id] >= 10 or
                 is_complete or
                 received_chunks == 1):  # Always show first chunk
-            print(f"Receiving {metadata['filename']}: {progress:.1f}% ({received_chunks}/{metadata['total_chunks']} chunks)")
+            self.display_system_message(f"Receiving {metadata['filename']}: " +
+                                        f"{progress:.1f}% ({received_chunks}/" +
+                                        f"{metadata['total_chunks']} chunks)")
             self._last_progress_shown[transfer_id] = progress
         
         if is_complete:
@@ -1109,18 +1039,18 @@ class SecureChatClient:
             try:
                 # Get compression status from metadata
                 compressed = metadata.get("compressed", True)  # Default to compressed for backward compatibility
-                self.protocol.reassemble_file(transfer_id, output_path, metadata["file_hash"], compressed=compressed)
+                self.protocol.file_handler.reassemble_file(transfer_id, output_path, metadata["file_hash"], compressed=compressed)
                 
                 compression_text = "compressed" if compressed else "uncompressed"
-                print(f"File received successfully ({compression_text}): {output_path}")
+                self.display_system_message(f"File received successfully ({compression_text}): {output_path}")
                 
                 self.protocol.queue_message(("encrypt_json", {
                     "type":        MessageType.FILE_COMPLETE,
                     "transfer_id": transfer_id,
-                }))
+                    }))
             
             except Exception as e:
-                print(f"File reassembly failed: {e}")
+                self.display_error_message(f"File reassembly failed: {e}")
             
             # Clean up
             del self.active_file_metadata[transfer_id]
@@ -1144,14 +1074,13 @@ class SecureChatClient:
             self.protocol.send_dummy_messages = True
         else:
             self.display_error_message(f"Received file complete for unknown transfer ID: {transfer_id}")
-            
     
     def handle_server_full(self) -> None:
         """Handle server full notification."""
-        print("\nServer is full. Cannot connect at this time.")
-        print("Please try again later or contact the server administrator.")
+        self.display_error_message("Server is full. Cannot connect at this time.")
+        self.display_error_message("Please try again later or contact the server administrator.")
         self.disconnect()
-
+    
     def start_deaddrop_handshake(self) -> None:
         """Initiate deaddrop handshake with the server.
 
@@ -1163,11 +1092,11 @@ class SecureChatClient:
         if not self.connected:
             self.display_error_message("Cannot start deaddrop - not connected")
             return
-
+        
         if self._deaddrop_in_progress:
             self.display_error_message("Deaddrop already in progress")
             return
-
+        
         # Reset handshake state and (re)initialise the event so callers can
         # wait for completion in a thread-safe manner.
         self.deaddrop_shared_secret = None
@@ -1176,12 +1105,12 @@ class SecureChatClient:
             self._deaddrop_handshake_event = threading.Event()
         else:
             self._deaddrop_handshake_event.clear()
-
+        
         self.display_system_message("Starting deaddrop handshake")
-
+        
         msg = {"type": MessageType.DEADDROP_START}
         send_message(self.socket, json.dumps(msg).encode("utf-8"))
-
+    
     def wait_for_deaddrop_handshake(self, timeout: float = 3.0) -> bool:
         """Block until the deaddrop handshake completes or ``timeout`` elapses.
 
@@ -1191,21 +1120,21 @@ class SecureChatClient:
         if not self.connected:
             self.display_error_message("Cannot wait for deaddrop handshake - not connected")
             return False
-
+        
         if self._deaddrop_handshake_event is None:
             # Handshake was never started for this wait call.
             self.display_error_message("Deaddrop handshake has not been started")
             return False
-
+        
         completed = self._deaddrop_handshake_event.wait(timeout)
         if not completed:
             self.display_error_message("Deaddrop handshake timed out")
             return False
-
+        
         # If the event was set but no shared secret is present, treat as failure
         # or unsupported deaddrop.
         return bool(self.deaddrop_shared_secret)
-
+    
     def _handle_deaddrop_start_response(self, message: dict[str, Any]) -> None:
         """Process server's response to DEADDROP_START.
 
@@ -1223,7 +1152,7 @@ class SecureChatClient:
             if self._deaddrop_handshake_event is not None:
                 self._deaddrop_handshake_event.set()
             return
-
+        
         try:
             mlkem_public_b64 = str(message["mlkem_public"])
             mlkem_public = base64.b64decode(mlkem_public_b64, validate=True)
@@ -1237,45 +1166,45 @@ class SecureChatClient:
             if self._deaddrop_handshake_event is not None:
                 self._deaddrop_handshake_event.set()
             return
-
+        
         # Perform ML-KEM encapsulation
         mlkem_ciphertext, kem_shared_secret = ml_kem_1024.encrypt(mlkem_public)
-
+        
         # Derive the 32-byte shared secret using SHA3-512 via ConcatKDFHash
         kdf = ConcatKDFHash(algorithm=hashes.SHA3_512(), length=32,
-                            otherinfo=b"deaddrop key exchange")
+                otherinfo=b"deaddrop key exchange")
         self.deaddrop_shared_secret = kdf.derive(kem_shared_secret)
         self.deaddrop_supported = True
         self.deaddrop_max_size = int(message.get("max_file_size", 0))
-
+        
         # Send key exchange response back to server
         resp = {
-            "type": MessageType.DEADDROP_KE_RESPONSE,
+            "type":     MessageType.DEADDROP_KE_RESPONSE,
             "mlkem_ct": base64.b64encode(mlkem_ciphertext).decode("utf-8"),
-        }
+            }
         send_message(self.socket, json.dumps(resp).encode("utf-8"))
         self.display_system_message("Deaddrop handshake complete")
         if self._deaddrop_handshake_event is not None:
             self._deaddrop_handshake_event.set()
-
+    
     def _encrypt_deaddrop_inner(self, inner: bytes) -> dict[str, Any]:
         """Encrypt inner deaddrop JSON bytes into a DEADDROP_MESSAGE envelope."""
         if not self.deaddrop_shared_secret:
             raise ValueError("Deaddrop shared secret not established")
         nonce = os.urandom(12)
         aad = {
-            "type": MessageType.DEADDROP_MESSAGE,
+            "type":  MessageType.DEADDROP_MESSAGE,
             "nonce": base64.b64encode(nonce).decode("utf-8"),
-        }
+            }
         aad_raw = json.dumps(aad).encode("utf-8")
         aead = ChaCha20Poly1305(self.deaddrop_shared_secret)
         ciphertext = aead.encrypt(nonce, inner, aad_raw)
         return {
-            "type": MessageType.DEADDROP_MESSAGE,
-            "nonce": base64.b64encode(nonce).decode("utf-8"),
+            "type":       MessageType.DEADDROP_MESSAGE,
+            "nonce":      base64.b64encode(nonce).decode("utf-8"),
             "ciphertext": base64.b64encode(ciphertext).decode("utf-8"),
-        }
-
+            }
+    
     def _encrypt_deaddrop_chunk(self, chunk: bytes, nonce: bytes) -> bytes:
         """
         Encrypts the raw chunk data to be sent as is
@@ -1285,11 +1214,11 @@ class SecureChatClient:
         """
         if not self.deaddrop_shared_secret:
             raise ValueError("Deaddrop shared secret not established")
-
+        
         aead = ChaCha20Poly1305(self.deaddrop_shared_secret)
         ciphertext = aead.encrypt(nonce, chunk, nonce)
-        return shared.MAGIC_NUMBER_DEADDROPS + nonce + ciphertext
-
+        return constants.MAGIC_NUMBER_DEADDROPS + nonce + ciphertext
+    
     def _handle_deaddrop_encrypted_message(self, outer: dict[str, Any]) -> None:
         """Handle DEADDROP_MESSAGE from server (encrypted channel wrapper).
 
@@ -1303,7 +1232,7 @@ class SecureChatClient:
         if not self.deaddrop_shared_secret:
             self.display_error_message("Received deaddrop message before handshake was complete")
             return
-
+        
         try:
             nonce_b64 = str(outer["nonce"])
             ct_b64 = str(outer["ciphertext"])
@@ -1315,12 +1244,12 @@ class SecureChatClient:
         except binascii.Error:
             self.display_error_message("Invalid base64 in deaddrop message from server")
             return
-
+        
         aad_raw = json.dumps({
-            "type": MessageType.DEADDROP_MESSAGE,
+            "type":  MessageType.DEADDROP_MESSAGE,
             "nonce": nonce_b64,
-        }).encode("utf-8")
-
+            }).encode("utf-8")
+        
         try:
             aead = ChaCha20Poly1305(self.deaddrop_shared_secret)
             inner_bytes = aead.decrypt(nonce, ciphertext, aad_raw)
@@ -1328,7 +1257,7 @@ class SecureChatClient:
         except Exception:
             self.display_error_message("Failed to decrypt deaddrop message from server")
             return
-
+        
         inner_type = MessageType(int(inner.get("type", MessageType.NONE)))
         if inner_type == MessageType.DEADDROP_CHECK_RESPONSE:
             exists = bool(inner.get("exists", False))
@@ -1346,7 +1275,7 @@ class SecureChatClient:
                 # Download accepted: store expected file hash for integrity check
                 self._deaddrop_download_expected_hash = str(inner.get("file_hash", ""))
                 self.display_system_message("Deaddrop download accepted by server; confirming and waiting for data...")
-
+                
                 # Confirm we are ready to receive the file as per spec.
                 confirm_inner = {"type": MessageType.DEADDROP_ACCEPT}
                 confirm_outer = self._encrypt_deaddrop_inner(json.dumps(confirm_inner).encode("utf-8"))
@@ -1373,24 +1302,24 @@ class SecureChatClient:
             except binascii.Error:
                 self.display_error_message("Invalid base64 salt in deaddrop prove message")
                 return
-
+            
             if not self._deaddrop_password_hash:
                 self.display_error_message("No stored deaddrop password hash for download")
                 return
-
+            
             # Derive PBKDF2-SHA3-512 hash over the Argon2id hash from _hash_deaddrop_password
             pbk = PBKDF2HMAC(
-                algorithm=hashes.SHA3_512(),
-                length=32,
-                salt=download_salt,
-                iterations=800000,
-            )
+                    algorithm=hashes.SHA3_512(),
+                    length=32,
+                    salt=download_salt,
+                    iterations=800000,
+                    )
             og_hash_bytes = self._deaddrop_password_hash.encode("utf-8")
             client_hash = pbk.derive(og_hash_bytes)
             inner_msg = {
                 "type": MessageType.DEADDROP_PROVE,
                 "hash": base64.b64encode(client_hash).decode("utf-8"),
-            }
+                }
             outer_msg = self._encrypt_deaddrop_inner(json.dumps(inner_msg).encode("utf-8"))
             send_message(self.socket, json.dumps(outer_msg).encode("utf-8"))
         elif inner_type == MessageType.DEADDROP_DATA:
@@ -1405,7 +1334,7 @@ class SecureChatClient:
             except (KeyError, ValueError, TypeError, binascii.Error):
                 self.display_error_message("Malformed deaddrop data from server")
                 return
-
+            
             # Stream-decrypt and write directly to disk
             self._process_deaddrop_data_streaming(chunk_index, chunk_data)
         elif inner_type == MessageType.DEADDROP_COMPLETE:
@@ -1416,7 +1345,7 @@ class SecureChatClient:
                 self.display_system_message("Deaddrop upload completed successfully")
             self._deaddrop_in_progress = False
             self._deaddrop_download_in_progress = False
-
+    
     def _derive_deaddrop_file_key(self, password: str) -> bytes:
         """
         Derive a 64-byte DoubleEncryptor key from password using SHA3-512.
@@ -1429,25 +1358,25 @@ class SecureChatClient:
         # Optionally also mix server identifier to tie encryption to this server
         if self.server_identifier:
             digest.update(self.server_identifier.encode("utf-8"))
-
+        
         return digest.digest()
-
+    
     def _hash_deaddrop_password(self, password: str) -> str:
         """
         Compute Argon2id hash of password using server identifier as salt.
         """
         self.display_system_message("Hashing deaddrop password, program may be unresponsive.")
-        time.sleep(0.2) # Wait a moment to allow the display to update
+        time.sleep(0.2)  # Wait a moment to allow the display to update
         salt = self.server_identifier.encode("utf-8") if self.server_identifier else b""
         hasher = Argon2id(
-            salt=salt,
-            memory_cost=1024 * 1024 * 4,
-            iterations=4,
-            lanes=4,
-            length=64
-        )
+                salt=salt,
+                memory_cost=1024 * 1024 * 4,
+                iterations=4,
+                lanes=4,
+                length=64,
+                )
         return base64.b64encode(hasher.derive(password.encode("utf-8"))).decode("utf-8")
-
+    
     def deaddrop_upload(self, name: str, password: str, file_path: str) -> None:
         """Perform deaddrop upload of a file.
 
@@ -1459,42 +1388,42 @@ class SecureChatClient:
         if not self.deaddrop_shared_secret:
             self.display_error_message("Deaddrop not initialised - handshake required")
             return
-
+        
         if not os.path.isfile(file_path):
             self.display_error_message(f"File not found: {file_path}")
             return
-
+        
         file_size = os.path.getsize(file_path)
         if self.deaddrop_max_size and file_size > self.deaddrop_max_size:
             self.display_error_message("File exceeds maximum deaddrop size allowed by server")
             return
-
+        
         key = self._derive_deaddrop_file_key(password)
         h = HMAC(key, hashes.SHA3_512())
         with open(file_path, "rb") as f:
             while chunk := f.read(8192):
                 h.update(chunk)
         file_hash = base64.b64encode(h.finalize()).decode("utf-8")
-
+        
         password_hash = self._hash_deaddrop_password(password)
         self._deaddrop_file_size = file_size
         self._deaddrop_name = name
         self._deaddrop_password_hash = password_hash
-
+        
         # Send DEADDROP_UPLOAD metadata over encrypted deaddrop channel
         inner_meta = {
-            "type": MessageType.DEADDROP_UPLOAD,
-            "name": name,
-            "file_size": file_size,
-            "file_hash": file_hash,
+            "type":               MessageType.DEADDROP_UPLOAD,
+            "name":               name,
+            "file_size":          file_size,
+            "file_hash":          file_hash,
             "file_password_hash": password_hash,
-        }
+            }
         outer_meta = self._encrypt_deaddrop_inner(json.dumps(inner_meta).encode("utf-8"))
         send_message(self.socket, json.dumps(outer_meta).encode("utf-8"))
-
+        
         encryptor = ChunkIndependentDoubleEncryptor(key)
         self._deaddrop_chunks.clear()
-
+        
         chunk_index = 0
         file_ext = os.path.splitext(file_path)[1][:12]
         header = file_ext.encode("utf-8").ljust(12, b"\x00")
@@ -1515,26 +1444,26 @@ class SecureChatClient:
                     nonce = second_nonce
                 if not chunk_data:
                     break
-
+                
                 ct = encryptor.encrypt(nonce, plaintext_chunk)
-
+                
                 # Construct payload: [chunk_index][ct]
                 payload = chunk_index.to_bytes(4, byteorder='little') + ct
                 
                 outer_nonce = os.urandom(12)
                 frame = self._encrypt_deaddrop_chunk(payload, outer_nonce)
                 
-                ok, err = send_message(self.socket, frame)
-                if not ok:
-                    self.display_error_message(f"Failed to send chunk: {err}")
+                result = send_message(self.socket, frame)
+                if result is not None:
+                    self.display_error_message(f"Failed to send chunk: {result}")
                     chunk_index += 1
                     continue
-
+                
                 chunk_index += 1
                 if chunk_index % 50 == 0:
-                    self.display_system_message(f"{shared.bytes_to_human_readable(chunk_index * 1024 * 1024)}/" +
-                                                f"{shared.bytes_to_human_readable(file_size)} sent")
-
+                    self.display_system_message(f"{utils.bytes_to_human_readable(chunk_index * 1024 * 1024)}/" +
+                                                f"{utils.bytes_to_human_readable(file_size)} sent")
+        
         # Notify completion of upload
         complete_inner = {"type": MessageType.DEADDROP_COMPLETE}
         complete_outer = self._encrypt_deaddrop_inner(json.dumps(complete_inner).encode("utf-8"))
@@ -1553,17 +1482,17 @@ class SecureChatClient:
         if not self.deaddrop_shared_secret:
             self.display_error_message("Deaddrop not initialised - handshake required")
             return
-
+        
         # Remember last queried name so DEADDROP_CHECK_RESPONSE can refer to it
         self._deaddrop_name = name
-
+        
         inner = {
             "type": MessageType.DEADDROP_CHECK,
             "name": name,
-        }
+            }
         outer = self._encrypt_deaddrop_inner(json.dumps(inner).encode("utf-8"))
         send_message(self.socket, json.dumps(outer).encode("utf-8"))
-
+    
     def deaddrop_download(self, name: str, password: str) -> None:
         """
         Initiate client-side deaddrop download flow for the given name.
@@ -1575,7 +1504,7 @@ class SecureChatClient:
         if not self.deaddrop_shared_secret:
             self.display_error_message("Deaddrop not initialised - handshake required")
             return
-
+        
         self._deaddrop_name = name
         self._deaddrop_password_hash = self._hash_deaddrop_password(password)
         self._deaddrop_download_in_progress = True
@@ -1600,14 +1529,14 @@ class SecureChatClient:
             except Exception:
                 pass
             self._deaddrop_dl_file = None
-
+        
         inner_dl = {
             "type": MessageType.DEADDROP_DOWNLOAD,
             "name": name,
-        }
+            }
         outer_dl = self._encrypt_deaddrop_inner(json.dumps(inner_dl).encode("utf-8"))
         send_message(self.socket, json.dumps(outer_dl).encode("utf-8"))
-
+    
     def _finalise_deaddrop_download(self) -> None:
         """
         Finalise deaddrop download: close .part file and atomically rename to final
@@ -1622,11 +1551,11 @@ class SecureChatClient:
                 pass
             finally:
                 self._deaddrop_dl_file = None
-
+        
         if not self._deaddrop_dl_part_path:
             self.display_error_message("No deaddrop partial file to finalise")
             return
-
+        
         part_path = self._deaddrop_dl_part_path
         final_path = part_path[:-5] if part_path.lower().endswith(".part") else part_path
         try:
@@ -1635,7 +1564,7 @@ class SecureChatClient:
         except Exception as exc:
             self.display_error_message(f"Failed to finalise deaddrop file: {exc}")
             return
-
+        
         expected_b64 = self._deaddrop_download_expected_hash or ""
         key = self._deaddrop_download_key
         if not expected_b64:
@@ -1644,7 +1573,7 @@ class SecureChatClient:
         elif key is None:
             self.display_error_message("Deaddrop: missing key for HMAC verification; file kept as-is.")
             return
-
+        
         if isinstance(expected_b64, str) and expected_b64.startswith("b'") and expected_b64.endswith("'"):
             expected_b64 = expected_b64[2:-1]
         try:
@@ -1652,29 +1581,27 @@ class SecureChatClient:
         except binascii.Error:
             self.display_error_message("Deaddrop: invalid base64 expected HMAC provided by server; file kept as-is.")
             return
-
+        
         h = HMAC(key, hashes.SHA3_512())
         with open(final_path, "rb") as f:
             while chunk := f.read(8192):
                 h.update(chunk)
         computed_hmac = h.finalize()
-
+        
         if computed_hmac == expected_hmac:
             self.display_system_message("Deaddrop file integrity verified (HMAC OK).")
         else:
             self.display_error_message("Deaddrop file HMAC verification failed, file will be kept as-is."
                                        f"Computed HMAC: {base64.b64encode(computed_hmac).decode('utf-8')},"
                                        f"Expected HMAC: {base64.b64encode(expected_hmac).decode('utf-8')}")
-
-
-
+        
         self.display_system_message(f"Deaddrop download complete, saved to: {final_path}")
         # Reset streaming state
         self._deaddrop_dl_encryptor = None
         self._deaddrop_dl_next_nonce = None
         self._deaddrop_dl_expected_index = 0
         self._deaddrop_dl_part_path = None
-
+    
     def _handle_deaddrop_binary_chunk(self, message_data: bytes):
         """
         Handle raw deaddrop data
@@ -1691,10 +1618,10 @@ class SecureChatClient:
             decrypted = aead.decrypt(nonce, ct, nonce)
         except InvalidTag:
             raise ValueError("Deaddrop chunk decryption failed")
-
+        
         # Stream-decrypt and write directly to disk
         self._process_deaddrop_data_streaming(int.from_bytes(decrypted[:4], "little"), decrypted[4:])
-
+    
     def _process_deaddrop_data_streaming(self, chunk_index: int, chunk_data: bytes) -> None:
         """
         Stream-decrypt incoming deaddrop chunk and write plaintext to a .part file.
@@ -1710,20 +1637,20 @@ class SecureChatClient:
         if chunk_index != self._deaddrop_dl_expected_index:
             # For minimal change, just ignore unexpected chunks
             self.display_error_message(
-                f"Unexpected deaddrop chunk index {chunk_index}, expected {self._deaddrop_dl_expected_index}")
+                    f"Unexpected deaddrop chunk index {chunk_index}, expected {self._deaddrop_dl_expected_index}")
             return
-
-        if (chunk_index+1) % 100 == 0:
-            size_so_far = shared.bytes_to_human_readable(self._deaddrop_dl_bytes_downloaded)
+        
+        if (chunk_index + 1) % 100 == 0:
+            size_so_far = utils.bytes_to_human_readable(self._deaddrop_dl_bytes_downloaded)
             self.display_system_message(f"Received {size_so_far} so far")
-
+        
         if self._deaddrop_download_key is None:
             self.display_error_message("Deaddrop key not initialised")
             return
-
+        
         if self._deaddrop_dl_encryptor is None:
             self._deaddrop_dl_encryptor = ChunkIndependentDoubleEncryptor(self._deaddrop_download_key)
-
+        
         try:
             if chunk_index == 0:
                 # Decrypt with initial nonce
@@ -1736,7 +1663,7 @@ class SecureChatClient:
                 self._deaddrop_dl_next_nonce = pt[12:28]
                 body = pt[28:]
                 self._deaddrop_dl_bytes_downloaded += len(body)
-
+                
                 # Build output .part path
                 file_ext = ext_header.rstrip(b"\x00").decode("utf-8", errors="ignore")
                 safe_name = "".join(c for c in self._deaddrop_name if c.isalnum() or c in ("-", "_")) or "deaddrop"
@@ -1745,7 +1672,7 @@ class SecureChatClient:
                 else:
                     final_name = safe_name
                 part_path = final_name + ".part"
-
+                
                 # Open file for writing
                 try:
                     f = open(part_path, "wb")
@@ -1754,7 +1681,7 @@ class SecureChatClient:
                     return
                 self._deaddrop_dl_file = f
                 self._deaddrop_dl_part_path = part_path
-
+                
                 # Write body
                 if body:
                     try:
@@ -1835,12 +1762,12 @@ class SecureChatClient:
             total_chunks = int(transfer_info["metadata"]["total_chunks"])
             compress = transfer_info.get("compress", True)
             
-            chunk_generator = self.protocol.chunk_file(file_path, compress=compress)
+            chunk_generator = chunk_file(file_path, compress=compress)
             
             for i, chunk in enumerate(chunk_generator):
                 # Queue chunk instruction; loop will encrypt and send
                 send_message(self.socket, self.protocol.create_file_chunk_message(transfer_id,
-                                                                                  i, chunk))
+                        i, chunk))
                 
                 # Show progress
                 progress = ((i + 1) / total_chunks) * 100
@@ -1850,12 +1777,12 @@ class SecureChatClient:
             print("File chunks sent successfully.")
             
             # Stop tracking the sending transfer
-            self.protocol.stop_sending_transfer(transfer_id)
+            self.protocol.file_handler.stop_sending_transfer(transfer_id)
         
         except Exception as e:
             print(f"Error sending file chunks: {e}")
             # Stop tracking on error as well
-            self.protocol.stop_sending_transfer(transfer_id)
+            self.protocol.file_handler.stop_sending_transfer(transfer_id)
     
     def start_chat(self) -> None:
         """Start the interactive chat interface."""
@@ -1916,14 +1843,14 @@ class SecureChatClient:
                             print("Deaddrop handshake failed.")
                             continue
                         self.deaddrop_upload(name, password, file_path)
-
+                    
                     elif message.lower().startswith('/deaddrop check'):
                         parts = message.split(maxsplit=2)
                         name = parts[2] if len(parts) >= 3 else ""
                         if not name:
                             print("Usage: /deaddrop check <name>")
                             continue
-
+                        
                         # Start handshake only if we don't already have a
                         # deaddrop shared secret; this avoids rehandshakes on
                         # every check and allows multiple checks per session.
@@ -1932,9 +1859,9 @@ class SecureChatClient:
                             if not self.wait_for_deaddrop_handshake(3.0):
                                 print("Deaddrop handshake failed.")
                                 continue
-
+                        
                         self.deaddrop_check(name)
-
+                    
                     elif message.lower().startswith('/deaddrop download'):
                         parts = message.split(maxsplit=2)
                         name = parts[2] if len(parts) >= 3 else ""
@@ -1954,7 +1881,7 @@ class SecureChatClient:
                             print("Deaddrop handshake failed.")
                             continue
                         self.deaddrop_download(name, password)
-
+                    
                     elif message.lower().startswith('/file '):
                         file_path = message[6:].strip()
                         if file_path:
@@ -1967,7 +1894,7 @@ class SecureChatClient:
                             self.protocol.queue_message(("encrypt_json", {
                                 "type":     MessageType.NICKNAME_CHANGE,
                                 "nickname": new_nickname,
-                            }))
+                                }))
                             print(f"Nickname changed to: {self.peer_nickname}")
                         else:
                             print("Usage: /nick <new_nickname>")
@@ -2001,8 +1928,8 @@ class SecureChatClient:
         self.close_audio()
         
         if self.connected:
-            shared.send_message(self.socket, json.dumps({"type": MessageType.CLIENT_DISCONNECT}).encode('utf-8'))
-            
+            network_utils.send_message(self.socket, json.dumps({"type": MessageType.CLIENT_DISCONNECT}).encode('utf-8'))
+        
         self.connected = False
         try:
             self.socket.close()

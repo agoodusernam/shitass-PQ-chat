@@ -16,16 +16,13 @@ from collections.abc import Iterable
 from tkinter import StringVar, filedialog, messagebox, scrolledtext, simpledialog
 from typing import Any, Callable, Literal, ParamSpec
 
-import config_handler
-import config_manager
-import configs
-import shared
+from config import config_handler, config_manager, configs
+import network_utils
 from client import SecureChatClient
-from shared import (
-    FileMetadata,
-    MessageType,
-    bytes_to_human_readable
-)
+from protocol import types, utils
+from protocol.constants import MessageType
+from protocol.utils import bytes_to_human_readable, chunk_file
+from protocol.types import FileMetadata
 
 assert config_manager  # remove unused import warning
 
@@ -39,7 +36,7 @@ except ImportError:
     Image = None  # type: ignore
     ImageTk = None  # type: ignore
     ImageGrab = None  # type: ignore
-    PIL = None # type: ignore
+    PIL = None  # type: ignore
 
 # Plyer for system notifications
 try:
@@ -57,14 +54,20 @@ try:
     SPELLCHECKER_AVAILABLE = True
 except ImportError:
     SPELLCHECKER_AVAILABLE = False
+    
+    
     class WordFrequency:
         def load_words(self, words: Iterable[str | bytes]) -> None:
             return None
+    
+    
     class SpellChecker:  # type: ignore[no-redef]
         def unknown(self, words: Iterable[str | bytes]) -> set[str]:
             return set("")
+        
         def candidates(self, word: str | bytes) -> set[str] | None:
             return None
+        
         @property
         def word_frequency(self) -> WordFrequency:
             return WordFrequency()
@@ -95,25 +98,34 @@ except ImportError:
         class PyAudio:
             def open(self, **_):
                 return pyaudio.Stream()
+            
             def get_format_from_width(self, *_):
                 return 0
+            
             def terminate(self):
                 pass
+        
         class Stream:
             def write(self, *_):
                 pass
+            
             def is_active(self):
                 return False
+            
             def is_stopped(self):
                 return True
+            
             def close(self):
                 pass
+            
             def read(self, *_, **__):
                 return b""
-            
+    
+    
     PYAUDIO_AVAILABLE = False
 
 P = ParamSpec('P')
+
 
 class Ltk:
     """
@@ -195,7 +207,7 @@ def display_image(image: Image.Image, root: tk.Tk):
     # Convert the (possibly resized) PIL image to a PhotoImage
     photo = ImageTk.PhotoImage(to_display_image, master=root)
     
-    label: tk.Label = tk.Label(window, image=photo) # type: ignore
+    label: tk.Label = tk.Label(window, image=photo)  # type: ignore
     # Keep a reference to the image to prevent it from being garbage collected
     label.pack()
 
@@ -280,8 +292,8 @@ class FileTransferWindow:
                     text="Speed: 0.0 MiB/s",
                     bg=self.BG_COLOR,
                     fg=self.SPEED_LABEL_COLOR,
-                    font=("Consolas", 10, "bold")
-            )
+                    font=("Consolas", 10, "bold"),
+                    )
             self.speed_label.pack(side=ltk.RIGHT)
             
             # Title label
@@ -290,8 +302,8 @@ class FileTransferWindow:
                     text="File Transfers",
                     bg=self.BG_COLOR,
                     fg=self.FG_COLOR,
-                    font=("Consolas", 12, "bold")
-            )
+                    font=("Consolas", 12, "bold"),
+                    )
             title_label.pack(side=ltk.LEFT)
             
             # Main frame for transfer list
@@ -308,8 +320,8 @@ class FileTransferWindow:
                     bg=self.TEXT_BG_COLOR,
                     fg=self.FG_COLOR,
                     insertbackground=self.FG_COLOR,
-                    relief=ltk.FLAT
-            )
+                    relief=ltk.FLAT,
+                    )
             self.transfer_list.pack(fill=ltk.BOTH, expand=True)
             
             # Handle window closing
@@ -343,7 +355,8 @@ class FileTransferWindow:
             self.show_window()
     
     def update_transfer_progress(self, /, filename: str, current: int, total: int, bytes_transferred: int = -1,
-                                 comp_text: str = "") -> None:
+                                 comp_text: str = ""
+                                 ) -> None:
         """
         Update the progress of a file transfer.
         :param filename: The name of the file being transferred.
@@ -404,6 +417,7 @@ class ChatGUI:
     user experience.
     
     """
+    
     def __init__(self, root: tk.Tk):
         self.root: tk.Tk = root
         self.root.title("Secure Chat Client")
@@ -475,12 +489,12 @@ class ChatGUI:
     
     def on_tk_thread(self, func: Callable[P, Any], /, *args: P.args, **kwargs: P.kwargs) -> None:
         """Run a function on the Tkinter main thread."""
-        self.root.after(0, lambda: func(*args, **kwargs)) # type: ignore
+        self.root.after(0, lambda: func(*args, **kwargs))  # type: ignore
         return None
     
     def no_types_tk_thread(self, func: Callable[[Any], Any], /, *args: Any, **kwargs: Any) -> None:
         """Run a function on the Tkinter main thread (no type checking)."""
-        self.root.after(0, lambda: func(*args, **kwargs)) # type: ignore
+        self.root.after(0, lambda: func(*args, **kwargs))  # type: ignore
         return None
     
     def setup_focus_tracking(self) -> None:
@@ -514,7 +528,6 @@ class ChatGUI:
             self.audio_interface = pyaudio.PyAudio()
         
         return self.audio_interface
-        
     
     def play_notification_sound(self) -> None:
         """Play a notification sound if the window is not focused."""
@@ -526,15 +539,13 @@ class ChatGUI:
         def play_notif():
             with wave.open(configs.MESSAGE_NOTIF_SOUND_FILE, "rb") as w:
                 stream = self.get_notif_stream(audio_format=self.audio_interface.get_format_from_width(w.getsampwidth()),
-                                               channels=w.getnchannels(),
-                                               rate=w.getframerate())
+                        channels=w.getnchannels(),
+                        rate=w.getframerate())
                 
                 while len(data := w.readframes(1024)):
                     stream.write(data)
-                
-
+        
         threading.Thread(target=play_notif, daemon=True).start()
-    
     
     def show_sys_notification(self, message_text: str = "") -> None:
         """Show a Windows system notification if the window is not focused."""
@@ -554,15 +565,15 @@ class ChatGUI:
                         message=display_message,
                         app_name="Secure Chat Client",
                         timeout=5,
-                        app_icon=None
-                )
+                        app_icon=None,
+                        )
             except Exception:
                 # If plyer encounters any errors, it just raises an Exception
                 # nothing more specific
                 pass
         
         threading.Thread(target=show_notification, daemon=True).start()
-        
+    
     # noinspection PyAttributeOutsideInit
     def create_widgets(self) -> None:
         """Create the GUI widgets."""
@@ -578,16 +589,16 @@ class ChatGUI:
         tk.Label(conn_frame, text="Host:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=ltk.LEFT)
         self.host_entry = tk.Entry(
                 conn_frame, width=15, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR,
-                insertbackground=self.FG_COLOR, relief=ltk.FLAT
-        )
+                insertbackground=self.FG_COLOR, relief=ltk.FLAT,
+                )
         self.host_entry.pack(side=ltk.LEFT, padx=(5, 10))
         self.host_entry.insert(0, "localhost")
         
         tk.Label(conn_frame, text="Port:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=ltk.LEFT)
         self.port_entry = tk.Entry(
                 conn_frame, width=8, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR,
-                insertbackground=self.FG_COLOR, relief=ltk.FLAT
-        )
+                insertbackground=self.FG_COLOR, relief=ltk.FLAT,
+                )
         self.port_entry.pack(side=ltk.LEFT, padx=(5, 10))
         self.port_entry.insert(0, "16384")
         
@@ -595,8 +606,8 @@ class ChatGUI:
         self.connect_btn = tk.Button(
                 conn_frame, text="Connect", command=self.toggle_connection,
                 bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT,
-                activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR
-        )
+                activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
+                )
         self.connect_btn.pack(side=ltk.LEFT, padx=(10, 0))
         
         # Config menu button
@@ -604,8 +615,8 @@ class ChatGUI:
                 conn_frame, text="Config", command=self.open_config_dialog,
                 bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT,
                 activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
-                font=("Consolas", 10)
-        )
+                font=("Consolas", 10),
+                )
         self.config_btn.pack(side=ltk.LEFT, padx=(10, 0))
         
         if PYAUDIO_AVAILABLE:
@@ -613,26 +624,26 @@ class ChatGUI:
                     conn_frame, text="Voice Call", command=self.start_call,
                     bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT,
                     activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
-                    font=("Consolas", 10)
-            )
+                    font=("Consolas", 10),
+                    )
             
             self.voice_call_btn.pack(side=ltk.LEFT, padx=(10, 0))
-
+            
             # Mute button (only visible during active calls)
             self.mute_btn = tk.Button(
                     conn_frame, text="Mute", command=self.toggle_mute,
                     bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT,
                     activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
-                    font=("Consolas", 10)
-            )
+                    font=("Consolas", 10),
+                    )
             # Initially hidden; will be packed when a call is active
         
         # Status indicator (top right)
         self.status_label = tk.Label(
                 conn_frame, text="Not Connected",
                 bg=self.BG_COLOR, fg=self.theme_colors.get("STATUS_NOT_CONNECTED", "#ff6b6b"),
-                font=("Consolas", 9, "bold")
-        )
+                font=("Consolas", 9, "bold"),
+                )
         self.status_label.pack(side=ltk.RIGHT, padx=(10, 0))
         
         # Chat display area
@@ -645,8 +656,8 @@ class ChatGUI:
                 bg=self.TEXT_BG_COLOR,
                 fg=self.FG_COLOR,
                 insertbackground=self.FG_COLOR,
-                relief=ltk.FLAT
-        )
+                relief=ltk.FLAT,
+                )
         self.chat_display.pack(fill=ltk.BOTH, expand=True, pady=(0, 10))
         if TKINTERDND2_AVAILABLE:
             self.chat_display.drop_target_register(DND_FILES)  # type: ignore
@@ -659,13 +670,13 @@ class ChatGUI:
         # Message input
         self.message_entry = tk.Text(
                 self.input_frame, height=1, font=("Consolas", 10), bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR, width=15,
-                insertbackground=self.FG_COLOR, relief=ltk.FLAT, wrap=ltk.NONE
-        )
+                insertbackground=self.FG_COLOR, relief=ltk.FLAT, wrap=ltk.NONE,
+                )
         self.message_entry.pack(side=ltk.LEFT, fill=ltk.X, expand=True, padx=(0, 10))
         
         # Configure text tags for spellcheck
         self.message_entry.tag_configure("misspelled", underline=True,
-                                         underlinefg=self.theme_colors.get("SPELLCHECK_ERROR_COLOR", "red"))
+                underlinefg=self.theme_colors.get("SPELLCHECK_ERROR_COLOR", "red"))
         
         # Bind events
         self.message_entry.bind("<Return>", self.send_message)
@@ -681,12 +692,12 @@ class ChatGUI:
                 self.input_frame,
                 self.ephemeral_mode_var,
                 "OFF", "LOCAL", "GLOBAL",
-                command=self.on_ephemeral_change
-        )
+                command=self.on_ephemeral_change,
+                )
         # Basic styling to match theme (not all OptionMenu elements honour bg/fg across platforms)
         self.ephemeral_menu.config(bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR,
-                                   activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
-                                   relief=ltk.FLAT)
+                activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
+                relief=ltk.FLAT)
         self.ephemeral_menu.pack(side=ltk.RIGHT, padx=(0, 5))
         
         # File Transfer window button
@@ -694,16 +705,16 @@ class ChatGUI:
                 self.input_frame, text="Transfers", command=self.show_file_transfer_window,
                 bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT,
                 activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
-                font=("Consolas", 9)
-        )
+                font=("Consolas", 9),
+                )
         self.file_transfer_btn.pack(side=ltk.RIGHT, padx=(0, 10))
         
         # Send File button
         self.send_file_btn = tk.Button(
                 self.input_frame, text="Send File", command=self.send_file,
                 bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT,
-                activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR
-        )
+                activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
+                )
         self.send_file_btn.pack(side=ltk.RIGHT, padx=(0, 5))
         
         # Bind button click event to detect shift key
@@ -713,8 +724,8 @@ class ChatGUI:
         self.send_btn = tk.Button(
                 self.input_frame, text="Send", command=self.send_message,
                 bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT,
-                activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR
-        )
+                activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
+                )
         self.send_btn.pack(side=ltk.RIGHT)
         
         # Initially disable input until connected
@@ -761,8 +772,8 @@ class ChatGUI:
         compression_text = "compressed" if compress else "uncompressed"
         result = messagebox.askyesno(
                 "Send File",
-                f"Send file '{file_name}' ({bytes_to_human_readable(file_size)}) {compression_text}?"
-        )
+                f"Send file '{file_name}' ({bytes_to_human_readable(file_size)}) {compression_text}?",
+                )
         
         if result:
             self.client.display_system_message(f"Sending file: {file_name} ({compression_text})")
@@ -849,7 +860,6 @@ class ChatGUI:
             if self.ephemeral_mode in ("LOCAL", "GLOBAL"):
                 self.ephemeral_messages[tag_id] = time.time()
         
-        
         self.chat_display.see(tk.END)
         self.chat_display.config(state=ltk.DISABLED)
     
@@ -906,7 +916,7 @@ class ChatGUI:
             "Not Verified, Secure":                        "STATUS_NOT_VERIFIED_SECURE",
             "Processing key exchange":                     "STATUS_PROCESSING_KEY_EXCHANGE",
             "Key exchange reset - waiting for new client": "STATUS_KEY_EXCHANGE_RESET"
-        }
+            }
         
         # If colour is not provided, look up in theme colours
         if color == "":
@@ -1002,14 +1012,14 @@ class ChatGUI:
                 text="Notification sounds",
                 variable=self.var_sound_notif,
                 command=lambda: setattr(self, 'notification_enabled', self.var_sound_notif.get()),
-        )
+                )
         
         cb2 = tk.Checkbutton(
                 container,
                 text="System notifications",
                 variable=self.var_system_notif,
                 command=lambda: setattr(self, 'windows_notifications_enabled', self.var_system_notif.get()),
-        )
+                )
         
         cb3 = tk.Checkbutton(
                 container,
@@ -1017,44 +1027,44 @@ class ChatGUI:
                 variable=self.var_auto_images,
                 command=lambda: (
                     setattr(self.client, 'display_images', self.var_auto_images.get()) if self.client else None),
-        )
+                )
         
         cb4 = tk.Checkbutton(
                 container,
                 text="Allow voice calls",
                 variable=self.var_allow_calls,
                 command=lambda: setattr(self, 'allow_voice_calls', self.var_allow_calls.get()),
-        )
+                )
         
         cb5 = tk.Checkbutton(
                 container,
                 text="Allow file transfers",
                 variable=self.var_allow_file_transfers,
                 command=lambda: (setattr(self.client, 'allow_file_transfers',
-                                         self.var_allow_file_transfers.get()) if self.client else True),
-        )
+                        self.var_allow_file_transfers.get()) if self.client else True),
+                )
         
         cb6 = tk.Checkbutton(
                 container,
                 text="Send delivery receipts",
                 variable=self.var_send_delivery_receipts,
                 command=lambda: (setattr(self.client, 'send_delivery_receipts',
-                                         self.var_send_delivery_receipts.get()) if self.client else True),
-        )
+                        self.var_send_delivery_receipts.get()) if self.client else True),
+                )
         
         cb7 = tk.Checkbutton(
                 container,
                 text="Allow peer to change their nickname",
                 variable=self.var_nickname_change_allowed,
                 command=lambda: (setattr(self.client, 'nickname_change_allowed',
-                                         self.var_nickname_change_allowed.get()) if self.client else True),
-        )
+                        self.var_nickname_change_allowed.get()) if self.client else True),
+                )
         
         # Try to style to match theme (some platforms may ignore)
         for cb in (cb1, cb2, cb3, cb4, cb5, cb6, cb7):
             try:
                 cb.configure(bg=self.BG_COLOR, fg=self.FG_COLOR, selectcolor=self.BUTTON_BG_COLOR,
-                             activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR)
+                        activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR)
             except Exception:
                 pass
             cb.pack(anchor="w", pady=2)
@@ -1062,10 +1072,10 @@ class ChatGUI:
         # Peer nickname controls
         nick_frame = tk.Frame(container, bg=self.BG_COLOR)
         tk.Label(nick_frame, text="Peer nickname:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side="left",
-                                                                                                 padx=(0, 6))
+                padx=(0, 6))
         
         nick_entry = tk.Entry(nick_frame, textvariable=self.var_peer_nickname, bg=self.ENTRY_BG_COLOR,
-                                  fg=self.FG_COLOR, insertbackground=self.FG_COLOR)
+                fg=self.FG_COLOR, insertbackground=self.FG_COLOR)
         nick_entry.pack(side="left", fill=ltk.X, expand=True)
         
         def apply_peer_nickname():
@@ -1080,8 +1090,8 @@ class ChatGUI:
             self.client.display_system_message(f"Peer nickname set to: {new_nick}")
         
         apply_btn = tk.Button(nick_frame, text="Apply", command=apply_peer_nickname, bg=self.BUTTON_BG_COLOR,
-                                  fg=self.FG_COLOR, activebackground=self.BUTTON_ACTIVE_BG,
-                                  activeforeground=self.FG_COLOR)
+                fg=self.FG_COLOR, activebackground=self.BUTTON_ACTIVE_BG,
+                activeforeground=self.FG_COLOR)
         apply_btn.pack(side="left", padx=(6, 0))
         nick_frame.pack(fill=ltk.X, pady=(8, 4))
         
@@ -1095,7 +1105,7 @@ class ChatGUI:
                 relief=ltk.FLAT,
                 activebackground=self.BUTTON_ACTIVE_BG,
                 activeforeground=self.FG_COLOR,
-        )
+                )
         close_btn.pack(pady=(8, 0), anchor="e")
     
     def start_call(self) -> None:
@@ -1130,7 +1140,7 @@ class ChatGUI:
         btn_text = "Unmute" if (self.client and self.client.voice_muted) else "Mute"
         self.mute_btn.config(text=btn_text, state=ltk.NORMAL)
         self.mute_btn.pack(side=ltk.LEFT, padx=(10, 0))
-        
+    
     def hide_mute_button(self) -> None:
         """Hide the mute button and reset its label to default (used when a voice call ends)."""
         if not hasattr(self, "mute_btn"):
@@ -1247,7 +1257,7 @@ class ChatGUI:
         self.append_to_chat("✅ You verified the peer's key.")
         self.update_status("Verified, Secure")
         self.append_to_chat("You can now send messages!")
-        
+    
     def verify_no(self) -> None:
         """Handle '/n' command to deny key verification."""
         self.client.confirm_key_verification(False)
@@ -1270,8 +1280,8 @@ class ChatGUI:
                 title="Save incoming file as...",
                 initialfile=initial_file,
                 defaultextension=ext if ext else "",
-                filetypes=[("All files", "*.*")]
-        )
+                filetypes=[("All files", "*.*")],
+                )
         if not selected_path:
             self.file_transfer_no()
             return None
@@ -1285,7 +1295,7 @@ class ChatGUI:
         self.client.protocol.queue_message(("encrypt_json", {
             "type":        MessageType.FILE_ACCEPT,
             "transfer_id": transfer_id,
-        }))
+            }))
         self.client.protocol.send_dummy_messages = False
         
         self.file_transfer_window.add_transfer_message(
@@ -1294,7 +1304,6 @@ class ChatGUI:
         self.append_to_chat(f"Accepted file transfer: {metadata['filename']}")
         # Remove from pending requests
         del self.client.pending_file_requests[transfer_id]
-        
         
         self.message_entry.delete("1.0", tk.END)
         return None
@@ -1308,7 +1317,7 @@ class ChatGUI:
             "type":        MessageType.FILE_REJECT,
             "transfer_id": transfer_id,
             "reason":      "User declined",
-        }))
+            }))
         self.file_transfer_window.add_transfer_message("File transfer rejected.")
         self.append_to_chat(f"Rejected file transfer: {metadata['filename']}")
         # Remove from pending requests and active metadata
@@ -1372,11 +1381,11 @@ class ChatGUI:
                 self.append_to_chat("Cannot rekey - verification not complete")
             self.message_entry.delete("1.0", tk.END)
             return "break"
-
+        
         if message.lower().strip() == '/deaddrop upload':
             # GUI deaddrop upload flow: prompt for name/password then file selector
             self.message_entry.delete("1.0", tk.END)
-
+            
             def do_flow() -> None:
                 # Prompt for deaddrop name and password
                 name = simpledialog.askstring("Deaddrop Upload", "Deaddrop name:", parent=self.root)
@@ -1388,7 +1397,7 @@ class ChatGUI:
                 file_path = filedialog.askopenfilename(title="Select file for deaddrop upload")
                 if not file_path:
                     return
-
+                
                 # Start handshake and then upload in a background thread to avoid blocking GUI
                 def worker() -> None:
                     assert self.client is not None
@@ -1398,16 +1407,16 @@ class ChatGUI:
                         self.append_to_chat("Deaddrop handshake failed or not supported by server")
                         return
                     self.client.deaddrop_upload(name, password, file_path)
-
+                
                 threading.Thread(target=worker, daemon=True).start()
-
+            
             # Run prompts on Tk thread
             self.on_tk_thread(do_flow)
             return "break"
-
+        
         if message.lower().startswith('/deaddrop check'):
             self.message_entry.delete("1.0", tk.END)
-
+            
             def do_check_flow() -> None:
                 parts = message.split(maxsplit=2)
                 name = parts[2] if len(parts) >= 3 else ""
@@ -1419,9 +1428,9 @@ class ChatGUI:
                     name = name_prompt.strip()
                     if not name:
                         return
-
+                
                 assert self.client is not None
-
+                
                 def worker() -> None:
                     # Only initiate handshake if we don't already have a
                     # shared secret; this avoids rehandshake on every check.
@@ -1430,17 +1439,17 @@ class ChatGUI:
                         if not self.client.wait_for_deaddrop_handshake(3.0):
                             self.append_to_chat("Deaddrop handshake failed or not supported by server")
                             return
-
+                    
                     self.client.deaddrop_check(name)
-
+                
                 threading.Thread(target=worker, daemon=True).start()
-
+            
             self.on_tk_thread(do_check_flow)
             return "break"
-
+        
         if message.lower().startswith('/deaddrop download'):
             self.message_entry.delete("1.0", tk.END)
-
+            
             def do_download_flow() -> None:
                 parts = message.split(maxsplit=2)
                 name = parts[2] if len(parts) >= 3 else ""
@@ -1452,19 +1461,19 @@ class ChatGUI:
                 if password is None or password == "":
                     self.append_to_chat("Deaddrop download cancelled or missing password.")
                     return
-
+                
                 assert self.client is not None
                 self.client.start_deaddrop_handshake()
-
+                
                 def worker() -> None:
                     # Wait (with timeout) for the deaddrop handshake to complete
                     if not self.client.wait_for_deaddrop_handshake(3.0):
                         self.append_to_chat("Deaddrop handshake failed or not supported by server")
                         return
                     self.client.deaddrop_download(name, password)
-
+                
                 threading.Thread(target=worker, daemon=True).start()
-
+            
             self.on_tk_thread(do_download_flow)
             return "break"
         
@@ -1529,7 +1538,7 @@ class ChatGUI:
                 self.client.protocol.queue_message(("encrypt_json", {
                     "type":     MessageType.NICKNAME_CHANGE,
                     "nickname": new_nick,
-                }))
+                    }))
                 self.append_to_chat(f"Nickname changed to: {new_nick}")
             else:
                 self.append_to_chat("Usage: /nick <new_nickname>")
@@ -1584,8 +1593,8 @@ class ChatGUI:
         # Open file dialog
         file_path = filedialog.askopenfilename(
                 title="Select file to send",
-                filetypes=[("All files", "*.*")]
-        )
+                filetypes=[("All files", "*.*")],
+                )
         
         if file_path:
             # Get file info
@@ -1634,8 +1643,8 @@ class ChatGUI:
         # Confirm image sending
         result = messagebox.askyesno(
                 "Send Image",
-                f"Send clipboard image as '{temp_filename}' ({bytes_to_human_readable(file_size)})?"
-        )
+                f"Send clipboard image as '{temp_filename}' ({bytes_to_human_readable(file_size)})?",
+                )
         
         if result:
             self._append_to_chat(f"Sending clipboard image: {temp_filename}")
@@ -1649,7 +1658,6 @@ class ChatGUI:
                     os.remove(temp_path)
             except Exception:
                 pass  # Ignore cleanup errors, it's only a temp file anyway
-
     
     def on_text_change(self, _: tk.Event | None = None) -> None:
         """Handle text changes in message entry for spellcheck."""
@@ -1661,7 +1669,7 @@ class ChatGUI:
             self.root.after_cancel(self.spellcheck_timer)
         
         # Start new timer for 400 ms delay
-        self.spellcheck_timer = self.root.after(400, self.perform_spellcheck) # type: ignore
+        self.spellcheck_timer = self.root.after(400, self.perform_spellcheck)  # type: ignore
     
     def perform_spellcheck(self) -> None:
         """Perform spellcheck on the message entry text."""
@@ -1707,8 +1715,8 @@ class ChatGUI:
                         
                         self.message_entry.tag_add(tag_name, pos, end_pos)
                         self.message_entry.tag_configure(tag_name, underline=True,
-                                                         underlinefg=self.theme_colors.get("SPELLCHECK_ERROR_COLOR",
-                                                                                           "red"))
+                                underlinefg=self.theme_colors.get("SPELLCHECK_ERROR_COLOR",
+                                        "red"))
                         self.misspelled_tags.add(tag_name)
                     
                     start_pos = f"{pos}+1c"
@@ -1766,16 +1774,16 @@ class ChatGUI:
                         continue
                     context_menu.add_command(
                             label=suggestion,
-                            command=lambda s=suggestion, start=word_start, end=word_end: # type: ignore
-                            self.replace_word(start, end,s)
-                    )
+                            command=lambda s=suggestion, start=word_start, end=word_end:  # type: ignore
+                            self.replace_word(start, end, s),
+                            )
                 context_menu.add_separator()
             
             # Add "Add to dictionary" option
             context_menu.add_command(
                     label="Add to dictionary",
-                    command=lambda w=word: self.add_to_dictionary(w) # type: ignore
-            )
+                    command=lambda w=word: self.add_to_dictionary(w),  # type: ignore
+                    )
             
             # Show the menu
             context_menu.tk_popup(event.x_root, event.y_root)
@@ -1838,7 +1846,7 @@ class ChatGUI:
     
     def start_ephemeral_cleanup(self) -> None:
         """Start the background thread to clean up ephemeral messages."""
-    
+        
         threading.Thread(target=self._cleanup_thread, daemon=True).start()
     
     def on_ephemeral_change(self, value: StringVar) -> None:
@@ -1907,7 +1915,7 @@ class ChatGUI:
             "type":     MessageType.EPHEMERAL_MODE_CHANGE,
             "mode":     mode,
             "owner_id": owner_id,
-        }
+            }
         self.client.protocol.queue_message(("encrypt_json", payload))
     
     def update_ephemeral_ui(self) -> None:
@@ -1923,13 +1931,13 @@ class ChatGUI:
             bg = self.BUTTON_BG_COLOR
             fg = self.FG_COLOR
         self.ephemeral_menu.config(bg=bg, fg=fg, activebackground=self.BUTTON_ACTIVE_BG,
-                                   activeforeground=fg)
+                activeforeground=fg)
         # Lock control if global owned by peer
         if self.ephemeral_mode == "GLOBAL" and self.ephemeral_global_owner_id and self.ephemeral_global_owner_id != self.local_client_id:
             self.ephemeral_menu.config(state=ltk.DISABLED)
         else:
             self.ephemeral_menu.config(state=ltk.NORMAL)
-            
+    
     def remove_ephemeral_messages(self, message_ids: list[str]) -> None:
         """Remove ephemeral messages from the chat display."""
         self.chat_display.config(state=ltk.NORMAL)
@@ -1945,7 +1953,6 @@ class ChatGUI:
         
         self.chat_display.see(tk.END)
         self.chat_display.config(state=ltk.DISABLED)
-        
     
     def prompt_voice_call(self) -> None:
         """
@@ -1969,7 +1976,7 @@ class ChatGUI:
                 "rate":         configs.VOICE_RATE,
                 "chunk_size":   configs.VOICE_CHUNK,
                 "audio_format": configs.VOICE_FORMAT,
-            }
+                }
             # Spoof an accept message to start the call
             self.client.handle_voice_call_accept(message)
         
@@ -1986,9 +1993,9 @@ class ChatGUI:
                 with wave.open(configs.RINGTONE_FILE, "rb") as w:
                     p = self.pyaudio_obj if self.pyaudio_obj else pyaudio.PyAudio()
                     stream = p.open(format=p.get_format_from_width(w.getsampwidth()),
-                                    channels=w.getnchannels(),
-                                    rate=w.getframerate(),
-                                    output=True)
+                            channels=w.getnchannels(),
+                            rate=w.getframerate(),
+                            output=True)
                     
                     while len(data := w.readframes(1024)) and keep_ringing:
                         stream.write(data)
@@ -1996,9 +2003,9 @@ class ChatGUI:
                     stream.close()
                     if keep_ringing:
                         on_reject()
-
+            
             except Exception:
-                print("Failed to play ringtone.")
+                self.client.display_error_message("Failed to play ringtone.")
                 if stream.is_active():
                     stream.close()
         
@@ -2012,11 +2019,11 @@ class ChatGUI:
         prompt.transient(self.root)  # Set to be on top of the main window
         prompt.configure(bg=self.BG_COLOR)
         tk.Label(prompt, text="Incoming voice call...", bg=self.BG_COLOR, fg=self.FG_COLOR,
-                 font=("Arial", 12)).pack(pady=10)
+                font=("Arial", 12)).pack(pady=10)
         tk.Button(prompt, text="Accept", command=on_accept, bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR,
-                  width=10).pack(pady=5)
+                width=10).pack(pady=5)
         tk.Button(prompt, text="Reject", command=on_reject, bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR,
-                  width=10).pack(pady=5)
+                width=10).pack(pady=5)
         
         prompt.transient(self.root)
 
@@ -2047,7 +2054,7 @@ class GUISecureChatClient(SecureChatClient):
         self.verification_pending: bool = False
         
         # File transfer state
-        self.pending_file_requests: dict[str, shared.FileMetadata] = {}
+        self.pending_file_requests: dict[str, protocol.types.FileMetadata] = {}
         
         # Voice call
         self._pending_voice_init: dict[str, int] = {}
@@ -2067,8 +2074,7 @@ class GUISecureChatClient(SecureChatClient):
                 self.gui.audio_interface.terminate()
                 self.gui.audio_interface = None
         except Exception:
-            pass # We are exiting the program anyway
-            
+            pass  # We are exiting the program anyway
     
     @staticmethod
     def _is_image_file(file_path: str) -> bool:
@@ -2097,7 +2103,7 @@ class GUISecureChatClient(SecureChatClient):
             self.gui.append_to_chat(f"{self.peer_nickname}: {message}", is_message=True)
     
     def display_error_message(self, message: str | Exception) -> None:
-        self.gui.append_to_chat(f"Error: {message}")
+        self.gui.append_to_chat(f"[ERROR]: {message}")
     
     def display_system_message(self, message: str) -> None:
         self.gui.append_to_chat(f"[SYSTEM]: {message}", is_message=True, show_time=False)
@@ -2145,7 +2151,7 @@ class GUISecureChatClient(SecureChatClient):
             "rate":         rate,
             "chunk_size":   chunk_size,
             "audio_format": audio_format,
-        }
+            }
         self.protocol.queue_message(("encrypt_json", to_send))
     
     def handle_voice_call_init(self, init_msg: dict[Any, Any]) -> None:
@@ -2157,14 +2163,13 @@ class GUISecureChatClient(SecureChatClient):
         # Parse and store initiator's params for negotiation
         try:
             self._pending_voice_init = {
-                "rate": int(init_msg["rate"]),
-                "chunk_size": int(init_msg["chunk_size"]),
+                "rate":         int(init_msg["rate"]),
+                "chunk_size":   int(init_msg["chunk_size"]),
                 "audio_format": int(init_msg["audio_format"]),
-            }
+                }
         except (KeyError, ValueError):
             # If parsing fails, clear any previous state
             self._pending_voice_init = {}
-        
         
         # Auto-reject if voice calls are disabled in settings
         if not self.gui.allow_voice_calls:
@@ -2186,12 +2191,12 @@ class GUISecureChatClient(SecureChatClient):
                 "rate":         rate,
                 "chunk_size":   chunk_size,
                 "audio_format": audio_format,
-            }))
+                }))
             self.gui.voice_call_btn.config(state=ltk.DISABLED)
         else:
             self.protocol.queue_message(("encrypt_json", {
                 "type": MessageType.VOICE_CALL_REJECT,
-            }))
+                }))
             self.gui.append_to_chat("Rejected voice call")
     
     @staticmethod
@@ -2200,11 +2205,11 @@ class GUISecureChatClient(SecureChatClient):
         try:
             return {
                 pyaudio.paUInt8: 0,
-                pyaudio.paInt8 : 1,
+                pyaudio.paInt8:  1,
                 pyaudio.paInt16: 2,
                 pyaudio.paInt24: 3,
                 pyaudio.paInt32: 4,
-            }
+                }
         except Exception:
             # Fallback to documented numeric constants if pyaudio symbols are not available
             return {32: 0, 16: 1, 8: 2, 4: 3, 2: 4, 1: 5}
@@ -2233,7 +2238,7 @@ class GUISecureChatClient(SecureChatClient):
         Start the send and receive threads for voice data.
         Voice data bypasses the queue as it needs to be realtime
         """
-            
+        
         # Determine peer params and compute agreed format
         local_rate = int(configs.VOICE_RATE)
         local_chunk = int(configs.VOICE_CHUNK)
@@ -2271,8 +2276,8 @@ class GUISecureChatClient(SecureChatClient):
                 self.gui.voice_call_btn.config,
                 text="End Call",
                 state=ltk.NORMAL,
-                command=self.end_call
-        )
+                command=self.end_call,
+                )
         # Show mute button when call becomes active
         self.gui.on_tk_thread(self.gui.show_mute_button)
     
@@ -2281,10 +2286,9 @@ class GUISecureChatClient(SecureChatClient):
             chunk = stream.read(chunk_size, exception_on_overflow=False)
             if not self.voice_muted:
                 self.send_voice_data(chunk)
-                
+        
         stream.close()
-        
-        
+    
     def receive_voice_thread(self, stream: pyaudio.Stream):
         while self.voice_call_active and self.connected:
             if self.voice_data_queue:
@@ -2329,12 +2333,12 @@ class GUISecureChatClient(SecureChatClient):
         if notify_peer:
             self.protocol.queue_message(("encrypt_json", {"type": MessageType.VOICE_CALL_END}))
         # Reset UI button back to 'Voice Call'
-        self.gui.no_types_tk_thread( # Type checker doesn't realise 'self' is implicitly passed
+        self.gui.no_types_tk_thread(  # Type checker doesn't realise 'self' is implicitly passed
                 self.gui.voice_call_btn.config,
                 text="Voice Call",
                 state=ltk.NORMAL,
-                command=self.gui.start_call
-        )
+                command=self.gui.start_call,
+                )
         # Hide mute button and reset mute state
         self.voice_muted = False
         self.gui.on_tk_thread(self.gui.hide_mute_button)
@@ -2345,7 +2349,7 @@ class GUISecureChatClient(SecureChatClient):
         """Handle incoming end-call message from the peer."""
         if self.voice_call_active:
             self.voice_call_active = False
-            
+        
         self.protocol.send_dummy_messages = True
         self.voice_data_queue.clear()
         # Clear pending negotiation state
@@ -2355,8 +2359,8 @@ class GUISecureChatClient(SecureChatClient):
                 self.gui.voice_call_btn.config,
                 text="Voice Call",
                 state=ltk.NORMAL,
-                command=self.gui.start_call
-        )
+                command=self.gui.start_call,
+                )
         # Hide mute button and reset mute state
         self.voice_muted = False
         self.gui.on_tk_thread(self.gui.hide_mute_button)
@@ -2383,7 +2387,7 @@ class GUISecureChatClient(SecureChatClient):
         except KeyError:
             self.display_error_message("Missing 'mode' or 'owner_id' field in ephemeral mode change message.")
             return
-            
+        
         def set_global():
             self.gui.ephemeral_mode = "GLOBAL"
             self.gui.ephemeral_global_owner_id = owner_id
@@ -2412,18 +2416,16 @@ class GUISecureChatClient(SecureChatClient):
             else:
                 self.gui.append_to_chat(
                         "Peer attempted to disable GLOBAL ephemeral mode but is not the owner; ignoring.")
-        
     
     def handle_emergency_close(self) -> None:
         """Handle emergency close message from the other client."""
         
         # Show popup notification
         self.gui.on_tk_thread(messagebox.showwarning,
-                            "Emergency Close Activated",
-                            "The other client has activated emergency close.\nThe connection will be terminated immediately."
-                            )
+                "Emergency Close Activated",
+                "The other client has activated emergency close.\nThe connection will be terminated immediately.",
+                )
         super().handle_emergency_close()
-        
     
     def handle_key_exchange_response(self, message_data: bytes) -> bool:
         """Handle key exchange response - override to send to GUI. """
@@ -2475,7 +2477,7 @@ class GUISecureChatClient(SecureChatClient):
     
     def handle_file_metadata(self, decrypted_message: dict) -> None:
         """Handle incoming file metadata with GUI dialogue."""
-        metadata = self.protocol.process_file_metadata(decrypted_message)
+        metadata = process_file_metadata(decrypted_message)
         transfer_id = metadata["transfer_id"]
         
         if not self.allow_file_transfers:
@@ -2484,7 +2486,7 @@ class GUISecureChatClient(SecureChatClient):
                 "type":        MessageType.FILE_REJECT,
                 "transfer_id": transfer_id,
                 "reason":      "User disabled file transfers",
-            }))
+                }))
             return
         
         # Store metadata for potential acceptance
@@ -2517,27 +2519,26 @@ class GUISecureChatClient(SecureChatClient):
         except KeyError:
             self.display_error_message("Missing 'transfer_id' field in file accept message.")
             return
-            
+        
         if transfer_id not in self.pending_file_transfers:
             self.gui.on_tk_thread(self.gui.file_transfer_window.add_transfer_message,
-                                  "Received acceptance for unknown file transfer")
+                    "Received acceptance for unknown file transfer")
             return
         
         transfer_info = self.pending_file_transfers[transfer_id]
         filename = transfer_info["metadata"]["filename"]
         
         self.gui.on_tk_thread(self.gui.file_transfer_window.add_transfer_message,
-                              f"File transfer accepted. Sending {filename}...")
+                f"File transfer accepted. Sending {filename}...")
         
         self.protocol.send_dummy_messages = False
         # Start sending file chunks in a separate thread to avoid blocking message processing
         chunk_thread = threading.Thread(
                 target=self._send_file_chunks,
                 args=(transfer_id, transfer_info["file_path"]),
-                daemon=True
-        )
+                daemon=True,
+                )
         chunk_thread.start()
-        
     
     def handle_file_reject(self, message: dict):
         """
@@ -2554,64 +2555,64 @@ class GUISecureChatClient(SecureChatClient):
         if transfer_id in self.pending_file_transfers:
             filename = self.pending_file_transfers[transfer_id]["metadata"]["filename"]
             self.gui.on_tk_thread(self.gui.file_transfer_window.add_transfer_message,
-                                  f"File transfer rejected: {filename} - {reason}")
+                    f"File transfer rejected: {filename} - {reason}")
             self.display_system_message(f"File transfer rejected: {filename} - {reason}")
             del self.pending_file_transfers[transfer_id]
             return
         
         self.display_system_message("Received rejection for unknown file transfer: "
-                                    f"{shared.sanitize_str(transfer_id[:32])}")
-
+                                    f"{utils.sanitize_str(transfer_id[:32])}")
+    
     def handle_file_chunk_binary(self, chunk_info: dict):
         """Handle incoming file chunk (optimised binary format) with GUI progress updates."""
         transfer_id = chunk_info.get("transfer_id")
-
+        
         if not transfer_id:
             self.gui.on_tk_thread(self.gui.file_transfer_window.add_transfer_message,
-                "Received chunk without transfer_id")
+                    "Received chunk without transfer_id")
             return
-
+        
         if transfer_id not in self.active_file_metadata:
             self.gui.on_tk_thread(self.gui.file_transfer_window.add_transfer_message,
-                "Received chunk for unknown file transfer")
+                    "Received chunk for unknown file transfer")
             return
-
+        
         metadata = self.active_file_metadata[transfer_id]
-
+        
         # Add chunk to protocol buffer
         is_complete = self.protocol.add_file_chunk(transfer_id, chunk_info["chunk_index"],
-                                                   chunk_info["chunk_data"],metadata["total_chunks"])
-
+                chunk_info["chunk_data"], metadata["total_chunks"])
+        
         # Update progress during transfer
         self._update_chunk_progress(transfer_id, metadata, chunk_info)
-
+        
         if is_complete:
             self._handle_transfer_completion(transfer_id, metadata)
-
+    
     def _update_chunk_progress(self, transfer_id: str, metadata: FileMetadata, chunk_info: dict):
         """Update GUI with current chunk transfer progress."""
         received_chunks = len(self.protocol.received_chunks.get(transfer_id, set()))
         bytes_transferred = self._calculate_bytes_transferred(
-            metadata, chunk_info, received_chunks
-        )
-
+                metadata, chunk_info, received_chunks,
+                )
+        
         # Update GUI with transfer progress every 10 chunks or for small transfers
         if (received_chunks % 10 == 0
-            or received_chunks == 1
-            or metadata["total_chunks"] <= 10):
+                or received_chunks == 1
+                or metadata["total_chunks"] <= 10):
             self.gui.on_tk_thread(
-                self.gui.file_transfer_window.update_transfer_progress,
-                filename=metadata["filename"],
-                current=received_chunks,
-                total=metadata["total_chunks"],
-                bytes_transferred=bytes_transferred,
-            )
+                    self.gui.file_transfer_window.update_transfer_progress,
+                    filename=metadata["filename"],
+                    current=received_chunks,
+                    total=metadata["total_chunks"],
+                    bytes_transferred=bytes_transferred,
+                    )
     
     @staticmethod
     def _calculate_bytes_transferred(metadata: FileMetadata, chunk_info: dict, received_chunks: int) -> int:
         """Calculate bytes transferred for speed tracking."""
         processed_size = metadata.get("processed_size", metadata["file_size"])
-
+        
         if metadata["total_chunks"] == 1:
             # Only one chunk, use actual size
             return len(chunk_info["chunk_data"])
@@ -2619,24 +2620,24 @@ class GUISecureChatClient(SecureChatClient):
             # Multiple chunks - estimate based on received chunks and total processed size
             progress_ratio = received_chunks / metadata["total_chunks"]
             return int(processed_size * progress_ratio)
-
+    
     def _handle_transfer_completion(self, transfer_id: str, metadata: FileMetadata):
         """Handle completed file transfer - reassemble and save file."""
         # Final progress update to ensure 100% is shown
         final_bytes_transferred = metadata.get("processed_size", metadata["file_size"])
         self.gui.on_tk_thread(self.gui.file_transfer_window.update_transfer_progress,
-            filename=metadata["filename"],
-            current=metadata["total_chunks"],
-            total=metadata["total_chunks"],
-            bytes_transferred=final_bytes_transferred,
-        )
-
+                filename=metadata["filename"],
+                current=metadata["total_chunks"],
+                total=metadata["total_chunks"],
+                bytes_transferred=final_bytes_transferred,
+                )
+        
         # Determine output path
         output_path = self._get_output_path(metadata)
-
+        
         # Reassemble and save the file
         self._reassemble_and_save_file(transfer_id, metadata, output_path)
-
+        
         # Clean up
         del self.active_file_metadata[transfer_id]
     
@@ -2645,56 +2646,56 @@ class GUISecureChatClient(SecureChatClient):
         """Determine the output path for the received file."""
         if "save_path" in metadata and metadata["save_path"]:
             return metadata["save_path"]
-
+        
         # Default to CWD with conflict handling
         output_path = os.path.join(os.getcwd(), metadata["filename"])
         counter = 1
         base_name, ext = os.path.splitext(metadata["filename"])
-
+        
         while os.path.exists(output_path):
             output_path = os.path.join(os.getcwd(), f"{base_name}_{counter}{ext}")
             counter += 1
-
+        
         return output_path
-
+    
     def _reassemble_and_save_file(self, transfer_id: str, metadata: FileMetadata, output_path: str):
         """Reassemble file chunks and save to disk."""
         # Get compression status from metadata
         compressed = metadata.get("compressed", True)
         compression_text = "compressed" if compressed else "uncompressed"
-
+        
         try:
             self.protocol.reassemble_file(transfer_id, output_path, metadata["file_hash"], compressed=compressed)
         except PermissionError:
             self.gui.on_tk_thread(
-                self.gui.file_transfer_window.add_transfer_message,
-                f"File reassembly failed: Permission denied writing to {output_path}",
-            )
+                    self.gui.file_transfer_window.add_transfer_message,
+                    f"File reassembly failed: Permission denied writing to {output_path}",
+                    )
             return
         except OSError as e:
             self.gui.on_tk_thread(
-                self.gui.file_transfer_window.add_transfer_message,
-                f"File reassembly failed: Disk error - {e}",
-            )
+                    self.gui.file_transfer_window.add_transfer_message,
+                    f"File reassembly failed: Disk error - {e}",
+                    )
             return
         except ValueError as e:
             # Hash mismatch or invalid data
             self.gui.on_tk_thread(
-                self.gui.file_transfer_window.add_transfer_message,
-                f"File reassembly failed: Data validation error - {e}",
-            )
+                    self.gui.file_transfer_window.add_transfer_message,
+                    f"File reassembly failed: Data validation error - {e}",
+                    )
             return
-
+        
         # Success - notify user
-        self.gui.root.after(0,self.gui.file_transfer_window.add_transfer_message,
-            f"File received successfully ({compression_text}): {output_path}")
+        self.gui.root.after(0, self.gui.file_transfer_window.add_transfer_message,
+                f"File received successfully ({compression_text}): {output_path}")
         # Clear speed when transfer completes
         self.gui.file_transfer_window.clear_speed()
-
+        
         # Display image if it's an image file
         if self.display_images:
             self._display_received_image(output_path)
-
+        
         # Send completion message via queue
         complete_msg = {"type": MessageType.FILE_COMPLETE, "transfer_id": transfer_id}
         self.protocol.queue_message(("encrypt_json", complete_msg))
@@ -2706,35 +2707,34 @@ class GUISecureChatClient(SecureChatClient):
         except KeyError:
             self.display_error_message("Missing 'transfer_id' field in file complete message.")
             return
-            
+        
         if transfer_id in self.pending_file_transfers:
             filename = self.pending_file_transfers[transfer_id]["metadata"]["filename"]
             self.gui.on_tk_thread(self.gui.file_transfer_window.add_transfer_message,
-                                  f"File transfer completed: {filename}")
+                    f"File transfer completed: {filename}")
             
             self.gui.file_transfer_window.clear_speed()
             del self.pending_file_transfers[transfer_id]
             self.protocol.send_dummy_messages = True
         else:
             self.gui.on_tk_thread(self.gui.file_transfer_window.add_transfer_message,
-                                  "Received completion for unknown file transfer: " +
-                                  f"{shared.sanitize_str(transfer_id[:32])}")
-        
+                    "Received completion for unknown file transfer: " +
+                    f"{utils.sanitize_str(transfer_id[:32])}")
     
     def _send_file_chunks(self, transfer_id: str, file_path: str):
         """Send file chunks to peer with GUI progress updates."""
         # Get transfer info including compression setting
-        transfer_info: shared.FileTransfer = self.pending_file_transfers[transfer_id]
+        transfer_info: types.FileTransfer = self.pending_file_transfers[transfer_id]
         total_chunks: int = transfer_info["metadata"]["total_chunks"]
         compress: bool = transfer_info["compress"]
         
-        chunk_generator = self.protocol.chunk_file(file_path, compress=compress)
+        chunk_generator = chunk_file(file_path, compress=compress)
         bytes_transferred = 0
         
         for i, chunk in enumerate(chunk_generator):
             # Queue chunk instruction; loop will encrypt and send
-            shared.send_message(self.socket, self.protocol.create_file_chunk_message(transfer_id,
-                                                                                     i, chunk))
+            network_utils.send_message(self.socket, self.protocol.create_file_chunk_message(transfer_id,
+                    i, chunk))
             
             # Update bytes transferred
             bytes_transferred += len(chunk)
@@ -2747,20 +2747,19 @@ class GUISecureChatClient(SecureChatClient):
                 current_chunk = i + 1
                 compression_text = "compressed" if compress else "uncompressed"
                 self.gui.on_tk_thread(self.gui.file_transfer_window.update_transfer_progress,
-                                      filename=filename, current=current_chunk, total=total_chunks, bytes_transferred=bytes_transferred,
-                                      comp_text=compression_text)
+                        filename=filename, current=current_chunk, total=total_chunks, bytes_transferred=bytes_transferred,
+                        comp_text=compression_text)
         
         # Final update to ensure 100% progress is shown
         filename = os.path.basename(file_path)
         compression_text = "compressed" if compress else "uncompressed"
         self.gui.on_tk_thread(self.gui.file_transfer_window.update_transfer_progress, filename=filename,
-                              current=total_chunks, total=total_chunks, bytes_transferred=bytes_transferred,
-                              comp_text=compression_text)
+                current=total_chunks, total=total_chunks, bytes_transferred=bytes_transferred,
+                comp_text=compression_text)
         self.gui.on_tk_thread(self.gui.file_transfer_window.add_transfer_message,
-                              f"File chunks sent successfully ({compression_text}).")
+                f"File chunks sent successfully ({compression_text}).")
         # Clear speed when transfer completes
         self.gui.file_transfer_window.clear_speed()
-        
     
     def send_voice_data(self, audio_data: bytes):
         """Send voice data to the peer during an active voice call."""
@@ -2770,15 +2769,8 @@ class GUISecureChatClient(SecureChatClient):
         message = json.dumps({
             "type":       MessageType.VOICE_CALL_DATA,
             "audio_data": base64.b64encode(audio_data).decode('utf-8'),
-        })
-        shared.send_message(self.socket, self.protocol.encrypt_message(message))
-    
-    def handle_server_full(self) -> None:
-        """Handle server full notification - override to display in GUI."""
-        self.display_error_message("Server is full. Please try again later.")
-        
-        self.disconnect()
-
+            })
+        network_utils.send_message(self.socket, self.protocol.encrypt_message(message))
 
 def load_theme_colors() -> dict[str, str]:
     """
@@ -2810,13 +2802,13 @@ def load_theme_colors() -> dict[str, str]:
         "EPHEMERAL_GLOBAL_BG":            "#6bff6b",
         "EPHEMERAL_GLOBAL_FG":            "#ffffff",
         "SPELLCHECK_ERROR_COLOR":         "#ff0000"
-    }
+        }
     
     # Check if theme.json exists
     if not os.path.exists("theme.json"):
         # Ask user if they want to generate one with current defaults
         if messagebox.askyesno("Theme Configuration",
-                               "No theme.json file found. Would you like to create one with the default colors?"):
+                "No theme.json file found. Would you like to create one with the default colors?"):
             try:
                 with open("theme.json", "w", encoding="utf-8") as f:
                     json.dump(default_colors, f, indent=4)
@@ -2841,13 +2833,13 @@ def load_theme_colors() -> dict[str, str]:
             "STATUS_PROCESSING_KEY_EXCHANGE", "STATUS_KEY_EXCHANGE_RESET",
             "SPEED_LABEL_COLOR", "EPHEMERAL_ACTIVE_BG", "EPHEMERAL_ACTIVE_FG",
             "SPELLCHECK_ERROR_COLOR"
-        ]
+            ]
         missing_colors = [color for color in required_colors if color not in theme_colors]
         
         if missing_colors:
             messagebox.showwarning("Theme Warning",
-                                   f"Missing colors in theme.json: {', '.join(missing_colors)}. Using defaults for " +
-                                   "these and saving the default values for the missing values.")
+                    f"Missing colors in theme.json: {', '.join(missing_colors)}. Using defaults for " +
+                    "these and saving the default values for the missing values.")
             for color in missing_colors:
                 theme_colors[color] = default_colors[color]
             

@@ -55,7 +55,7 @@ class ConfigHandler:
     """
     
     def __init__(self) -> None:
-        self.config_file = "config.json"
+        self.config_file = "../config.json"
         self.config: ConfigDict = create_default_config()
         self.init_config: dict[Any, Any] = {}
         self.ensure_exists()
@@ -116,7 +116,7 @@ class ConfigHandler:
     
     def save(self) -> tuple[bool, str]:
         try:
-            with open("config.json", "w") as f:
+            with open("../config.json", "w") as f:
                 json.dump(self.config, f, indent=4)
             return True, ""
         except PermissionError:
