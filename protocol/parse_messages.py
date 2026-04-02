@@ -17,7 +17,7 @@ def process_file_metadata(message: dict[Any, Any]) -> FileMetadata:
             "file_hash":      message["file_hash"],
             "total_chunks":   message["total_chunks"],
             "compressed":     message.get("compressed", False),
-            "processed_size": message.get("processed_size", message["file_size"])
+            "compressed_size": message.get("compressed_size", message["file_size"])
             }
     except KeyError:
         raise KeyError("Invalid file metadata message")

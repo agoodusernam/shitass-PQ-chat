@@ -1,0 +1,146 @@
+from abc import ABC, abstractmethod
+from typing import Any
+
+
+class ProtocolBase(ABC):
+    """
+    Abstract base class defining the interface for the SecureChatProtocol.
+    
+    This class defines the methods that the client core expects from the protocol implementation.
+    The protocol is responsible for handling the actual cryptographic operations,
+    like key exchange and message en- and decryption.
+    """
+
+    # ------------------------------------------------------------------ #
+    # Properties                                                           #
+    # ------------------------------------------------------------------ #
+
+    @property
+    @abstractmethod
+    def encryption_ready(self) -> bool:
+        """Check if encryption is ready (shared key and chain keys established)."""
+
+    @property
+    @abstractmethod
+    def should_auto_rekey(self) -> bool:
+        """Check if automatic rekey should be initiated based on message count."""
+
+    @property
+    @abstractmethod
+    def send_dummy_messages(self) -> bool:
+        """Check if dummy messages should be sent."""
+
+    @send_dummy_messages.setter
+    @abstractmethod
+    def send_dummy_messages(self, value: bool) -> None:
+        """Set whether dummy messages should be sent."""
+
+    # ------------------------------------------------------------------ #
+    # File transfer                                                        #
+    # ------------------------------------------------------------------ #
+
+    @abstractmethod
+    def has_active_file_transfers(self) -> bool:
+        """Return True if any file transfers are currently active."""
+
+    # ------------------------------------------------------------------ #
+    # Transport / sender thread                                            #
+    # ------------------------------------------------------------------ #
+
+    @abstractmethod
+    def start_sender_thread(self, sock) -> None:
+        """Start the background sender thread for message queuing."""
+
+    @abstractmethod
+    def stop_sender_thread(self) -> None:
+        """Stop the background sender thread."""
+
+    @abstractmethod
+    def queue_message(self, message: bytes | str | dict[str, Any] | tuple[str, Any]) -> None:
+        """Add a message to the send queue."""
+
+    @abstractmethod
+    def send_emergency_close(self) -> bool:
+        """Send an emergency close message immediately, bypassing the queue."""
+
+    # ------------------------------------------------------------------ #
+    # Key generation & exchange                                            #
+    # ------------------------------------------------------------------ #
+
+    @abstractmethod
+    def generate_keys(self) -> bytes:
+        """Generate ML-KEM keypair for key exchange."""
+
+    @abstractmethod
+    def reset_key_exchange(self) -> None:
+        """Reset all cryptographic state to initial values for key exchange restart."""
+
+    @abstractmethod
+    def get_own_key_fingerprint(self) -> str:
+        """Generate a consistent fingerprint for the session."""
+
+    @staticmethod
+    @abstractmethod
+    def create_key_verification_message(verified: bool) -> bytes:
+        """Create a key verification status message."""
+
+    @staticmethod
+    @abstractmethod
+    def process_key_verification_message(data: bytes) -> bool:
+        """Process a key verification message from peer."""
+
+    @abstractmethod
+    def create_key_exchange_init(self, public_key: bytes) -> bytes:
+        """Create initial key exchange message with X25519 DH public key."""
+
+    @abstractmethod
+    def create_key_exchange_response(self, mlkem_ciphertext: bytes, hqc_ciphertext: bytes) -> bytes:
+        """Create key exchange response message."""
+
+    @abstractmethod
+    def process_key_exchange_init(self, data: bytes) -> tuple[bytes, bytes, str]:
+        """Process initial key exchange and return (hqc_ciphertext, mlkem_ciphertext, version_warning)."""
+
+    @abstractmethod
+    def process_key_exchange_response(self, data: bytes) -> str | None:
+        """Process key exchange response and derive combined shared key."""
+
+    # ------------------------------------------------------------------ #
+    # Encryption / decryption                                              #
+    # ------------------------------------------------------------------ #
+
+    @abstractmethod
+    def encrypt_message(self, plaintext: str) -> bytes:
+        """Encrypt a plaintext message with authentication and replay protection."""
+
+    @abstractmethod
+    def decrypt_message(self, data: bytes) -> str:
+        """Decrypt and authenticate a message."""
+
+    @abstractmethod
+    def encrypt_file_chunk(self, transfer_id: str, chunk_index: int, chunk_data: bytes) -> bytes:
+        """Encrypt a file chunk using the Double Ratchet."""
+
+    @abstractmethod
+    def decrypt_file_chunk(self, encrypted_data: bytes) -> dict:
+        """Decrypt a file chunk frame produced by encrypt_file_chunk."""
+
+    # ------------------------------------------------------------------ #
+    # Rekey                                                                #
+    # ------------------------------------------------------------------ #
+
+    @abstractmethod
+    def activate_pending_keys(self) -> None:
+        """Atomically switch active session to the pending keys."""
+
+    @abstractmethod
+    def create_rekey_init(self) -> dict[str, str | int]:
+        """Create a REKEY init payload."""
+
+    @abstractmethod
+    def process_rekey_init(self, message: dict[Any, Any]) -> dict[str, int | str]:
+        """Process a REKEY init payload and return REKEY response payload."""
+
+    @abstractmethod
+    def process_rekey_response(self, message: dict) -> dict:
+        """Process a REKEY response payload and return commit payload."""

@@ -2,6 +2,7 @@ import base64
 import hashlib
 import json
 import os
+from pathlib import Path
 
 from protocol.constants import MessageType, SEND_CHUNK_SIZE, PROTOCOL_VERSION
 from protocol.types import FileMetadata
@@ -113,19 +114,19 @@ def create_rekey_commit_message() -> dict:
         }
 
 
-def create_file_metadata_message(file_path: str, compress: bool = True) -> FileMetadata:
+def create_file_metadata_message(file_path: Path, compress: bool = True) -> FileMetadata:
     """Create a file metadata message for file transfer initiation.
     Automatically disables compression for known incompressible types.
     """
     
-    if not os.path.exists(file_path):
+    if not file_path.exists():
         raise FileNotFoundError(f"File not found: {file_path}")
     
     # Decide final compression setting based on user preference and file type
     effective_compress = decide_compression(file_path, user_pref=compress)
     
     file_size: int = os.path.getsize(file_path)
-    file_name: str = os.path.basename(file_path)
+    file_name: str = file_path.name
     
     # Calculate file hash for integrity verification (of original uncompressed file)
     file_hash = hashlib.blake2b(digest_size=32)
@@ -165,7 +166,7 @@ def create_file_metadata_message(file_path: str, compress: bool = True) -> FileM
         "file_hash":      file_hash.hexdigest(),
         "total_chunks":   total_chunks,
         "compressed":     effective_compress,
-        "processed_size": total_processed_size
+        "compressed_size": total_processed_size
         }
     
     return metadata

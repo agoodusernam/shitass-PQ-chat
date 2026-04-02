@@ -2,11 +2,14 @@ import gzip
 import io
 import os
 from collections import OrderedDict
+from pathlib import Path
 from typing import Generator
+import hashlib
 
 import numpy as np
 
 from protocol.constants import INCOMPRESSIBLE_EXTENSIONS, SEND_CHUNK_SIZE
+from protocol.types import FileMetadata
 
 
 class LRUCache:
@@ -95,7 +98,7 @@ class StreamingGzipCompressor:
         return final_data
 
 
-def decide_compression(file_path: str, user_pref: bool = True) -> bool:
+def decide_compression(file_path: Path, user_pref: bool = True) -> bool:
     """
     Decide whether to compress a file before sending.
     Compression is enabled only if the user prefers it AND the file is not of a
@@ -103,8 +106,8 @@ def decide_compression(file_path: str, user_pref: bool = True) -> bool:
     """
     if not user_pref:
         return False
-    _, ext = os.path.splitext(file_path)
-    return ext.lower() not in INCOMPRESSIBLE_EXTENSIONS
+    
+    return file_path.suffix not in INCOMPRESSIBLE_EXTENSIONS
 
 
 def bytes_to_human_readable(size: int) -> str:
@@ -174,7 +177,6 @@ def hash_to_words(hash_bytes: bytes, wordlist: list[str], num_words: int = 16) -
 
 def generate_key_fingerprint(public_key: bytes, wordlist_file: str) -> str:
     """Generate a human-readable word-based fingerprint for a public key."""
-    import hashlib
     key_hash = hashlib.sha256(public_key).digest()
     wordlist = load_wordlist(wordlist_file)
     words = hash_to_words(key_hash, wordlist, num_words=8)
@@ -187,7 +189,7 @@ def sanitize_str(s: str) -> str:
     return s[:32] or "?"
 
 
-def chunk_file(file_path: str, compress: bool = True) -> Generator[bytes, None, None]:
+def chunk_file(file_path: Path | str, compress: bool = True) -> Generator[bytes, None, None]:
     """Generate file chunks for transmission one at a time.
 
     This is a streaming generator function that optionally compresses and yields chunks
@@ -248,3 +250,19 @@ def chunk_file(file_path: str, compress: bool = True) -> Generator[bytes, None, 
         except Exception:  # ignore finalise issues because we're already failing
             pass  # intentional: cleanup best-effort
         raise e
+    
+def get_output_path(metadata: FileMetadata) -> str:
+    """Determine the output path for the received file."""
+    if "save_path" in metadata and metadata["save_path"]:
+        return metadata["save_path"]
+    
+    # Default to CWD with conflict handling
+    output_path = os.path.join(os.getcwd(), metadata["filename"])
+    counter = 1
+    base_name, ext = os.path.splitext(metadata["filename"])
+    
+    while os.path.exists(output_path):
+        output_path = os.path.join(os.getcwd(), f"{base_name}_{counter}{ext}")
+        counter += 1
+    
+    return output_path

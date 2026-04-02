@@ -1,5 +1,6 @@
 from abc import ABC
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Mapping, TypeAlias, TypedDict, NotRequired
 
 from protocol.constants import MessageType
@@ -18,13 +19,13 @@ class FileMetadata(TypedDict):
     file_hash: str
     total_chunks: int
     compressed: bool
-    compressed_size: int
+    compressed_size: NotRequired[int]
     # Optional fields used by UI layers
     save_path: NotRequired[str]
 
 
 class FileTransfer(TypedDict):
-    file_path: str
+    file_path: Path
     metadata: FileMetadata
     compress: bool
 

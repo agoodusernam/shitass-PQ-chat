@@ -21,7 +21,6 @@ def _cleanup_paths(paths: list[Path]) -> int:
         if _safe_remove(p):
             removed += 1
     return removed
-    
 
 
 def _hash_file_hexdigest(path: Path) -> str:

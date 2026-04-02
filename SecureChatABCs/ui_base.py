@@ -3,7 +3,7 @@ Abstract base class for UI implementations.
 
 Every concrete UI must subclass ``UIBase`` and populate the ``capabilities``
 dictionary.  The client core calls into the UI through the methods defined
-here; a UI may also register event callbacks via ``register_event_handler``.
+here.
 """
 
 from __future__ import annotations
@@ -19,14 +19,14 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 class UICapability(Flag):
-    """Bit-flags that describe what a UI front-end supports.
+    """
+    Bit-flags that describe what a UI front-end supports.
 
     The client core inspects these to decide whether to offer certain
     features (e.g. automatically reject voice calls when the UI cannot
     handle them).
     """
     NONE = 0
-    TEXT_MESSAGING = auto()
     FILE_TRANSFER = auto()
     VOICE_CALLS = auto()
     EPHEMERAL_MODE = auto()
@@ -35,8 +35,7 @@ class UICapability(Flag):
     NICKNAMES = auto()
     
     ALL = (
-        TEXT_MESSAGING
-        | FILE_TRANSFER # type: ignore
+        FILE_TRANSFER
         | VOICE_CALLS
         | EPHEMERAL_MODE
         | DEADDROP
@@ -49,7 +48,18 @@ class UICapability(Flag):
 # ---------------------------------------------------------------------------
 
 class UIBase(ABC):
-    """Abstract base for all UI front-ends (GUI, TUI, headless, …)."""
+    """
+    Abstract base for all UI front-ends (GUI, TUI, headless, …).
+    
+    The UI is responsible for displaying messages to the user, prompting
+    the user for input, and handling user interactions.
+    
+    That also includes getting voice data from the mic,
+    or setting preferences.
+    
+    The UI may not directly send messages or access the protocol
+    directly. It must go through the client core.
+    """
     
     # -- capabilities -------------------------------------------------------
     
@@ -58,9 +68,8 @@ class UIBase(ABC):
         """Return the set of features this UI supports.
 
         Subclasses should override this to advertise their capabilities.
-        The default is ``TEXT_MESSAGING`` only.
         """
-        return UICapability.TEXT_MESSAGING
+        return UICapability.NONE
     
     def has_capability(self, cap: UICapability) -> bool:
         """Convenience: check whether *cap* is among the UI's capabilities."""
@@ -155,7 +164,7 @@ class UIBase(ABC):
         """Called when a rekey completes successfully."""
     
     def on_auto_rekey(self) -> None:
-        """Called when an automatic rekey is triggered (message-count threshold)."""
+        """Called when an automatic rekey is triggered."""
     
     # -- key verification status from peer ----------------------------------
     
@@ -277,3 +286,16 @@ class UIBase(ABC):
     
     def on_nickname_change(self, new_nickname: str) -> None:
         """Called when the peer changes their nickname."""
+
+    # -- optional: raw bytes logging ----------------------------------------
+
+    def log_raw_bytes(self, direction: str, context: str, data: bytes, decrypted_text: str | None = None) -> None:
+        """Called to log raw bytes for debugging purposes.
+
+        *direction* is ``"RECV"`` or ``"SENT"``.
+        *context* describes why the bytes are being logged (e.g. ``"dropped:rate_limit"``
+        or ``"decrypt_fail"`` or ``"sent_raw"``).
+        *data* is the raw bytes.
+
+        The default implementation is a no-op; debug UIs may override this.
+        """

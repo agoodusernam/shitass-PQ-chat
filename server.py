@@ -40,9 +40,8 @@ from pqcrypto.kem import ml_kem_1024 # type: ignore
 from network_utils import send_message, encode_send_message, receive_message
 from protocol.create_messages import create_reset_message
 from protocol.constants import PROTOCOL_VERSION, MAGIC_NUMBER_FILE_TRANSFER, MAGIC_NUMBER_DEADDROPS, MessageType
-from config import config_manager, configs
-
-assert config_manager  # Remove unused import warning
+from config.config import ConfigHandler
+_config = ConfigHandler()
 
 SERVER_VERSION: Final[int] = 8
 
@@ -62,9 +61,9 @@ class DeadDropManager:
         Initialise the DeadDropManager.
         """
         self.deaddrop_files: dict[str, Path] = {}
-        if not configs.DEADDROP_ENABLED:
+        if not _config["deaddrop_enabled"]:
             return
-        files = Path(configs.DEADDROP_FILE_LOCATION).iterdir()
+        files = _config["deaddrop_file_location"].iterdir()
         for file in files:
             if file.suffix == ".bin":
                 name = file.stem
@@ -77,7 +76,7 @@ class DeadDropManager:
         :param item: The name of the deaddrop file.
         :return: The path of the deaddrop file as a string, or None if the deaddrop file does not exist.
         """
-        if not configs.DEADDROP_ENABLED:
+        if not _config["deaddrop_enabled"]:
             return None
         
         if not self.check_file(item):
@@ -94,7 +93,7 @@ class DeadDropManager:
         :raises FileNotFoundError: If the deaddrop file does not exist.
         :raises OSError: If the file cannot be appended to.
         """
-        if not configs.DEADDROP_ENABLED:
+        if not _config["deaddrop_enabled"]:
             return
         
         if name in self.deaddrop_files:
@@ -114,13 +113,13 @@ class DeadDropManager:
         :raises FileExistsError: If the name is already in use.
         :raises OSError: If the file cannot be created.
         """
-        if not configs.DEADDROP_ENABLED:
+        if not _config["deaddrop_enabled"]:
             return
         
         if not name.isalnum():
             raise ValueError(f"Invalid deaddrop name '{name}'")
         
-        path = Path(configs.DEADDROP_FILE_LOCATION) / name
+        path = _config["deaddrop_file_location"] / name
         bin_path = path.with_suffix(".bin")
         if bin_path.exists():
             raise FileExistsError(f"Deaddrop file '{name}' already exists")
@@ -143,7 +142,7 @@ class DeadDropManager:
         :raises IsADirectoryError: If the deaddrop file is a directory.
         :raises OSError: If the file cannot be removed.
         """
-        if not configs.DEADDROP_ENABLED:
+        if not _config["deaddrop_enabled"]:
             return
         
         if name not in self.deaddrop_files:
@@ -205,7 +204,7 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
     Logging is intentionally very minimal since this is a security and privacy focused application.
     """
     
-    def __init__(self, host: str = '0.0.0.0', port: int = 16384):
+    def __init__(self, host: str = '0.0.0.0', port: int = 16384) -> None:
         """Initialise the secure chat server.
         
         Args:
@@ -247,7 +246,7 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
     @staticmethod
     def _get_wordlist_path() -> Path:
         current_file = Path(__file__)
-        return current_file.parent / configs.WORDLIST_FILE
+        return current_file.parent / _config["wordlist_file"]
 
     def _load_or_create_identifier(self) -> str:
         """Load server identifier from file or create a new 4-word identifier.
@@ -307,7 +306,7 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
         
         return True
     
-    def remove_client(self, client_id: str):
+    def remove_client(self, client_id: str) -> None:
         """Remove a client from the server."""
         with self.clients_lock:
             if client_id in self.clients:
@@ -323,7 +322,7 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
                 else:
                     self.client_counter = 0
     
-    def initiate_key_exchange(self):
+    def initiate_key_exchange(self) -> None:
         """Initiate the key exchange process between two connected clients."""
         with self.clients_lock:
             if len(self.clients) != 2:
@@ -353,14 +352,14 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
         return all_sent
     
     
-    def broadcast_error(self, error_text: str):
+    def broadcast_error(self, error_text: str) -> None:
         """Broadcast an error message to all connected clients."""
         error_msg = json.dumps({"type":  MessageType.ERROR, "error": error_text}).encode('utf-8')
         with self.clients_lock:
             for client_handler in self.clients.values():
                 send_message(client_handler.request, error_msg)
     
-    def start_server(self):
+    def start_server(self) -> None:
         """Start the server and serve forever."""
         self.running = True
         try:
@@ -370,7 +369,7 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
         finally:
             self.stop_server()
     
-    def stop_server(self):
+    def stop_server(self) -> None:
         """Stop the server and clean up."""
         self.running = False
         for client_handler in list(self.clients.values()):
@@ -436,7 +435,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         # Send server version information to the newly connected client
         self.send_server_version_info()
     
-    def handle(self):
+    def handle(self) -> None:
         try:
             self._handle()
         except ConnectionResetError:
@@ -766,12 +765,12 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
     def handle_unexpected_message(self, extra_info: str = "") -> None:
         """Handle unexpected messages from the client."""
         self.unexpected_message_count += 1
-        if self.unexpected_message_count >= configs.MAX_UNEXPECTED_MSGS:
+        if self.unexpected_message_count >= _config["max_unexpected_msgs"]:
             self.disconnect("Too many unexpected messages" + extra_info)
     
     def handle_deaddrop_start(self) -> None:
         """Handle deaddrop start message from client."""
-        if not configs.DEADDROP_ENABLED:
+        if not _config["deaddrop_enabled"]:
             deny_msg = {
                 "type": MessageType.DEADDROP_START,
                 "supported": False
@@ -792,7 +791,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         msg = {
             "type":          MessageType.DEADDROP_START,
             "supported":     True,
-            "max_file_size": configs.DEADDROP_MAX_SIZE,
+            "max_file_size": _config["deaddrop_max_size"],
             "mlkem_public":  base64.b64encode(public_key).decode('utf-8')
         }
         with self.sender_lock:
@@ -856,7 +855,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         print(f"Deaddrop check for {name} by {self.client_id} completed")
 
     def handle_deaddrop_download(self, message: dict[Any, Any]) -> None:
-        if not configs.DEADDROP_ENABLED:
+        if not _config["deaddrop_enabled"]:
             self.send_deaddrop_message(json.dumps({"type": MessageType.DEADDROP_DENY}).encode('utf-8'))
             return
 
@@ -1001,7 +1000,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             self.handle_unexpected_message("deaddrop upload message with invalid file size")
             return
 
-        if file_size > configs.DEADDROP_MAX_SIZE:
+        if file_size > _config["deaddrop_max_size"]:
             too_large_msg = {
                 "type": MessageType.DEADDROP_DENY,
                 "reason": "File size exceeds maximum allowed size"
@@ -1067,7 +1066,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         self.pending_deaddrop_received_size += len(chunk_data)
 
         # Enforce maximum size (hard cap)
-        if self.pending_deaddrop_received_size > configs.DEADDROP_MAX_SIZE:
+        if self.pending_deaddrop_received_size > _config["deaddrop_max_size"]:
             # Cleanup and abort
             try:
                 self.server.deaddrop_manager.remove_file(self.pending_deaddrop_upload_name)

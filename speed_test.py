@@ -147,7 +147,7 @@ def run_benchmark(num_messages: int, size_mode: str, min_size: int, max_size: in
     resp_msg = proto_b.create_key_exchange_response(mlkem_ciphertext, hqc_ciphertext)
     proto_a.process_key_exchange_response(resp_msg)
     
-    assert proto_a.verification_key == proto_b.verification_key, "Shared secrets mismatch during setup"
+    assert proto_a._verification_key == proto_b._verification_key, "Shared secrets mismatch during setup"
     
     # Prepare size sequence
     sizes: list[int] = []
