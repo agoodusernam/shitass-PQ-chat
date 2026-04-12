@@ -53,6 +53,17 @@ class DoubleEncryptor(DoubleEncryptorBase):
         self._OTP_secret: bytes = OTP_secret
         self.message_counter: int = message_counter
     
+    @property
+    def key(self) -> None:
+        raise AttributeError('You cannot get the key once it has been set')
+    
+    @key.setter
+    def key(self, value: bytes) -> None:
+        self._key: bytes = value
+        self._aes: AESGCMSIV = AESGCMSIV(value[:32])
+        self._chacha: ChaCha20Poly1305 = ChaCha20Poly1305(value[32:])
+        
+    
     def encrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None, pad: bool = True) -> bytes:
         if pad:
             padder = PKCS7(512).padder()
@@ -112,6 +123,14 @@ class ChunkIndependentDoubleEncryptor(DoubleEncryptorBase):
         _ = OTP_secret
         _ = message_counter
     
+    @property
+    def key(self):
+        raise AttributeError('You cannot get the key')
+    
+    @key.setter
+    def key(self, value: bytes) -> None:
+        self._key = value
+    
     def encrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None, pad: bool = False) -> bytes:
         if associated_data is not None:
             warnings.warn("ChunkIndependentDoubleEncryptor does not support associated data and is NOT authenticated.",
@@ -128,14 +147,37 @@ class ChunkIndependentDoubleEncryptor(DoubleEncryptorBase):
     
     def decrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None, pad: bool = False) -> bytes:
         if associated_data is not None:
-            warnings.warn("StreamingDoubleEncryptor does not support associated data and is NOT authenticated.",
+            warnings.warn("ChunkIndependentDoubleEncryptor does not support associated data and is NOT authenticated.",
                     RuntimeWarning)
         
         if pad:
-            warnings.warn("StreamingDoubleEncryptor does not support padding.", RuntimeWarning)
+            warnings.warn("ChunkIndependentDoubleEncryptor does not support padding.", RuntimeWarning)
         
         chacha_decryptor: CipherContext = Cipher(algorithms.ChaCha20(self._key[32:], nonce), None).decryptor()
         aes_decryptor: CipherContext = Cipher(algorithms.AES(self._key[:32]), modes.CTR(nonce)).decryptor()
         layer2 = aes_decryptor.update(data) + aes_decryptor.finalize()
         layer1 = chacha_decryptor.update(layer2) + chacha_decryptor.finalize()
         return layer1
+
+class KeyExchangeDoubleEncryptor:
+    def __init__(self, key: bytes):
+        self._key = key
+        self._aes: AESGCMSIV = AESGCMSIV(key[:32])
+        self._chacha: ChaCha20Poly1305 = ChaCha20Poly1305(key[32:])
+    
+    def encrypt(self, nonce: bytes, data: bytes) -> bytes:
+        aes_nonce = xor_bytes(nonce, self._key[:12])
+        chacha_nonce = xor_bytes(nonce, self._key[-12:])
+        
+        layer1 = self._aes.encrypt(aes_nonce, data, None)
+        layer2 = self._chacha.encrypt(chacha_nonce, layer1, None)
+        return layer2
+    
+    def decrypt(self, nonce: bytes, data: bytes) -> bytes:
+        aes_nonce = xor_bytes(nonce, self._key[:12])
+        chacha_nonce = xor_bytes(nonce, self._key[-12:])
+        
+        layer2 = self._chacha.decrypt(chacha_nonce, data, None)
+        layer1 = self._aes.decrypt(aes_nonce, layer2, None)
+        return layer1
+

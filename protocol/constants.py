@@ -2,7 +2,7 @@ from enum import unique, IntEnum
 from typing import Final
 
 # Protocol constants
-PROTOCOL_VERSION: Final[str] = "7.1.1"
+PROTOCOL_VERSION: Final[str] = "8.0.0"
 # Protocol compatibility is denoted by version number
 # Breaking.Minor.Patch - only Breaking versions are checked for compatibility.
 # Breaking version changes introduce breaking changes that are not compatible with previous versions of the same major version.
@@ -32,9 +32,12 @@ class MessageType(IntEnum):
     INITIATE_KEY_EXCHANGE = 1
     KEY_EXCHANGE_COMPLETE = 2
     KEY_EXCHANGE_RESET = 3
-    # Client to server
-    KEY_EXCHANGE_RESPONSE = 4
-    KEY_EXCHANGE_INIT = 5
+    # Client to client (multi-step key exchange)
+    KE_DSA_RANDOM = 4          # Step 3/6: ML-DSA public key + client random
+    KE_MLKEM_PUBKEY = 5        # Step 8: ML-KEM public key (signed)
+    KE_MLKEM_CT_KEYS = 6       # Step 10: ML-KEM ciphertext + encrypted HQC/X25519 pubkeys
+    KE_X25519_HQC_CT = 7       # Step 13: encrypted X25519 pubkey + encrypted HQC ciphertext
+    KE_VERIFICATION = 8        # Step 15/16: key verification hash
     
     # Messaging
     ENCRYPTED_MESSAGE = 10

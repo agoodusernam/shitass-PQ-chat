@@ -1,8 +1,8 @@
 import importlib
 from pathlib import Path
 
-from config.config import ConfigHandler
-ConfigHandler()  # ensure config.json exists and is valid on startup
+from config import ConfigHandler
+ConfigHandler()
 
 from new_client import SecureChatClient
 
@@ -14,14 +14,17 @@ if __name__ == "__main__":
         print(f"{i}: {ui.stem}")
     
     valid: bool = False
+    ui_index: int = 0
     while not valid:
         try:
-            ui_index: int = int(input('Pick the UI to use (1-' + str(len(UIs)) + '): '))
-            if 1 <= ui_index <= len(UIs):
-                valid = True
-            else:
-                int('e')
+            ui_index = int(input('Pick the UI to use (1-' + str(len(UIs)) + '): '))
         except ValueError:
+            print("Invalid input. Please enter a number between 1 and", len(UIs))
+            continue
+            
+        if 1 <= ui_index <= len(UIs):
+            valid = True
+        else:
             print("Invalid input. Please enter a number between 1 and", len(UIs))
     
     ui_path: Path = UIs[ui_index - 1]

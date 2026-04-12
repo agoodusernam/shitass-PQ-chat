@@ -37,10 +37,10 @@ from cryptography.hazmat.primitives.kdf.concatkdf import ConcatKDFHash
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from pqcrypto.kem import ml_kem_1024 # type: ignore
 
-from network_utils import send_message, encode_send_message, receive_message
+from utils.network_utils import send_message, encode_send_message, receive_message
 from protocol.create_messages import create_reset_message
 from protocol.constants import PROTOCOL_VERSION, MAGIC_NUMBER_FILE_TRANSFER, MAGIC_NUMBER_DEADDROPS, MessageType
-from config.config import ConfigHandler
+from config import ConfigHandler
 _config = ConfigHandler()
 
 SERVER_VERSION: Final[int] = 8
@@ -63,6 +63,11 @@ class DeadDropManager:
         self.deaddrop_files: dict[str, Path] = {}
         if not _config["deaddrop_enabled"]:
             return
+        location: Path = _config["deaddrop_file_location"]
+        if location.is_file():
+            raise FileExistsError("Deaddrop folder location already exists as a file")
+        if not location.exists():
+            location.mkdir(mode=0o666, parents=True)
         files = _config["deaddrop_file_location"].iterdir()
         for file in files:
             if file.suffix == ".bin":
@@ -411,6 +416,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         self.waiting_for_keepalive_response: bool = False
         self.keepalive_thread: threading.Thread | None = None
         self.unexpected_message_count: int = 0
+        self._ke_verification_count: int = 0
         
         super().__init__(request, client_address, server)
     
@@ -495,7 +501,9 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             
             
             if not self.key_exchange_complete:
-                if message_type in (MessageType.KEY_EXCHANGE_INIT, MessageType.KEY_EXCHANGE_RESPONSE,
+                if message_type in (MessageType.KE_DSA_RANDOM, MessageType.KE_MLKEM_PUBKEY,
+                                    MessageType.KE_MLKEM_CT_KEYS, MessageType.KE_X25519_HQC_CT,
+                                    MessageType.KE_VERIFICATION,
                                     MessageType.KEY_EXCHANGE_RESET, MessageType.INITIATE_KEY_EXCHANGE):
                     self.handle_key_exchange(message, message_data)
                     continue
@@ -514,10 +522,15 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         other_client = self.get_other_client()
         if other_client:
             send_message(other_client.request, message_data)
-            if message_type == MessageType.KEY_EXCHANGE_RESPONSE:
-                self.key_exchange_complete = True
-                other_client.key_exchange_complete = True
-                self.notify_key_exchange_complete()
+            if message_type == MessageType.KE_VERIFICATION:
+                # Track verification messages; both sides must send one
+                self._ke_verification_count = getattr(self, '_ke_verification_count', 0) + 1
+                other_client._ke_verification_count = getattr(other_client, '_ke_verification_count', 0)
+                # After both verifications are routed, key exchange is complete
+                total = self._ke_verification_count + other_client._ke_verification_count
+                if total >= 2:
+                    self.key_exchange_complete = True
+                    other_client.key_exchange_complete = True
         else:
             self.server.broadcast_error("Key exchange failed - no other client")
 
@@ -625,19 +638,6 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             
         else:
             self.server.broadcast_error("Verification failed - no other client")
-    
-    def notify_key_exchange_complete(self) -> None:
-        """Notify both clients that key exchange is complete."""
-        complete_message = {
-            "type":    MessageType.KEY_EXCHANGE_COMPLETE,
-            "message": "Key exchange completed successfully"
-        }
-        message_data = json.dumps(complete_message).encode('utf-8')
-        with self.server.clients_lock:
-            for client_handler in self.server.clients.values():
-                result = send_message(client_handler.request, message_data)
-                if result is not None:
-                    print(f"Failed to notify key exchange complete to {client_handler.client_id}: {result}")
     
     def get_other_client(self) -> "SecureChatRequestHandler | None":
         """Get the other connected client."""
@@ -766,7 +766,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         """Handle unexpected messages from the client."""
         self.unexpected_message_count += 1
         if self.unexpected_message_count >= _config["max_unexpected_msgs"]:
-            self.disconnect("Too many unexpected messages" + extra_info)
+            self.disconnect("Too many unexpected messages: " + extra_info)
     
     def handle_deaddrop_start(self) -> None:
         """Handle deaddrop start message from client."""

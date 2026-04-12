@@ -1,9 +1,9 @@
 """
 Abstract base class for chat client implementations.
 
-Every concrete client must subclass ``ClientBase`` and implement the
-abstract methods.  If a client does not support a particular feature it
-must raise ``UnsupportedError``.
+Every concrete client must subclass "ClientBase" and implement the
+abstract methods.  If a client does not support a particular feature, it
+must raise "UnsupportedError".
 """
 
 from __future__ import annotations
@@ -82,11 +82,6 @@ class ClientBase(ABC):
         """Whether the peer's key has been verified by us."""
         ...
     
-    @peer_key_verified.setter
-    @abstractmethod
-    def peer_key_verified(self, value: bool) -> None:
-        ...
-    
     @property
     @abstractmethod
     def voice_call_active(self) -> bool:
@@ -94,13 +89,11 @@ class ClientBase(ABC):
         ...
     
     @property
-    @abstractmethod
     def voice_muted(self) -> bool:
         """Whether the local microphone is muted during a voice call."""
-        ...
+        return False
     
     @voice_muted.setter
-    @abstractmethod
     def voice_muted(self, value: bool) -> None:
         ...
     
@@ -221,7 +214,7 @@ class ClientBase(ABC):
     # -- ephemeral messaging ------------------------------------------------
     
     @abstractmethod
-    def send_ephemeral_mode_change(self, mode: str, owner_id: str | None) -> None:
+    def send_ephemeral_mode_change(self, mode: str) -> None:
         """Notify the peer of an ephemeral-mode change."""
         ...
     

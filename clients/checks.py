@@ -38,11 +38,18 @@ def allowed_outer_fields(msg_type: Any) -> set[str]:
         case MessageType.SERVER_VERSION_INFO:
             # Allow server identifier in version info announcement
             return base | {"identifier"}
-        case MessageType.KEY_EXCHANGE_INIT:
-            return base | {"mlkem_public_key", "dh_public_key", "hqc_public_key"}
-        case MessageType.KEY_EXCHANGE_RESPONSE:
-            return base | {"mlkem_ciphertext", "hqc_ciphertext", "mlkem_public_key", "hqc_public_key",
-                           "dh_public_key"}
+        case MessageType.KE_DSA_RANDOM:
+            return base | {"mldsa_public_key", "client_random"}
+        case MessageType.KE_MLKEM_PUBKEY:
+            return base | {"mlkem_public_key", "mldsa_signature"}
+        case MessageType.KE_MLKEM_CT_KEYS:
+            return base | {"mlkem_ciphertext", "encrypted_hqc_pubkey", "encrypted_x25519_pubkey",
+                           "nonce1", "nonce2", "mldsa_signature"}
+        case MessageType.KE_X25519_HQC_CT:
+            return base | {"encrypted_x25519_pubkey", "encrypted_hqc_ciphertext",
+                           "nonce1", "nonce2", "mldsa_signature"}
+        case MessageType.KE_VERIFICATION:
+            return base | {"verification_key"}
         case MessageType.ENCRYPTED_MESSAGE:
             return base | {"counter", "nonce", "ciphertext", "dh_public_key", "verification"}
         case MessageType.KEY_VERIFICATION:

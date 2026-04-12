@@ -28,7 +28,7 @@ class TUI(UIBase):
     def capabilities(self) -> UICapability:
         return (
                 UICapability.FILE_TRANSFER
-                | UICapability.DEADDROP
+                | UICapability.DEADDROP # type: ignore
                 | UICapability.NICKNAMES
         )
     
@@ -294,7 +294,7 @@ class TUI(UIBase):
                         if not client.send_message(message):
                             continue
                         
-                        if client.peer_verified_key:
+                        if client.peer_key_verified:
                             print(f"You: {message}")
                         else:
                             print(f"You (unverified): {message}")

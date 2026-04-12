@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 
 
-def _safe_remove(path: Path) -> bool:
+def safe_remove(path: Path) -> bool:
     """Remove a file path, ignoring errors."""
     try:
         path.unlink(missing_ok=True)
@@ -14,16 +14,16 @@ def _safe_remove(path: Path) -> bool:
         return False
 
 
-def _cleanup_paths(paths: list[Path]) -> int:
+def cleanup_paths(paths: list[Path]) -> int:
     """Best-effort removal of a list of paths."""
     removed: int = 0
     for p in paths:
-        if _safe_remove(p):
+        if safe_remove(p):
             removed += 1
     return removed
 
 
-def _hash_file_hexdigest(path: Path) -> str:
+def hash_file_hexdigest(path: Path) -> str:
     """Return BLAKE2b(32) hex digest of the file at `path`."""
     file_hash = hashlib.blake2b(digest_size=32)
     with open(path, 'rb') as f:
@@ -32,7 +32,7 @@ def _hash_file_hexdigest(path: Path) -> str:
     return file_hash.hexdigest()
 
 
-def _decompress_gzip_file(src: Path) -> Path:
+def decompress_gzip_file(src: Path) -> Path:
     """Stream-decompress `src` gzip file to `src`.decompressed and return the new path."""
     dst = src / ".part"
     with open(src, 'rb') as compressed_file:

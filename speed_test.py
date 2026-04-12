@@ -138,14 +138,39 @@ def run_benchmark(num_messages: int, size_mode: str, min_size: int, max_size: in
     if seed is not None:
         random.seed(seed)
     
-    # Initialize protocols & perform key exchange
+    # Initialize protocols & perform multi-step key exchange
     proto_a = SecureChatProtocol()
     proto_b = SecureChatProtocol()
-    pub_a = proto_a.generate_keys()
-    init_msg = proto_a.create_key_exchange_init(pub_a)
-    hqc_ciphertext, mlkem_ciphertext, _ = proto_b.process_key_exchange_init(init_msg)
-    resp_msg = proto_b.create_key_exchange_response(mlkem_ciphertext, hqc_ciphertext)
-    proto_a.process_key_exchange_response(resp_msg)
+    
+    # Step 3: Client A sends DSA random
+    msg1 = proto_a.create_ke_dsa_random()
+    proto_a.ke_step = 1
+    # Step 4-5: Client B receives and processes
+    proto_b.process_ke_dsa_random(msg1)
+    proto_b.ke_step = 2
+    # Step 6: Client B sends DSA random
+    msg2 = proto_b.create_ke_dsa_random()
+    # Step 7: Client A receives
+    proto_a.process_ke_dsa_random(msg2)
+    # Step 8: Client A sends ML-KEM pubkey
+    msg3 = proto_a.create_ke_mlkem_pubkey()
+    # Step 9: Client B receives
+    proto_b.process_ke_mlkem_pubkey(msg3)
+    # Step 10: Client B sends ML-KEM ct + encrypted keys
+    msg4 = proto_b.create_ke_mlkem_ct_keys()
+    # Step 11: Client A receives
+    proto_a.process_ke_mlkem_ct_keys(msg4)
+    # Step 13: Client A sends X25519 + HQC ct
+    msg5 = proto_a.create_ke_x25519_hqc_ct()
+    # Step 14: Client B receives and finalizes
+    proto_b.process_ke_x25519_hqc_ct(msg5)
+    # Step 15: Client B sends verification
+    msg6 = proto_b.create_ke_verification()
+    # Step 16: Client A verifies (keys already finalized in create_ke_x25519_hqc_ct)
+    assert proto_a.process_ke_verification(msg6), "Verification failed A->B"
+    # Client A sends verification back
+    msg7 = proto_a.create_ke_verification()
+    assert proto_b.process_ke_verification(msg7), "Verification failed B->A"
     
     assert proto_a._verification_key == proto_b._verification_key, "Shared secrets mismatch during setup"
     

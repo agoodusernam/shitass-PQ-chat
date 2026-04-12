@@ -32,79 +32,108 @@ def process_key_verification_message(data: bytes) -> bool:
         raise DecodeError("Received invalid key verification message")
 
 
-def parse_key_exchange_init(data: bytes) -> dict[str, Any]:
-    """Parse a key exchange init message and return extracted fields.
+def parse_ke_dsa_random(data: bytes) -> dict[str, Any]:
+    """Parse a KE_DSA_RANDOM message (steps 3/6).
     
     Returns:
-        dict with keys: peer_version, mlkem_public_key, dh_public_key, hqc_public_key, version_warning
+        dict with keys: mldsa_public_key, client_random, version_warning
     """
     try:
         message = json.loads(data)
-        peer_version = str(message["version"])
-        mlkem_public_key = base64.b64decode(message["mlkem_public_key"], validate=True)
-        dh_public_key = base64.b64decode(message["dh_public_key"], validate=True)
-        hqc_public_key = base64.b64decode(message["hqc_public_key"], validate=True)
-    except UnicodeDecodeError as e:
-        raise ValueError("Key exchange init message contains invalid UTF-8 characters") from e
-    except json.JSONDecodeError as e:
-        raise ValueError("Key exchange init message could not be parsed") from e
-    except KeyError as e:
-        raise ValueError("Key exchange init message is missing required fields") from e
-    except binascii.Error as e:
-        raise ValueError("Key exchange init message contains invalid base64-encoded data") from e
+        mldsa_public_key = base64.b64decode(message["mldsa_public_key"], validate=True)
+        client_random = base64.b64decode(message["client_random"], validate=True)
+    except (UnicodeDecodeError, json.JSONDecodeError, KeyError, binascii.Error) as e:
+        raise DecodeError(f"KE_DSA_RANDOM decode error: {type(e).__name__}") from e
     
+    peer_version = message.get("version", "")
     version_warning = ""
-    if peer_version != "" and peer_version != PROTOCOL_VERSION:
+    if peer_version and peer_version != PROTOCOL_VERSION:
         version_warning = (
-                f"WARNING: Protocol version mismatch. Local: {PROTOCOL_VERSION}, Peer: {peer_version}. " +
+                f"WARNING: Protocol version mismatch. Local: {PROTOCOL_VERSION}, Peer: {peer_version}. "
                 "Communication may not work properly.")
     
     return {
-        "peer_version":    peer_version,
-        "mlkem_public_key": mlkem_public_key,
-        "dh_public_key":   dh_public_key,
-        "hqc_public_key":  hqc_public_key,
-        "version_warning": version_warning,
+        "mldsa_public_key": mldsa_public_key,
+        "client_random":    client_random,
+        "version_warning":  version_warning,
         }
 
 
-def parse_key_exchange_response(data: bytes) -> dict[str, Any]:
-    """Parse a key exchange response message and return extracted fields.
+def parse_ke_mlkem_pubkey(data: bytes) -> dict[str, Any]:
+    """Parse a KE_MLKEM_PUBKEY message (step 8)."""
+    try:
+        message = json.loads(data)
+        mlkem_public_key = base64.b64decode(message["mlkem_public_key"], validate=True)
+        mldsa_signature = base64.b64decode(message["mldsa_signature"], validate=True)
+    except (UnicodeDecodeError, json.JSONDecodeError, KeyError, binascii.Error) as e:
+        raise DecodeError(f"KE_MLKEM_PUBKEY decode error: {type(e).__name__}") from e
     
-    Returns:
-        dict with keys: mlkem_ciphertext, mlkem_public_key, hqc_ciphertext, hqc_public_key,
-                        dh_public_key, version_warning
-    
-    Raises:
-        DecodeError: Something was wrong with the received data
-    """
+    return {
+        "mlkem_public_key": mlkem_public_key,
+        "mldsa_signature":  mldsa_signature,
+        }
+
+
+def parse_ke_mlkem_ct_keys(data: bytes) -> dict[str, Any]:
+    """Parse a KE_MLKEM_CT_KEYS message (step 10)."""
     try:
         message = json.loads(data)
         mlkem_ciphertext = base64.b64decode(message["mlkem_ciphertext"], validate=True)
-        mlkem_public_key = base64.b64decode(message["mlkem_public_key"], validate=True)
-        hqc_ciphertext = base64.b64decode(message["hqc_ciphertext"], validate=True)
-        hqc_public_key = base64.b64decode(message["hqc_public_key"], validate=True)
-        dh_public_key = base64.b64decode(message["dh_public_key"], validate=True)
-    except (UnicodeDecodeError, binascii.Error):
-        raise DecodeError("Key exchange response decode error, UnicodeDecodeError")
-    except json.JSONDecodeError:
-        raise DecodeError("Key exchange response decode error, json.JSONDecodeError")
-    except KeyError:
-        raise DecodeError("Key exchange response decode error, KeyError")
+        encrypted_hqc_pubkey = base64.b64decode(message["encrypted_hqc_pubkey"], validate=True)
+        encrypted_x25519_pubkey = base64.b64decode(message["encrypted_x25519_pubkey"], validate=True)
+        nonce1 = base64.b64decode(message["nonce1"], validate=True)
+        nonce2 = base64.b64decode(message["nonce2"], validate=True)
+        mldsa_signature = base64.b64decode(message["mldsa_signature"], validate=True)
+    except (UnicodeDecodeError, json.JSONDecodeError, KeyError, binascii.Error) as e:
+        raise DecodeError(f"KE_MLKEM_CT_KEYS decode error: {type(e).__name__}") from e
     
-    peer_version = message.get("version", None)
-    version_warning = None
-    if peer_version is not None and peer_version != PROTOCOL_VERSION:
-        version_warning = (f"WARNING: Protocol version mismatch. Local: {PROTOCOL_VERSION}, Peer: " +
-                           f"{peer_version}. Communication may not work properly.")
+    signed_payload = mlkem_ciphertext + encrypted_hqc_pubkey + encrypted_x25519_pubkey + nonce1 + nonce2
     
     return {
-        "mlkem_ciphertext": mlkem_ciphertext,
-        "mlkem_public_key": mlkem_public_key,
-        "hqc_ciphertext":   hqc_ciphertext,
-        "hqc_public_key":   hqc_public_key,
-        "dh_public_key":    dh_public_key,
-        "version_warning":  version_warning,
+        "mlkem_ciphertext":        mlkem_ciphertext,
+        "encrypted_hqc_pubkey":    encrypted_hqc_pubkey,
+        "encrypted_x25519_pubkey": encrypted_x25519_pubkey,
+        "nonce1":                  nonce1,
+        "nonce2":                  nonce2,
+        "mldsa_signature":         mldsa_signature,
+        "signed_payload":          signed_payload,
+        }
+
+
+def parse_ke_x25519_hqc_ct(data: bytes) -> dict[str, Any]:
+    """Parse a KE_X25519_HQC_CT message (step 13)."""
+    try:
+        message = json.loads(data)
+        encrypted_x25519_pubkey = base64.b64decode(message["encrypted_x25519_pubkey"], validate=True)
+        encrypted_hqc_ciphertext = base64.b64decode(message["encrypted_hqc_ciphertext"], validate=True)
+        nonce1 = base64.b64decode(message["nonce1"], validate=True)
+        nonce2 = base64.b64decode(message["nonce2"], validate=True)
+        mldsa_signature = base64.b64decode(message["mldsa_signature"], validate=True)
+    except (UnicodeDecodeError, json.JSONDecodeError, KeyError, binascii.Error) as e:
+        raise DecodeError(f"KE_X25519_HQC_CT decode error: {type(e).__name__}") from e
+    
+    signed_payload = encrypted_x25519_pubkey + encrypted_hqc_ciphertext + nonce1 + nonce2
+    
+    return {
+        "encrypted_x25519_pubkey":  encrypted_x25519_pubkey,
+        "encrypted_hqc_ciphertext": encrypted_hqc_ciphertext,
+        "nonce1":                   nonce1,
+        "nonce2":                   nonce2,
+        "mldsa_signature":          mldsa_signature,
+        "signed_payload":           signed_payload,
+        }
+
+
+def parse_ke_verification(data: bytes) -> dict[str, Any]:
+    """Parse a KE_VERIFICATION message (steps 15/16)."""
+    try:
+        message = json.loads(data)
+        verification_key = base64.b64decode(message["verification_key"], validate=True)
+    except (UnicodeDecodeError, json.JSONDecodeError, KeyError, binascii.Error) as e:
+        raise DecodeError(f"KE_VERIFICATION decode error: {type(e).__name__}") from e
+    
+    return {
+        "verification_key": verification_key,
         }
 
 

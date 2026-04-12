@@ -1,3 +1,6 @@
+import base64
+import binascii
+import collections
 import json
 import os
 import re
@@ -10,12 +13,14 @@ import wave
 from collections.abc import Iterable
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext
-from typing import Any, Callable, Literal, ParamSpec
+from typing import Any, Callable, Literal, ParamSpec, TYPE_CHECKING
+from wave import Wave_read
 
 from SecureChatABCs.client_base import ClientBase
 from SecureChatABCs.ui_base import UIBase, UICapability
-from config.config import ConfigHandler
+from config import ConfigHandler
 from protocol.utils import bytes_to_human_readable
+from utils.vc_utils import negotiate_audio_format
 
 P = ParamSpec("P")
 
@@ -57,8 +62,7 @@ except ImportError:
     pyaudio = None  # type: ignore
 
 try:
-    # noinspection PyUnresolvedReferences
-    from tkinterdnd2 import DND_FILES, TkinterDnD
+    from tkinterdnd2 import DND_FILES, TkinterDnD  # type: ignore[import-untyped]
     
     TKINTERDND2_AVAILABLE = True
 except ImportError:
@@ -409,7 +413,7 @@ class DeadDropWindow:
         return tk.Button(parent, text=text, command=command,
                          bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT, **kw)
     
-    def _build_ui(self):
+    def _build_ui(self) -> None:
         pad = {"padx": 10, "pady": 4}
         
         # --- Tab bar (Upload / Check / Download) ---
@@ -441,8 +445,8 @@ class DeadDropWindow:
         self.upload_password.grid(row=1, column=1, sticky=ltk.W, **pad)
         
         self._label(upload_frame, "File:").grid(row=2, column=0, sticky=ltk.W, **pad)
-        file_row = tk.Frame(upload_frame, bg=self.BG_COLOR)
-        file_row.grid(row=2, column=1, sticky=ltk.W, **pad)
+        file_row: tk.Frame = tk.Frame(upload_frame, bg=self.BG_COLOR)
+        file_row.grid(row=2, column=1, sticky=ltk.W, **pad) # type: ignore
         self.upload_file_var = tk.StringVar()
         self._entry(upload_frame, width=22, textvariable=self.upload_file_var).grid(row=2, column=1, sticky=ltk.W, **pad)
         self._button(upload_frame, "Browse…", self._browse_upload_file).grid(row=2, column=2, **pad)
@@ -603,8 +607,9 @@ def display_image(image: Image.Image, root: tk.Tk) -> None:
     label.pack()
 
 
-THEMES_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "themes")
-THEME_SELECTION_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "theme_selection.json")
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+THEMES_DIR = str(_PROJECT_ROOT / "themes")
+THEME_SELECTION_FILE = str(_PROJECT_ROOT / "theme_selection.json")
 
 
 def get_available_themes() -> list[str]:
@@ -618,7 +623,7 @@ def get_available_themes() -> list[str]:
     return sorted(names)
 
 
-def load_theme_colors(theme_name: str | None = None) -> dict[str, str]:
+def load_theme_colors(theme_name: tk.StringVar | None = None) -> dict[str, str]:
     """Load theme colors from the themes folder, falling back to defaults."""
     default_colors: dict[str, str] = {
         "BG_COLOR":                 "#2b2b2b",
@@ -640,7 +645,7 @@ def load_theme_colors(theme_name: str | None = None) -> dict[str, str]:
         "SPELLCHECK_ERROR_COLOR":   "#f44747",
         "SPEED_LABEL_COLOR":        "#4CAF50",
     }
-
+    
     # Determine which theme to load
     selected = theme_name
     if selected is None:
@@ -650,7 +655,7 @@ def load_theme_colors(theme_name: str | None = None) -> dict[str, str]:
                 selected = data.get("theme")
         except (OSError, json.JSONDecodeError):
             selected = None
-
+    
     if selected:
         theme_path = os.path.join(THEMES_DIR, f"{selected}.json")
         try:
@@ -660,9 +665,9 @@ def load_theme_colors(theme_name: str | None = None) -> dict[str, str]:
                 return default_colors
         except (OSError, PermissionError, json.JSONDecodeError):
             pass
-
+    
     # Legacy fallback: theme.json in project root
-    legacy_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "theme.json")
+    legacy_path = str(_PROJECT_ROOT / "theme.json")
     if os.path.exists(legacy_path):
         try:
             with open(legacy_path, "r") as f:
@@ -671,15 +676,15 @@ def load_theme_colors(theme_name: str | None = None) -> dict[str, str]:
                 return default_colors
         except (OSError, PermissionError, json.JSONDecodeError):
             pass
-
+    
     return default_colors
 
 
-def save_theme_selection(theme_name: str) -> None:
+def save_theme_selection(theme_name: tk.StringVar) -> None:
     """Persist the selected theme name to theme_selection.json."""
     try:
         with open(THEME_SELECTION_FILE, "w") as f:
-            json.dump({"theme": theme_name}, f, indent=4)
+            json.dump({"theme": str(theme_name)}, f, indent=4)
     except (OSError, PermissionError):
         pass
 
@@ -749,12 +754,21 @@ class GUI(UIBase):
         self.spellcheck_enabled: bool = SPELLCHECKER_AVAILABLE
         self.misspelled_tags: set[str] = set()
         
+        if TYPE_CHECKING:
+            self.audio_interface: pyaudio.PyAudio | None
+        
         if PYAUDIO_AVAILABLE:
             self.audio_interface = pyaudio.PyAudio()
+            print('There may have been an error in your console.')
+            print('This is expected behaviour and usually not a problem')
             self.notification_stream = None
         else:
             self.audio_interface = None
             self.notification_stream = None
+        
+        # Voice call state
+        self._voice_data_queue: collections.deque[bytes] = collections.deque()
+        self._pending_voice_init: dict[str, Any] = {}
         
         self.current_theme_name: str = self._load_saved_theme_name()
         self.create_widgets()
@@ -770,51 +784,52 @@ class GUI(UIBase):
                 return data.get("theme", "")
         except (OSError, json.JSONDecodeError):
             return ""
-
-    def apply_theme(self, theme_name: str) -> None:
+    
+    def apply_theme(self, theme_name: tk.StringVar) -> None:
         """Load and apply a theme by name, re-coloring all existing widgets."""
         self.theme_colors = load_theme_colors(theme_name)
-        self.current_theme_name = theme_name
+        self.current_theme_name = str(theme_name)
         self.BG_COLOR = self.theme_colors["BG_COLOR"]
         self.FG_COLOR = self.theme_colors["FG_COLOR"]
         self.ENTRY_BG_COLOR = self.theme_colors["ENTRY_BG_COLOR"]
         self.BUTTON_BG_COLOR = self.theme_colors["BUTTON_BG_COLOR"]
         self.BUTTON_ACTIVE_BG = self.theme_colors["BUTTON_ACTIVE_BG"]
         self.TEXT_BG_COLOR = self.theme_colors["TEXT_BG_COLOR"]
-
+        
         save_theme_selection(theme_name)
         self._recolor_widgets()
-
+    
     def _recolor_widgets(self) -> None:
         """Re-apply theme colors to all main widgets."""
         self.root.configure(bg=self.BG_COLOR)
-
+        
+        # noinspection PyArgumentList
         def recolor(widget: tk.Widget) -> None:
             cls = widget.winfo_class()
             try:
                 if cls in ("Frame", "Toplevel"):
-                    widget.configure(bg=self.BG_COLOR)  # type: ignore
+                    widget.configure(bg=self.BG_COLOR)  # type: ignore[call-arg]
                 elif cls == "Label":
-                    widget.configure(bg=self.BG_COLOR, fg=self.FG_COLOR)  # type: ignore
+                    widget.configure(bg=self.BG_COLOR, fg=self.FG_COLOR)  # type: ignore[call-arg]
                 elif cls == "Button":
-                    widget.configure(bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR,  # type: ignore
+                    widget.configure(bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR,  # type: ignore[call-arg]
                                      activebackground=self.BUTTON_ACTIVE_BG)
                 elif cls == "Entry":
-                    widget.configure(bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR)  # type: ignore
+                    widget.configure(bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR)  # type: ignore[call-arg]
                 elif cls in ("Text", "ScrolledText"):
-                    widget.configure(bg=self.TEXT_BG_COLOR, fg=self.FG_COLOR)  # type: ignore
+                    widget.configure(bg=self.TEXT_BG_COLOR, fg=self.FG_COLOR)  # type: ignore[call-arg]
                 elif cls == "Checkbutton":
-                    widget.configure(bg=self.BG_COLOR, fg=self.FG_COLOR,  # type: ignore
+                    widget.configure(bg=self.BG_COLOR, fg=self.FG_COLOR,  # type: ignore[call-arg]
                                      selectcolor=self.BUTTON_BG_COLOR,
                                      activebackground=self.BUTTON_ACTIVE_BG,
                                      activeforeground=self.FG_COLOR)
             except tk.TclError:
                 pass
             for child in widget.winfo_children():
-                recolor(child)
-
-        recolor(self.root)
-
+                recolor(child)  # type: ignore[arg-type]
+        
+        recolor(self.root)  # type: ignore[arg-type]
+        
         # Update specific widgets that use named theme color keys
         try:
             self.status_label.configure(fg=self.theme_colors.get("STATUS_NOT_CONNECTED", "#ff6b6b"))
@@ -832,7 +847,7 @@ class GUI(UIBase):
                                              underlinefg=self.theme_colors.get("SPELLCHECK_ERROR_COLOR", "red"))
         except AttributeError:
             pass
-
+    
     def set_client(self, client: ClientBase) -> None:
         self.client = client
     
@@ -906,10 +921,8 @@ class GUI(UIBase):
                                                       relief=ltk.FLAT)
         self.chat_display.pack(fill=ltk.BOTH, expand=True, pady=(0, 10))
         if TKINTERDND2_AVAILABLE:
-            # noinspection PyUnresolvedReferences
-            self.chat_display.drop_target_register(DND_FILES)
-            # noinspection PyUnresolvedReferences
-            self.chat_display.dnd_bind('<<Drop>>', self.handle_drop)
+            self.chat_display.drop_target_register(DND_FILES)  # type: ignore[attr-defined]
+            self.chat_display.dnd_bind('<<Drop>>', self.handle_drop)  # type: ignore[attr-defined]
         
         self.input_frame = tk.Frame(main_frame, bg=self.BG_COLOR)
         self.input_frame.pack(fill=ltk.X)
@@ -984,7 +997,7 @@ class GUI(UIBase):
         # This is called from the client thread.
         msg = "Peer requested a rekey. Do you want to proceed?\n\nYes: Proceed\nNo: Disconnect\nCancel: Reject rekey but stay connected"
         res = messagebox.askyesnocancel("Rekey Request", msg)
-        if res is True:
+        if res:
             return True
         elif res is False:
             return False
@@ -1035,18 +1048,48 @@ class GUI(UIBase):
         self.on_tk_thread(self._append_to_chat, f"SYSTEM: Ephemeral mode changed to {mode}")
     
     def on_voice_call_init(self, init_msg: dict[str, Any]) -> None:
+        self._pending_voice_init = init_msg
         threading.Thread(target=self.prompt_voice_call, args=(init_msg,), daemon=True).start()
     
     def on_voice_call_accept(self, message: dict[str, Any]) -> None:
-        if PYAUDIO_AVAILABLE:
-            self.no_types_tk_thread(self.voice_call_btn.configure, text="End Call")
+        """Peer accepted our call request — start audio streams."""
+        if not PYAUDIO_AVAILABLE or not self.audio_interface:
+            return
+        local_rate: int = self.config["voice_rate"]
+        local_chunk: int = self.config.voice_chunk
+        local_max_fmt: int = self.config["voice_format"]
+        peer_rate: int = int(message.get("rate", local_rate))
+        peer_max_fmt: int = int(message.get("audio_format", local_max_fmt))
+        agreed_fmt = negotiate_audio_format(local_max_fmt, peer_max_fmt)
+        self._start_audio_streams(local_rate, peer_rate, local_chunk, agreed_fmt)
+        self.no_types_tk_thread(
+            self.voice_call_btn.configure,
+            text="End Call",
+            command=self._end_call_from_ui,
+        )
+        self.on_tk_thread(self.show_mute_button)
     
     def on_voice_call_reject(self) -> None:
         self.on_tk_thread(self._append_to_chat, "SYSTEM: Voice call rejected by peer.")
+        if PYAUDIO_AVAILABLE:
+            self.no_types_tk_thread(self.voice_call_btn.configure, state="normal")
+    
+    def on_voice_call_data(self, data: dict[str, Any]) -> None:
+        """Enqueue incoming audio data for playback."""
+        try:
+            self._voice_data_queue.append(base64.b64decode(data["audio_data"], validate=True))
+        except (KeyError, binascii.Error):
+            pass
     
     def on_voice_call_end(self) -> None:
+        self._stop_audio_streams()
         if PYAUDIO_AVAILABLE:
-            self.no_types_tk_thread(self.voice_call_btn.configure, text="Voice Call")
+            self.no_types_tk_thread(
+                self.voice_call_btn.configure,
+                text="Voice Call",
+                command=self.start_call,
+            )
+            self.on_tk_thread(self.hide_mute_button)
     
     def file_download_progress(self, transfer_id: str, filename: str, received_chunks: int, total_chunks: int, bytes_transferred: int = -1) -> None:
         self.on_tk_thread(self.file_transfer_window.update_transfer_progress, filename, received_chunks, total_chunks, bytes_transferred, "Downloading")
@@ -1084,8 +1127,10 @@ class GUI(UIBase):
     def toggle_connection(self) -> None:
         if not self.client:
             return
+        
         if self.client.connected:
             self.client.disconnect()
+            
         else:
             host = self.host_entry.get()
             try:
@@ -1097,7 +1142,7 @@ class GUI(UIBase):
     def send_message(self, event: tk.Event | None = None) -> str:
         if event:
             # Shift+Enter for new line, Enter to send
-            if event.state & 0x1:  # Shift pressed
+            if isinstance(event.state, int) and event.state & 0x1:  # Shift pressed
                 return ""
         
         text = self.message_entry.get("1.0", ltk.END).strip()
@@ -1170,7 +1215,7 @@ class GUI(UIBase):
             ranges = self.chat_display.tag_ranges(tag)
             if ranges:
                 self.chat_display.delete(ranges[0], ranges[1])
-                self.chat_display.insert(ranges[0], "●", tag)
+                self.chat_display.insert(ranges[0], "●\n", tag)
                 self.chat_display.tag_configure(tag, foreground=self.theme_colors.get("DELIVERY_CONFIRMED_COLOR", "#4CAF50"))
             self.chat_display.config(state=ltk.DISABLED)
     
@@ -1243,6 +1288,8 @@ class GUI(UIBase):
     # noinspection PyAttributeOutsideInit
     def open_config_dialog(self) -> None:
         """Open a small configuration window with common settings."""
+        if TYPE_CHECKING:
+            self.config_window: tk.Toplevel
         if hasattr(self, "config_window") and self.config_window and self.config_window.winfo_exists():
             self.config_window.lift()
             self.config_window.focus_set()
@@ -1288,10 +1335,10 @@ class GUI(UIBase):
         theme_frame = tk.Frame(container, bg=self.BG_COLOR)
         theme_frame.pack(fill=ltk.X, pady=(8, 2))
         tk.Label(theme_frame, text="Theme:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=ltk.LEFT)
-
+        
         available_themes = get_available_themes()
         self.var_theme = tk.StringVar(value=self.current_theme_name if self.current_theme_name in available_themes else (available_themes[0] if available_themes else ""))
-
+        
         if available_themes:
             theme_menu = tk.OptionMenu(theme_frame, self.var_theme, *available_themes,
                                        command=self._on_theme_selected)
@@ -1303,13 +1350,13 @@ class GUI(UIBase):
         else:
             tk.Label(theme_frame, text="No themes found in /themes",
                      bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=ltk.LEFT, padx=(5, 0))
-
+        
         # Close button
         btn_close = tk.Button(container, text="Close", command=self.config_window.destroy,
                               bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT)
         btn_close.pack(pady=(10, 0))
     
-    def _on_theme_selected(self, theme_name: str) -> None:
+    def _on_theme_selected(self, theme_name: tk.StringVar) -> None:
         """Called when the user picks a theme from the dropdown."""
         self.apply_theme(theme_name)
         # Re-style the config window itself if it's open
@@ -1320,27 +1367,104 @@ class GUI(UIBase):
                     child.configure(bg=self.BG_COLOR)  # type: ignore
                 except tk.TclError:
                     pass
-
+    
     def start_call(self) -> None:
         if self.client and self.allow_voice_calls:
             if self.client.voice_call_active:
-                self.client.end_call()
+                self._end_call_from_ui()
                 return
             rate = self.config["voice_rate"]
             chunk = self.config.voice_chunk
             fmt = self.config["voice_format"]
             threading.Thread(target=self.client.request_voice_call, args=(rate, chunk, fmt), daemon=True).start()
     
+    def _end_call_from_ui(self) -> None:
+        """End the active call from the UI side."""
+        if self.client:
+            threading.Thread(target=self.client.end_call, daemon=True).start()
+    
     def toggle_mute(self) -> None:
         if self.client:
             self.client.voice_muted = not self.client.voice_muted
     
+    def show_mute_button(self) -> None:
+        """Pack the mute button into the toolbar."""
+        if PYAUDIO_AVAILABLE and hasattr(self, "mute_btn"):
+            self.mute_btn.pack(side=ltk.LEFT, padx=(5, 0))
+    
+    def hide_mute_button(self) -> None:
+        """Remove the mute button from the toolbar."""
+        if PYAUDIO_AVAILABLE and hasattr(self, "mute_btn"):
+            self.mute_btn.pack_forget()
+    
+    def _start_audio_streams(
+        self,
+        local_rate: int,
+        peer_rate: int,
+        chunk_size: int,
+        audio_format: int,
+    ) -> None:
+        """Open PyAudio streams and launch send/receive threads."""
+        if not self.audio_interface:
+            return
+        self._voice_data_queue.clear()
+        in_stream = self.audio_interface.open(
+            rate=local_rate, channels=1, format=audio_format, input=True
+        )
+        out_stream = self.audio_interface.open(
+            rate=peer_rate, channels=1, format=audio_format, output=True
+        )
+        threading.Thread(
+            target=self._send_voice_thread, args=(in_stream, chunk_size), daemon=True
+        ).start()
+        threading.Thread(
+            target=self._receive_voice_thread, args=(out_stream,), daemon=True
+        ).start()
+    
+    def _stop_audio_streams(self) -> None:
+        """Clear the audio queue; running threads will exit on their own when the call ends."""
+        self._voice_data_queue.clear()
+    
+    def _send_voice_thread(self, stream: "pyaudio.Stream", chunk_size: int) -> None:  # type: ignore[name-defined]
+        """Continuously read from the mic and send to the peer while the call is active."""
+        try:
+            while self.client and self.client.voice_call_active:
+                chunk = stream.read(chunk_size, exception_on_overflow=False)
+                if not (self.client and self.client.voice_muted):
+                    if self.client:
+                        self.client.send_voice_data(chunk)
+        finally:
+            try:
+                stream.stop_stream()
+                stream.close()
+            except Exception:
+                pass
+    
+    def _receive_voice_thread(self, stream: "pyaudio.Stream") -> None:  # type: ignore[name-defined]
+        """Continuously play received audio chunks while the call is active."""
+        try:
+            while self.client and self.client.voice_call_active:
+                if self._voice_data_queue:
+                    chunk = self._voice_data_queue.popleft()
+                    stream.write(chunk)
+                else:
+                    time.sleep(0.005)
+        finally:
+            try:
+                stream.stop_stream()
+                stream.close()
+            except Exception:
+                pass
+    
     def prompt_voice_call(self, init_msg: dict[str, Any]) -> None:
+        if not self.client:
+            return
         def play_ringtone(stop_event: threading.Event):
             if not PYAUDIO_AVAILABLE or not self.audio_interface:
                 return
             try:
-                with wave.open(self.config["ringtone_file"], 'rb') as wf:
+                wf: Wave_read
+                with wave.open(self.config["ringtone_file"], 'rb') as wf: # type: ignore
                     stream = self.audio_interface.open(
                             format=self.audio_interface.get_format_from_width(wf.getsampwidth()),
                             channels=wf.getnchannels(),
@@ -1368,14 +1492,24 @@ class GUI(UIBase):
         stop_event.set()
         
         if res:
-            rate = init_msg.get("rate", 44100)
-            chunk = init_msg.get("chunk_size", 1024)
-            fmt = init_msg.get("audio_format", 8)
-            if self.client:
-                self.client.on_user_response(True, rate, chunk, fmt)
+            peer_rate: int = int(init_msg.get("rate", self.config["voice_rate"]))
+            peer_max_fmt: int = int(init_msg.get("audio_format", self.config["voice_format"]))
+            local_rate: int = self.config["voice_rate"]
+            local_chunk: int = self.config.voice_chunk
+            local_max_fmt: int = self.config["voice_format"]
+            agreed_fmt = negotiate_audio_format(local_max_fmt, peer_max_fmt)
+            self.client.on_user_response(True, local_rate, local_chunk, local_max_fmt)
+            self._start_audio_streams(local_rate, peer_rate, local_chunk, agreed_fmt)
+            self.no_types_tk_thread(
+                self.voice_call_btn.configure,
+                text="End Call",
+                command=self._end_call_from_ui,
+            )
+            self.on_tk_thread(self.show_mute_button)
+            self._pending_voice_init = {}
         else:
-            if self.client:
-                self.client.on_user_response(False, 0, 0, 0)
+            self.client.on_user_response(False, 0, 0, 0)
+            self._pending_voice_init = {}
     
     def open_deaddrop_window(self, tab: str = "Upload") -> None:
         if not self.client:
@@ -1449,9 +1583,12 @@ class GUI(UIBase):
         if not self.notification_enabled or not PYAUDIO_AVAILABLE or not self.audio_interface:
             return
         
-        def play_notif():
+        def play_notif() -> None:
             try:
-                with wave.open(self.config["message_notif_sound_file"], 'rb') as wf:
+                if TYPE_CHECKING:
+                    wf: Wave_read
+                    assert isinstance(self.audio_interface, pyaudio.PyAudio) # type: ignore
+                with wave.open(self.config["message_notif_sound_file"], 'rb') as wf: # type: ignore
                     stream = self.audio_interface.open(
                             format=self.audio_interface.get_format_from_width(wf.getsampwidth()),
                             channels=wf.getnchannels(),

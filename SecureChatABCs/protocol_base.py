@@ -68,8 +68,8 @@ class ProtocolBase(ABC):
     # ------------------------------------------------------------------ #
 
     @abstractmethod
-    def generate_keys(self) -> bytes:
-        """Generate ML-KEM keypair for key exchange."""
+    def generate_dsa_keys(self) -> None:
+        """Generate ML-DSA keypair for key exchange signing."""
 
     @abstractmethod
     def reset_key_exchange(self) -> None:
@@ -90,20 +90,48 @@ class ProtocolBase(ABC):
         """Process a key verification message from peer."""
 
     @abstractmethod
-    def create_key_exchange_init(self, public_key: bytes) -> bytes:
-        """Create initial key exchange message with X25519 DH public key."""
+    def create_ke_dsa_random(self) -> bytes:
+        """Create KE_DSA_RANDOM message: DSA public key + client random."""
 
     @abstractmethod
-    def create_key_exchange_response(self, mlkem_ciphertext: bytes, hqc_ciphertext: bytes) -> bytes:
-        """Create key exchange response message."""
+    def process_ke_dsa_random(self, data: bytes) -> str:
+        """Process peer's KE_DSA_RANDOM message."""
 
     @abstractmethod
-    def process_key_exchange_init(self, data: bytes) -> tuple[bytes, bytes, str]:
-        """Process initial key exchange and return (hqc_ciphertext, mlkem_ciphertext, version_warning)."""
+    def create_ke_mlkem_pubkey(self) -> bytes:
+        """Create KE_MLKEM_PUBKEY message: signed ML-KEM public key."""
 
     @abstractmethod
-    def process_key_exchange_response(self, data: bytes) -> str | None:
-        """Process key exchange response and derive combined shared key."""
+    def process_ke_mlkem_pubkey(self, data: bytes) -> None:
+        """Process peer's KE_MLKEM_PUBKEY message."""
+
+    @abstractmethod
+    def create_ke_mlkem_ct_keys(self) -> bytes:
+        """Create KE_MLKEM_CT_KEYS message."""
+
+    @abstractmethod
+    def process_ke_mlkem_ct_keys(self, data: bytes) -> None:
+        """Process peer's KE_MLKEM_CT_KEYS message."""
+
+    @abstractmethod
+    def create_ke_x25519_hqc_ct(self) -> bytes:
+        """Create KE_X25519_HQC_CT message."""
+
+    @abstractmethod
+    def process_ke_x25519_hqc_ct(self, data: bytes) -> None:
+        """Process peer's KE_X25519_HQC_CT message."""
+
+    @abstractmethod
+    def create_ke_verification(self) -> bytes:
+        """Create KE_VERIFICATION message."""
+
+    @abstractmethod
+    def process_ke_verification(self, data: bytes) -> bool:
+        """Process peer's KE_VERIFICATION message."""
+
+    @abstractmethod
+    def set_server_identifier(self, identifier: str) -> None:
+        """Set the server identifier for use in key derivations."""
 
     # ------------------------------------------------------------------ #
     # Encryption / decryption                                              #
@@ -144,3 +172,7 @@ class ProtocolBase(ABC):
     @abstractmethod
     def process_rekey_response(self, message: dict) -> dict:
         """Process a REKEY response payload and return commit payload."""
+    
+    @abstractmethod
+    def reset_auto_rekey_counter(self) -> None:
+        """Reset the automatic rekey message counter"""

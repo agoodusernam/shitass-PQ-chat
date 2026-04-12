@@ -9,11 +9,11 @@ from typing import TYPE_CHECKING
 
 from protocol.constants import SEND_CHUNK_SIZE
 from protocol.types import FileMetadata
-from file_utils import (
-    _safe_remove,
-    _cleanup_paths,
-    _hash_file_hexdigest,
-    _decompress_gzip_file,
+from utils.file_utils import (
+    safe_remove,
+    cleanup_paths,
+    hash_file_hexdigest,
+    decompress_gzip_file,
 )
 
 if TYPE_CHECKING:
@@ -24,11 +24,11 @@ class ProtocolFileHandler:
     """
     Handles all file and related IO for the protocol.
     """
-    def __init__(self, protocol: SecureChatProtocol):
+    def __init__(self, protocol: SecureChatProtocol) -> None:
         self.protocol = protocol
         self.received_chunks: dict[str, set[int]] = {}
         self.temp_file_paths: dict[str, Path] = {}
-        self.open_file_handles: dict[str, typing.IO] = {}
+        self.open_file_handles: dict[str, typing.BinaryIO] = {}
         self.sending_transfers: dict[str, FileMetadata] = {}
         self.protocol.has_active_file_transfers = self.has_active_transfers_func
     
@@ -101,18 +101,18 @@ class ProtocolFileHandler:
                 
                 # Store the path and handle
                 self.temp_file_paths[transfer_id] = temp_file_path
-                self.open_file_handles[transfer_id] = temp_file
+                self.open_file_handles[transfer_id] = temp_file # type: ignore
             
             except OSError as e:
-                raise ValueError(f"Failed to create secure temporary file: {e}")
+                raise ValueError(f"Failed to create temporary file: {e}")
         
         # Get the open file handle
         file_handle = self.open_file_handles[transfer_id]
         
-        position = int(chunk_index) * int(SEND_CHUNK_SIZE)
+        position = chunk_index * SEND_CHUNK_SIZE
         
         try:
-            file_handle.seek(position, 0)  # 0 = SEEK_SET (absolute positioning)
+            file_handle.seek(position, 0)
             
             actual_position = file_handle.tell()
             if actual_position != position:
@@ -155,11 +155,11 @@ class ProtocolFileHandler:
         
         try:
             if compressed:
-                final_file_path = _decompress_gzip_file(temp_received_path)
+                final_file_path = decompress_gzip_file(temp_received_path)
                 cleanup_on_error.append(final_file_path)
             
             # Verify file integrity
-            if _hash_file_hexdigest(final_file_path) != expected_hash:
+            if hash_file_hexdigest(final_file_path) != expected_hash:
                 raise ValueError("File integrity check failed")
             
             # Move the final file to the output path
@@ -167,10 +167,10 @@ class ProtocolFileHandler:
             
             # Clean up the original received file if it was a compressed container
             if compressed and os.path.exists(temp_received_path):
-                _safe_remove(temp_received_path)
+                safe_remove(temp_received_path)
         
         except Exception as e:
-            _cleanup_paths(cleanup_on_error)
+            cleanup_paths(cleanup_on_error)
             if isinstance(e, (OSError, IOError, gzip.BadGzipFile)):
                 raise ValueError(f"File processing failed (I/O or gzip): {e}") from e
             if isinstance(e, ValueError):

@@ -1,10 +1,6 @@
-from abc import ABC
-from collections.abc import Sequence
+from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Mapping, TypeAlias, TypedDict, NotRequired
-
-from protocol.constants import MessageType
-
+from typing import TypedDict, NotRequired
 
 class FileMetadata(TypedDict):
     """
@@ -20,8 +16,6 @@ class FileMetadata(TypedDict):
     total_chunks: int
     compressed: bool
     compressed_size: NotRequired[int]
-    # Optional fields used by UI layers
-    save_path: NotRequired[str]
 
 
 class FileTransfer(TypedDict):
@@ -31,9 +25,11 @@ class FileTransfer(TypedDict):
 
 
 class DoubleEncryptorBase(ABC):
+    @abstractmethod
     def encrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None, pad: bool = False):
         ...
     
+    @abstractmethod
     def decrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None, pad: bool = False):
         ...
 

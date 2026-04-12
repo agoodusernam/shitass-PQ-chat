@@ -7,7 +7,7 @@ persisted as a single JSON file.
 
 Usage::
 
-    from config.config import ConfigHandler
+    from config import ConfigHandler
     cfg = ConfigHandler()
     cfg["own_nickname"]            # runtime pref (str)
     cfg["voice_rate"]              # static constant (int)
@@ -128,7 +128,7 @@ def _create_default_config() -> ConfigDict:
         # Security settings
         send_dummy_packets=True,
         max_dummy_packet_size=512,
-        rekey_interval=480,
+        rekey_interval=2048,
         # Server settings
         max_unexpected_msgs=10,
         deaddrop_max_size=1024 * 1024 * 1024 * 10,

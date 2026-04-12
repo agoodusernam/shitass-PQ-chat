@@ -96,6 +96,8 @@ class StreamingGzipCompressor:
         self.buffer.close()
         
         return final_data
+    
+    finalize = finalise
 
 
 def decide_compression(file_path: Path, user_pref: bool = True) -> bool:
@@ -118,8 +120,7 @@ def bytes_to_human_readable(size: int) -> str:
         size (int): The number of bytes to convert.
         
     Returns:
-        str: A formatted string with the size and appropriate unit (B, KB, MB, or GB).
-        
+        str: A formatted string with the size and the appropriate unit (B, KiB, MiB, or GiB).
     """
     if size < 1024:
         return f"{size} B"
@@ -139,11 +140,12 @@ def xor_bytes(a: bytes, b: bytes) -> bytes:
         int_a = int.from_bytes(a, byteorder="little")
         int_b = int.from_bytes(b, byteorder="little")
         
-        xor_result = int_a ^ int_b
-        return xor_result.to_bytes(length, byteorder="little")
+        return (int_a ^ int_b).to_bytes(length, byteorder="little")
     
     
     if equal_length:
+        pass
+    elif len(a) > len(b):
         a = a.zfill(length)
     else:
         b = b.zfill(length)
@@ -151,11 +153,10 @@ def xor_bytes(a: bytes, b: bytes) -> bytes:
     return np.bitwise_xor(np.frombuffer(a, dtype=np.uint8), np.frombuffer(b, dtype=np.uint8)).tobytes()
 
 
-def load_wordlist(wordlist_file: str) -> list[str]:
+def load_wordlist(wordlist_file: Path) -> list[str]:
     """Load the wordlist from the given file path."""
     try:
-        wordlist_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), wordlist_file)
-        with open(wordlist_path, 'r', encoding='utf-8') as f:
+        with open(wordlist_file.resolve(), 'r', encoding='utf-8') as f:
             return [line.strip() for line in f if line.strip()]
     except FileNotFoundError:
         raise FileNotFoundError(
@@ -175,9 +176,9 @@ def hash_to_words(hash_bytes: bytes, wordlist: list[str], num_words: int = 16) -
     return words
 
 
-def generate_key_fingerprint(public_key: bytes, wordlist_file: str) -> str:
+def generate_key_fingerprint(key: bytes, wordlist_file: Path) -> str:
     """Generate a human-readable word-based fingerprint for a public key."""
-    key_hash = hashlib.sha256(public_key).digest()
+    key_hash = hashlib.sha3_512(key).digest()[:32]
     wordlist = load_wordlist(wordlist_file)
     words = hash_to_words(key_hash, wordlist, num_words=8)
     return " ".join(words)
@@ -191,7 +192,7 @@ def sanitize_str(s: str) -> str:
 
 def chunk_file(file_path: Path | str, compress: bool = True) -> Generator[bytes, None, None]:
     """Generate file chunks for transmission one at a time.
-
+    
     This is a streaming generator function that optionally compresses and yields chunks
     without loading the entire file into memory. This approach is memory-efficient
     for large files and provides a steady stream of data for network transmission.
@@ -214,7 +215,7 @@ def chunk_file(file_path: Path | str, compress: bool = True) -> Generator[bytes,
     
     # Use streaming compression
     compressor: StreamingGzipCompressor = StreamingGzipCompressor()
-    pending_data: bytes = b''
+    pending_data: bytes = b""
     
     try:
         with open(file_path, 'rb') as original_file:
