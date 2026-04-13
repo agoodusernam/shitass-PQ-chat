@@ -1,15 +1,13 @@
 import hashlib
-import warnings
 
 from cryptography.hazmat.primitives.ciphers import CipherContext, Cipher, algorithms, modes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCMSIV, ChaCha20Poly1305
 from cryptography.hazmat.primitives.padding import PKCS7
 
-from protocol.types import DoubleEncryptorBase
 from protocol.utils import xor_bytes
 
 
-class DoubleEncryptor(DoubleEncryptorBase):
+class DoubleEncryptor:
     """
     Provides an authenticated two-AEAD encryption scheme with an additional OTP-like keystream pre-mask.
 
@@ -47,6 +45,9 @@ class DoubleEncryptor(DoubleEncryptorBase):
             message_counter: Monotonically increasing counter mixed into the keystream to ensure per-message
                              uniqueness.
         """
+        if len(key) != 64:
+            raise ValueError("Key must be 64 bytes")
+        
         self._key: bytes = key
         self._aes: AESGCMSIV = AESGCMSIV(key[:32])
         self._chacha: ChaCha20Poly1305 = ChaCha20Poly1305(key[32:])
@@ -59,6 +60,8 @@ class DoubleEncryptor(DoubleEncryptorBase):
     
     @key.setter
     def key(self, value: bytes) -> None:
+        if len(value) != 64:
+            raise ValueError("Key must be 64 bytes")
         self._key: bytes = value
         self._aes: AESGCMSIV = AESGCMSIV(value[:32])
         self._chacha: ChaCha20Poly1305 = ChaCha20Poly1305(value[32:])
@@ -101,27 +104,18 @@ class DoubleEncryptor(DoubleEncryptorBase):
         hasher.update(additional_salt)
         hasher.update(self.message_counter.to_bytes(8, byteorder="little"))
         return hasher.digest(length)
-    
-    def __del__(self):
-        # This is not particularly secure, but it's better than nothing
-        self._key = b"\x00" * 32
-        del self._key
-        
-        del self._aes
-        del self._chacha
 
-
-class ChunkIndependentDoubleEncryptor(DoubleEncryptorBase):
+class ChunkIndependentDoubleEncryptor:
     """
     Similar to DoubleEncryptor except not authenticated.
     This is for the DeadDrop feature in which chunks are not always
     guaranteed to be decrypted in the same size or order as encrypted.
     """
     
-    def __init__(self, key: bytes, OTP_secret: bytes | None = None, message_counter: int | None = None):
+    def __init__(self, key: bytes):
+        if len(key) != 64:
+            raise ValueError("Key must be 64 bytes")
         self._key = key
-        _ = OTP_secret
-        _ = message_counter
     
     @property
     def key(self):
@@ -129,30 +123,18 @@ class ChunkIndependentDoubleEncryptor(DoubleEncryptorBase):
     
     @key.setter
     def key(self, value: bytes) -> None:
+        if len(value) != 64:
+            raise ValueError("Key must be 64 bytes")
         self._key = value
     
-    def encrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None, pad: bool = False) -> bytes:
-        if associated_data is not None:
-            warnings.warn("ChunkIndependentDoubleEncryptor does not support associated data and is NOT authenticated.",
-                    RuntimeWarning)
-        
-        if pad:
-            warnings.warn("ChunkIndependentDoubleEncryptor does not support padding.", RuntimeWarning)
-        
+    def encrypt(self, nonce: bytes, data: bytes) -> bytes:
         chacha_encryptor: CipherContext = Cipher(algorithms.ChaCha20(self._key[32:], nonce), None).encryptor()
         aes_encryptor: CipherContext = Cipher(algorithms.AES(self._key[:32]), modes.CTR(nonce)).encryptor()
         layer1 = chacha_encryptor.update(data) + chacha_encryptor.finalize()
         layer2 = aes_encryptor.update(layer1) + aes_encryptor.finalize()
         return layer2
     
-    def decrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None, pad: bool = False) -> bytes:
-        if associated_data is not None:
-            warnings.warn("ChunkIndependentDoubleEncryptor does not support associated data and is NOT authenticated.",
-                    RuntimeWarning)
-        
-        if pad:
-            warnings.warn("ChunkIndependentDoubleEncryptor does not support padding.", RuntimeWarning)
-        
+    def decrypt(self, nonce: bytes, data: bytes) -> bytes:
         chacha_decryptor: CipherContext = Cipher(algorithms.ChaCha20(self._key[32:], nonce), None).decryptor()
         aes_decryptor: CipherContext = Cipher(algorithms.AES(self._key[:32]), modes.CTR(nonce)).decryptor()
         layer2 = aes_decryptor.update(data) + aes_decryptor.finalize()
@@ -161,6 +143,8 @@ class ChunkIndependentDoubleEncryptor(DoubleEncryptorBase):
 
 class KeyExchangeDoubleEncryptor:
     def __init__(self, key: bytes):
+        if len(key) != 64:
+            raise ValueError("Key must be 64 bytes")
         self._key = key
         self._aes: AESGCMSIV = AESGCMSIV(key[:32])
         self._chacha: ChaCha20Poly1305 = ChaCha20Poly1305(key[32:])
@@ -180,4 +164,3 @@ class KeyExchangeDoubleEncryptor:
         layer2 = self._chacha.decrypt(chacha_nonce, data, None)
         layer1 = self._aes.decrypt(aes_nonce, layer2, None)
         return layer1
-

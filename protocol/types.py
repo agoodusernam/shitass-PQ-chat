@@ -23,16 +23,5 @@ class FileTransfer(TypedDict):
     metadata: FileMetadata
     compress: bool
 
-
-class DoubleEncryptorBase(ABC):
-    @abstractmethod
-    def encrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None, pad: bool = False):
-        ...
-    
-    @abstractmethod
-    def decrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None, pad: bool = False):
-        ...
-
-
 class DecodeError(Exception):
     pass

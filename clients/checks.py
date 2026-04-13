@@ -29,7 +29,7 @@ def allowed_outer_fields(msg_type: Any) -> set[str]:
     base = {"type", "protocol_version", "version"}
     mt = MessageType(msg_type)
     
-    server_control: list[MessageType] = [MessageType.KEEP_ALIVE, MessageType.KEY_EXCHANGE_COMPLETE,
+    server_control: list[MessageType] = [MessageType.KEEP_ALIVE,
                                          MessageType.INITIATE_KEY_EXCHANGE, MessageType.SERVER_FULL,
                                          MessageType.SERVER_VERSION_INFO, MessageType.SERVER_DISCONNECT,
                                          MessageType.ERROR]

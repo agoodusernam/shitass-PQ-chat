@@ -34,7 +34,7 @@ def hash_file_hexdigest(path: Path) -> str:
 
 def decompress_gzip_file(src: Path) -> Path:
     """Stream-decompress `src` gzip file to `src`.decompressed and return the new path."""
-    dst = src / ".part"
+    dst = Path(str(src.resolve()) + ".part")
     with open(src, 'rb') as compressed_file:
         with gzip.GzipFile(fileobj=compressed_file, mode='rb') as gzip_file:
             with open(dst, 'wb') as decompressed_file:

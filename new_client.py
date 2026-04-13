@@ -167,7 +167,8 @@ class SecureChatClient(ClientBase):
     
     @property
     def bypass_rate_limits(self) -> bool:
-        return bool(self.file_transfer_active or self._voice_call_active or self._protocol.rekey_in_progress)
+        return bool(self.file_transfer_active or self._voice_call_active or self._protocol.rekey_in_progress
+                    or (self._key_exchange_complete and not self._verification_complete))
     
     @property
     def own_nickname(self) -> str:
@@ -249,6 +250,32 @@ class SecureChatClient(ClientBase):
             self._socket.close()
         except Exception:
             pass
+        
+        # Reset deaddrop state
+        self._deaddrop_shared_secret = None
+        self.deaddrop_supported = False
+        self.deaddrop_max_size = 0
+        self._deaddrop_in_progress = False
+        self._deaddrop_chunks = {}
+        self._deaddrop_file_size = 0
+        self._deaddrop_name = ""
+        self._deaddrop_password_hash = ""
+        self._deaddrop_download_in_progress = False
+        self._deaddrop_download_name = ""
+        self._deaddrop_download_expected_hash = None
+        self._deaddrop_download_chunks = {}
+        self._deaddrop_download_max_index = -1
+        self._deaddrop_download_key = None
+        self._deaddrop_download_otp_secret = None
+        self._deaddrop_dl_encryptor = None
+        self._deaddrop_dl_next_nonce = None
+        self._deaddrop_dl_expected_index = 0
+        self._deaddrop_dl_part_path = None
+        self._deaddrop_dl_file = None
+        self._deaddrop_dl_bytes_downloaded = 0
+        if self._deaddrop_handshake_event is not None:
+            self._deaddrop_handshake_event.set()
+        self._deaddrop_handshake_event = None
         
         if self._receive_thread and self._receive_thread.is_alive():
             try:
@@ -567,10 +594,12 @@ class SecureChatClient(ClientBase):
         if not self._deaddrop_shared_secret:
             self.ui.display_error_message("Deaddrop not initialised - handshake required")
             return
+        
         if not file_path.is_file():
             self.ui.display_error_message(f"File not found: {file_path}")
             return
-        file_size = os.path.getsize(file_path)
+        
+        file_size = file_path.resolve().stat().st_size
         if self.deaddrop_max_size and file_size > self.deaddrop_max_size:
             self.ui.display_error_message("File exceeds maximum deaddrop size allowed by server")
             return
@@ -728,7 +757,7 @@ class SecureChatClient(ClientBase):
             self.ui.log_raw_bytes("RECV", context + ":decrypted", message_data, decrypted_text=decrypted)
         except (ValueError, Exception):
             self.ui.log_raw_bytes("RECV", context, message_data)
-
+    
     def handle_message(self, message_data: bytes) -> None:
         if not self.bypass_rate_limits:
             now = time.time()
@@ -792,8 +821,6 @@ class SecureChatClient(ClientBase):
                 self.handle_key_exchange_reset(message_data)
             case MessageType.KEEP_ALIVE:
                 self.handle_keepalive()
-            case MessageType.KEY_EXCHANGE_COMPLETE:
-                pass  # Key exchange completion is now managed by clients directly
             case MessageType.INITIATE_KEY_EXCHANGE:
                 self.initiate_key_exchange()
             case MessageType.SERVER_FULL:

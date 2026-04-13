@@ -102,7 +102,7 @@ class DeadDropManager:
             return
         
         if name in self.deaddrop_files:
-            with open(self.deaddrop_files[name], "ab") as f:
+            with open(self.deaddrop_files[name].with_suffix(".bin"), "ab") as f:
                 f.write(data)
         else:
             raise FileNotFoundError(f"Deaddrop file '{name}' does not exist")
@@ -129,8 +129,9 @@ class DeadDropManager:
         if bin_path.exists():
             raise FileExistsError(f"Deaddrop file '{name}' already exists")
         
-        with open(path, "wb"):
+        with open(bin_path, "wb"):
             pass
+        os.chmod(bin_path, 0o666)
         
         with open(path.with_suffix(".metadata"), "w") as f:
             f.write(password + "\n")
@@ -742,8 +743,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             self.connected = False
             
             # End any active deaddrop session and cleanup exclusivity
-            if self.upload_accepted or (self.server.deaddrop_owner == self.client_id):
-                self._end_deaddrop_session()
+            self._end_deaddrop_session()
 
             # Attempt to notify client about server-initiated disconnect
             if notify:
@@ -1190,6 +1190,11 @@ def main() -> None:
         server = SecureChatServer()
         server.start_server()
     except (OSError, ConnectionError) as e:
+        if str(e).startswith('[Errno 98] Address already in use'):
+            print('Address already in use, retrying in 3 seconds...')
+            time.sleep(3)
+            main()
+            return
         print(f"Server socket error: {e}")
     except KeyboardInterrupt:
         print("Server interrupted by user")

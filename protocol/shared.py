@@ -672,10 +672,10 @@ class SecureChatProtocol(ProtocolBase):
         self._send_chain_key = own_chain_key_root
         self._receive_chain_key = peer_chain_key_root
         
-        # Verification key = SHA3-512(sorted([otp_material, own_chain_key_root, peer_chain_key_root])) truncated to 256 bits
         sorted_materials = sorted([self._otp_material, own_chain_key_root, peer_chain_key_root])
         verification_hash = hashlib.sha3_512(b''.join(sorted_materials)).digest()
-        self._verification_key = verification_hash[:32]
+        self._verification_key = verification_hash
+        self._key_verification_material = hashlib.sha3_512(b''.join(sorted_materials) + self._combined_random).digest()[:32]
         
         self.shared_key = True
         
@@ -701,13 +701,13 @@ class SecureChatProtocol(ProtocolBase):
     
     def create_ke_verification(self) -> bytes:
         """Create KE_VERIFICATION message with verification key in signed plaintext."""
-        return create_ke_verification(self._verification_key)
+        return create_ke_verification(self._key_verification_material)
     
     def process_ke_verification(self, data: bytes) -> bool:
         """Process peer's KE_VERIFICATION and check it matches our derived key.
         Returns True if verification succeeds."""
         parsed = parse_ke_verification(data)
-        return bytes_eq(parsed["verification_key"], self._verification_key)
+        return bytes_eq(parsed["verification_key"], self._key_verification_material)
     
     def _derive_combined_random(self) -> bytes:
         """Derive combined random from both client randoms using SHA2-512-HKDF.
@@ -768,12 +768,12 @@ class SecureChatProtocol(ProtocolBase):
         else:
             combined_keys = b""
         
-        enc_salt = hashlib.sha512(combined_keys + b"enc_key_salt").digest()[:32]
-        chain_salt = hashlib.sha512(combined_keys + b"chain_salt").digest()[:32]
+        enc_salt = hashlib.sha512(combined_keys + b"enc_key_salt").digest()
+        chain_salt = hashlib.sha512(combined_keys + b"chain_salt").digest()
         
         hkdf_keys = HKDF(
                 algorithm=hashes.SHA3_512(),
-                length=32,
+                length=64,
                 salt=enc_salt,
                 info=b"key_derivation",
         )
@@ -814,8 +814,8 @@ class SecureChatProtocol(ProtocolBase):
     def _ratchet_chain_key(chain_key: bytes, counter: int) -> bytes:
         """Advance the chain key (ratchet forward)."""
         hkdf = HKDF(
-                algorithm=hashes.SHA512(),
-                length=32,
+                algorithm=hashes.SHA3_512(),
+                length=64,
                 salt=counter.to_bytes(8, byteorder="little"),
                 info=f"chain_key_{counter}".encode("utf-8"),
         )
@@ -839,10 +839,10 @@ class SecureChatProtocol(ProtocolBase):
         Uses the verification key derived during key exchange, which is already
         order-independent (derived from sorted key materials).
         """
-        if not self._verification_key:
+        if not self._key_verification_material:
             raise ValueError("Verification key not available - key exchange not completed")
         
-        return generate_key_fingerprint(self._verification_key, self.config["wordlist_file"])
+        return generate_key_fingerprint(self._key_verification_material, self.config["wordlist_file"])
     
     @staticmethod
     def create_key_verification_message(verified: bool) -> bytes:
@@ -910,11 +910,6 @@ class SecureChatProtocol(ProtocolBase):
         encryptor = DoubleEncryptor(message_key, self._otp_material, message_counter=self.message_counter)
         # Encrypt with AES-GCM using the unique message key and AAD
         ciphertext = encryptor.encrypt(nonce, plaintext_bytes, aad)
-        del encryptor
-        
-        # This may or may not actually remove it from memory but it's better than nothing
-        message_key = b'\x00' * len(message_key)
-        del message_key
         
         # Create authenticated message including our per-message DH public key
         encrypted_message: dict[str, MessageType | int | str] = {
@@ -1022,15 +1017,11 @@ class SecureChatProtocol(ProtocolBase):
         try:
             decrypted_data = decryptor.decrypt(nonce, ciphertext, aad)
         except InvalidTag:
-            # May or may not actually remove it from memory but it's better than nothing
-            message_key = b'\x00' * len(message_key)
             raise ValueError("Message is probably legitimate but failed to decrypt, InvalidTag")
         
         try:
             decrypted_data_str = decrypted_data.decode('utf-8')
         except UnicodeDecodeError:
-            # May or may not actually remove it from memory but it's better than nothing
-            message_key = b'\x00' * len(message_key)
             raise ValueError("Message is probably legitimate but failed to decode, UnicodeDecodeError")
         
         # Update ratchet state: only when moving forward. For out-of-order (saved) do not change state.
@@ -1048,10 +1039,6 @@ class SecureChatProtocol(ProtocolBase):
             # Track message for automatic rekey
             self.messages_since_last_rekey += 1
         
-        # This may or may not actually remove it from memory but it's better than nothing
-        message_key = b'\x00' * len(message_key)
-        del message_key
-        
         return decrypted_data_str
     
     def encrypt_file_chunk(self, transfer_id: str, chunk_index: int, chunk_data: bytes) -> bytes:
@@ -1062,7 +1049,7 @@ class SecureChatProtocol(ProtocolBase):
         Frame layout: [1-byte magic][4-byte counter][12-byte nonce][32-byte eph_pub][ciphertext]
 
         :return: The encrypted frame as bytes, ready to send.
-        :raises ValueError: If encryption state is not ready or peer DH key is missing.
+        :raises ValueError: If encryption state is not ready.
         """
         if not self.shared_key or not self._send_chain_key:
             raise ValueError("No shared key or send chain key established")
@@ -1112,10 +1099,6 @@ class SecureChatProtocol(ProtocolBase):
         plaintext = header_len + header_json + chunk_data
         encryptor = DoubleEncryptor(message_key, self._otp_material, self.message_counter)
         ciphertext = encryptor.encrypt(nonce, plaintext, aad)
-        
-        # This may or may not actually remove it from memory, but it's better than nothing
-        message_key = b'\x00' * len(message_key)
-        del message_key
         
         # Pack: magic (1) + counter (4) + nonce (12) + eph_pub (32) + ciphertext
         counter_bytes = struct.pack('!I', self.message_counter)
@@ -1181,7 +1164,6 @@ class SecureChatProtocol(ProtocolBase):
         try:
             plaintext = decryptor.decrypt(nonce, ciphertext, aad)
         except InvalidTag:
-            message_key = b'\x00' * len(message_key)
             raise ValueError("File chunk decryption failed: InvalidTag")
         
         # Parse the decrypted header and extract chunk data
@@ -1211,10 +1193,6 @@ class SecureChatProtocol(ProtocolBase):
         self.peer_counter = counter
         # Store peer's latest eph public key for completeness
         self.msg_peer_base_public = peer_eph_pub
-        
-        # This may or may not actually remove it from memory but it's better than nothing
-        message_key = b'\x00' * len(message_key)
-        del message_key
         
         return {
             "transfer_id": header["transfer_id"],
