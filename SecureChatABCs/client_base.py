@@ -11,8 +11,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-from protocol.types import FileMetadata
 from SecureChatABCs.ui_base import UIBase
+from protocol.types import FileMetadata
 
 
 class UnsupportedError(Exception):
@@ -23,7 +23,7 @@ class UnsupportedError(Exception):
 class ClientBase(ABC):
     """
     Abstract base that every chat-client implementation must satisfy.
-
+    
     The methods below are the *only* surface a UI layer is allowed to call.
     The client is responsible for calling the appropriate methods on the UI,
     networking, and message handling.
@@ -34,8 +34,6 @@ class ClientBase(ABC):
     @abstractmethod
     def __init__(self, ui: UIBase | None = None) -> None:
         ...
-    
-    # -- connection lifecycle -----------------------------------------------
     
     @abstractmethod
     def connect(self, host: str, port: int) -> bool:
@@ -50,7 +48,7 @@ class ClientBase(ABC):
         """Gracefully disconnect from the server."""
         ...
     
-    # -- session state -------------------------------
+    # session state 
     
     @property
     @abstractmethod
@@ -79,7 +77,7 @@ class ClientBase(ABC):
     @property
     @abstractmethod
     def peer_key_verified(self) -> bool:
-        """Whether the peer's key has been verified by us."""
+        """Whether we have verified the peer's key."""
         ...
     
     @property
@@ -111,7 +109,7 @@ class ClientBase(ABC):
     def file_transfer_update_interval(self, value: int) -> None:
         ...
     
-    # -- preferences ----------------------------------------
+    # preferences 
     # Whether incoming file transfers are accepted
     allow_file_transfers: bool = False
     
@@ -135,8 +133,6 @@ class ClientBase(ABC):
     def own_nickname(self, value: str) -> None:
         """Set the nickname of the local user."""
     
-    # -- messaging ----------------------------------------------------------
-    
     @abstractmethod
     def send_message(self, text: str) -> bool:
         """Encrypt and send a text message to the peer.
@@ -145,7 +141,7 @@ class ClientBase(ABC):
         """
         ...
     
-    # -- file transfer ------------------------------------------------------
+    # file transfer
     
     def send_file(self, file_path: Path | str, compress: bool = True) -> None:
         """Initiate sending a file to the peer."""
@@ -160,7 +156,7 @@ class ClientBase(ABC):
         """Mapping of transfer-id → metadata for pending incoming files."""
         raise UnsupportedError("File transfer not supported")
     
-    # -- key exchange & verification ----------------------------------------
+    # key exchange + verification
     
     @abstractmethod
     def initiate_rekey(self) -> None:
@@ -182,7 +178,7 @@ class ClientBase(ABC):
         """Return the local key fingerprint string for display."""
         ...
     
-    # -- voice calls --------------------------------------------------------
+    # voice calls
     
     def request_voice_call(
             self,
@@ -211,14 +207,12 @@ class ClientBase(ABC):
         """Send a chunk of voice audio data to the peer."""
         raise UnsupportedError("Voice calls are not supported")
     
-    # -- ephemeral messaging ------------------------------------------------
-    
     @abstractmethod
     def send_ephemeral_mode_change(self, mode: str) -> None:
         """Notify the peer of an ephemeral-mode change."""
         ...
     
-    # -- deaddrop -----------------------------------------------------------
+    # deaddrop
     
     def deaddrop_session_active(self) -> bool:
         """Whether a deaddrop session is currently active."""
@@ -247,6 +241,11 @@ class ClientBase(ABC):
     def deaddrop_download(self, name: str, password: str) -> None:
         """Download a deaddrop entry identified by *name* and *password*."""
         raise UnsupportedError("Deaddrop is not supported")
+    
+    @abstractmethod
+    def on_error(self, message: str) -> None:
+        """Handle an error reported by the protocol layer."""
+        ...
     
     @abstractmethod
     def emergency_close(self) -> None:

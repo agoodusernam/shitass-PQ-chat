@@ -2,6 +2,7 @@ import importlib
 from pathlib import Path
 
 from config import ConfigHandler
+
 ConfigHandler()
 
 from new_client import SecureChatClient
@@ -21,7 +22,7 @@ if __name__ == "__main__":
         except ValueError:
             print("Invalid input. Please enter a number between 1 and", len(UIs))
             continue
-            
+        
         if 1 <= ui_index <= len(UIs):
             valid = True
         else:
@@ -34,4 +35,3 @@ if __name__ == "__main__":
         iu_module.run(SecureChatClient)
     except AttributeError:
         print("No run() function found in the selected UI.")
-    

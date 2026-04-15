@@ -1,10 +1,10 @@
 import gzip
+import hashlib
 import io
 import os
 from collections import OrderedDict
 from pathlib import Path
 from typing import Generator
-import hashlib
 
 import numpy as np
 
@@ -142,7 +142,6 @@ def xor_bytes(a: bytes, b: bytes) -> bytes:
         
         return (int_a ^ int_b).to_bytes(length, byteorder="little")
     
-    
     if equal_length:
         pass
     elif len(a) > len(b):
@@ -245,25 +244,8 @@ def chunk_file(file_path: Path | str, compress: bool = True) -> Generator[bytes,
                 yield pending_data
     
     except (OSError, IOError) as e:
-        # Clean up on error
         try:
             compressor.finalise()
         except Exception:  # ignore finalise issues because we're already failing
-            pass  # intentional: cleanup best-effort
+            pass
         raise e
-    
-def get_output_path(metadata: FileMetadata) -> str:
-    """Determine the output path for the received file."""
-    if "save_path" in metadata and metadata["save_path"]:
-        return metadata["save_path"]
-    
-    # Default to CWD with conflict handling
-    output_path = os.path.join(os.getcwd(), metadata["filename"])
-    counter = 1
-    base_name, ext = os.path.splitext(metadata["filename"])
-    
-    while os.path.exists(output_path):
-        output_path = os.path.join(os.getcwd(), f"{base_name}_{counter}{ext}")
-        counter += 1
-    
-    return output_path

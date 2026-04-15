@@ -28,8 +28,8 @@ class TUI(UIBase):
     def capabilities(self) -> UICapability:
         return (
                 UICapability.FILE_TRANSFER
-                | UICapability.DEADDROP # type: ignore
-                | UICapability.NICKNAMES
+                | UICapability.DEADDROP  # type: ignore
+                | UICapability.NICKNAMES # type: ignore
         )
     
     # -- display --------------------------------------------------------------

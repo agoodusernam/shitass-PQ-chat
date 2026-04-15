@@ -1,6 +1,7 @@
 import hashlib
+from typing import Never
 
-from cryptography.hazmat.primitives.ciphers import CipherContext, Cipher, algorithms, modes
+from cryptography.hazmat.primitives.ciphers import Cipher, CipherContext, algorithms, modes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCMSIV, ChaCha20Poly1305
 from cryptography.hazmat.primitives.padding import PKCS7
 
@@ -65,7 +66,6 @@ class DoubleEncryptor:
         self._key: bytes = value
         self._aes: AESGCMSIV = AESGCMSIV(value[:32])
         self._chacha: ChaCha20Poly1305 = ChaCha20Poly1305(value[32:])
-        
     
     def encrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None, pad: bool = True) -> bytes:
         if pad:
@@ -105,6 +105,7 @@ class DoubleEncryptor:
         hasher.update(self.message_counter.to_bytes(8, byteorder="little"))
         return hasher.digest(length)
 
+
 class ChunkIndependentDoubleEncryptor:
     """
     Similar to DoubleEncryptor except not authenticated.
@@ -118,8 +119,8 @@ class ChunkIndependentDoubleEncryptor:
         self._key = key
     
     @property
-    def key(self):
-        raise AttributeError('You cannot get the key')
+    def key(self) -> Never:
+        raise AttributeError('You cannot get the key once it has been set')
     
     @key.setter
     def key(self, value: bytes) -> None:
@@ -140,6 +141,7 @@ class ChunkIndependentDoubleEncryptor:
         layer2 = aes_decryptor.update(data) + aes_decryptor.finalize()
         layer1 = chacha_decryptor.update(layer2) + chacha_decryptor.finalize()
         return layer1
+
 
 class KeyExchangeDoubleEncryptor:
     def __init__(self, key: bytes):

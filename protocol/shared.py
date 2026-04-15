@@ -2,6 +2,7 @@
 # pylint: disable=trailing-whitespace, line-too-long
 import base64
 import binascii
+import enum
 import hashlib
 import json
 import os
@@ -11,10 +12,10 @@ import struct
 import threading
 import time
 from collections import deque
-from collections.abc import Buffer
-from typing import Any, SupportsIndex, SupportsBytes
+from typing import Any, TYPE_CHECKING
 
 from SecureChatABCs.protocol_base import ProtocolBase
+from protocol.file_handler import ProtocolFileHandler
 from config import ConfigHandler
 from utils.network_utils import send_message
 from protocol.crypto_classes import DoubleEncryptor, KeyExchangeDoubleEncryptor
@@ -48,7 +49,6 @@ from protocol.parse_messages import (
     parse_rekey_response,
 )
 
-
 try:
     import pqcrypto  # type: ignore[import-untyped]
     import cryptography
@@ -68,84 +68,118 @@ from cryptography.hazmat.primitives.constant_time import bytes_eq
 
 from cryptography.exceptions import InvalidTag
 
+if TYPE_CHECKING:
+    from SecureChatABCs.client_base import ClientBase
+
+class _QueueKind(enum.Enum):
+    """Discriminant for items stored in the protocol send queue."""
+    ENCRYPT_TEXT = "encrypt_text"
+    ENCRYPT_JSON = "encrypt_json"
+    ENCRYPT_JSON_THEN_SWITCH = "encrypt_json_then_switch"
+
 
 class SecureChatProtocol(ProtocolBase):
     """
-    SecureChatProtocol - Implements the cryptographic protocol for secure chat using ML-KEM and AES-GCM.
+    Concrete implementation of the secure chat protocol.
+
+    Implements a post-quantum hybrid key exchange (ML-KEM-1024 + X25519 + HQC-256) combined
+    with double-layer authenticated encryption (AES-GCM + ChaCha20Poly1305), a symmetric
+    Double Ratchet for perfect forward secrecy, automatic rekeying, replay protection via
+    message counters, and file-transfer support.
+
+    Inherits from :class:`ProtocolBase` and satisfies its full abstract interface.
     """
+    client: "ClientBase | None" = None
     
-    def __init__(self) -> None:
+    def __init__(self, client: "ClientBase | None" = None, file_handler: ProtocolFileHandler | None = None) -> None:
         """
         Initialise the secure chat protocol with the default cryptographic state.
 
         Sets up all necessary state variables for the ML-KEM-1024 + X25519 + HQC-256 key
-        exchange, double-encrypted AES-GCM + ChaCha20Poly1305 messaging, a Double Ratchet
-        for perfect forward secrecy, replay protection, and file transfer functionality.
+        exchange, double-encrypted AES-GCM + ChaCha20Poly1305 messaging, a symmetric Double
+        Ratchet for perfect forward secrecy, replay protection, automatic rekeying, and file
+        transfer functionality.
 
-        Attributes are grouped below by their role. "Guaranteed" attributes always hold a
-        valid, usable value after __init__. "Unsafe" attributes default to a zero/empty/None
-        sentinel and are only valid after the corresponding protocol phase has completed.
+        Attributes are grouped below by their role.  "Guaranteed" attributes always hold a
+        valid, usable value after ``__init__``.  "Unsafe" attributes default to a
+        zero/empty/``None`` sentinel and are only valid after the corresponding protocol
+        phase has completed.  Private attributes (prefixed ``_``) are listed for
+        documentation completeness but should not be accessed directly by callers.
 
-        Guaranteed Attributes:
+        Args:
+            client (ClientBase | None): The client instance this protocol reports events and
+                errors to.  May be ``None`` when the protocol is used standalone.
+            file_handler (ProtocolFileHandler | None): Delegate for all file-transfer I/O.
+                When ``None``, file-transfer operations are unavailable.
+
+        Guaranteed Public Attributes:
             config (ConfigHandler): The configuration handler instance.
             message_counter (int): Outgoing message counter for the current session.
             peer_counter (int): Last confirmed incoming message counter.
+            ke_step (int): Tracks which step of the multi-step key exchange is in progress.
             messages_since_last_rekey (int): Number of messages sent/received since the last rekey.
             rekey_interval (int): Randomised message threshold that triggers an automatic rekey.
-            rekey_in_progress (bool): Whether a rekey exchange is currently in flight.
-
-            message_queue (deque): Queue of outgoing items pending encryption and dispatch.
-            sender_running (bool): Whether the background sender thread is active.
-            sender_lock (threading.Lock): Mutex protecting access to message_queue.
-
-            skipped_counters (LRUCache): Cache of out-of-order chain states keyed by counter.
-
-            file_handler (ProtocolFileHandler): Delegate for all file-transfer I/O.
-
-        Unsafe Attributes:
-            shared_key (bool): Set to True once a session shared secret has been established.
-            verification_key (bytes): HMAC key derived during key exchange; empty until then.
-            send_chain_key (bytes): Current symmetric ratchet key for outgoing messages.
-            receive_chain_key (bytes): Current symmetric ratchet key for incoming messages.
-
+            skipped_counters (LRUCache): Cache of out-of-order Double Ratchet chain states,
+                keyed by counter value; capacity 1 000 entries.
+            shared_key (bool): ``False`` until a session shared secret has been established.
             mlkem_public_key (bytes): Own ML-KEM-1024 public key; empty until key exchange.
-            mlkem_private_key (bytes): Own ML-KEM-1024 private key; empty until key exchange.
             hqc_public_key (bytes): Own HQC-256 public key; empty until key exchange.
-            hqc_private_key (bytes): Own HQC-256 private key; empty until key exchange.
             peer_mlkem_public_key (bytes): Peer's ML-KEM-1024 public key; empty until key exchange.
             peer_hqc_public_key (bytes): Peer's HQC-256 public key; empty until key exchange.
-
-            dh_private_key (X25519PrivateKey | None): Ephemeral X25519 private key for session setup.
             dh_public_key_bytes (bytes): Raw bytes of the own session-setup X25519 public key.
             peer_dh_public_key_bytes (bytes): Raw bytes of the peer's session-setup X25519 public key.
+            msg_peer_base_public (bytes): Peer's last known Double Ratchet X25519 public key.
+            pending_message_counter (int): Outgoing counter value staged for the next rekey activation.
+            pending_peer_counter (int): Incoming counter value staged for the next rekey activation.
+            rekey_dh_public (X25519PublicKey | None): Ephemeral X25519 public key for the active rekey.
 
-            msg_recv_private (X25519PrivateKey | None): X25519 private key used in the Double Ratchet.
-            msg_peer_base_public (bytes): Peer's last known Double Ratchet public key.
+        Guaranteed Private Attributes:
+            _file_handler (ProtocolFileHandler | None): File-transfer delegate; ``None`` when unused.
+            _message_queue (deque): Queue of outgoing items pending encryption and dispatch.
+            _socket (socket.socket | None): Active transport socket; ``None`` when not connected.
+            _sender_thread (threading.Thread | None): Background sender thread; ``None`` when stopped.
+            _sender_running (bool): Whether the background sender thread is active.
+            _sender_lock (threading.Lock): Mutex protecting access to ``_message_queue``.
+            _send_dummy_messages (bool): Whether traffic-analysis padding messages are enabled.
 
-            socket (socket.socket | None): Active socket; None when not connected.
-            sender_thread (threading.Thread | None): Background sender thread; None when stopped.
-
-            pending_shared_key (bytes): Combined shared secret staged for the next rekey activation.
-            pending_encryption_key (bytes): Verification key staged for the next rekey activation.
-            pending_send_chain_key (bytes): Send chain key staged for the next rekey activation.
-            pending_receive_chain_key (bytes): Receive chain key staged for the next rekey activation.
-            pending_hqc_secret (bytes): HQC secret staged for the next rekey activation.
-            pending_message_counter (int): Outgoing counter value for the pending session.
-            pending_peer_counter (int): Incoming counter value for the pending session.
-
-            rekey_mlkem_private_key (bytes): Ephemeral ML-KEM private key used during an active rekey.
-            rekey_hqc_private_key (bytes): Ephemeral HQC private key used during an active rekey.
-            rekey_dh_private (X25519PrivateKey | None): Ephemeral X25519 private key for the active rekey.
-            rekey_dh_public (X25519PublicKey | None): Corresponding X25519 public key for the active rekey.
-
-            peer_version (str): Protocol version string advertised by the peer (set during key exchange init).
+        Unsafe Private Attributes (valid only after the relevant protocol phase):
+            _verification_key (bytes): HMAC key derived during key exchange; empty until then.
+            _otp_material (bytes): One-time-pad material derived during key exchange.
+            _hqc_secret (bytes): HQC-256 shared secret; empty until key exchange.
+            _send_chain_key (bytes): Current symmetric ratchet key for outgoing messages.
+            _receive_chain_key (bytes): Current symmetric ratchet key for incoming messages.
+            _mlkem_private_key (bytes): Own ML-KEM-1024 private key; empty until key exchange.
+            _hqc_private_key (bytes): Own HQC-256 private key; empty until key exchange.
+            _mldsa_public_key (bytes): Ephemeral ML-DSA-87 public key; discarded after key exchange.
+            _mldsa_private_key (bytes): Ephemeral ML-DSA-87 private key; discarded after key exchange.
+            _ke_client_random (bytes): Own client random contributed to the key exchange.
+            _peer_client_random (bytes): Peer's client random received during key exchange.
+            _combined_random (bytes): XOR of both client randoms used in key derivation.
+            _peer_mldsa_public_key (bytes): Peer's ML-DSA-87 public key; empty until key exchange.
+            _ke_mlkem_shared_secret (bytes): Intermediate ML-KEM shared secret from key exchange.
+            _ke_intermediary_key_1 (bytes): First intermediary key derived during key exchange.
+            _server_identifier (str): Server identifier string used in key derivations.
+            _dh_private_key (X25519PrivateKey | None): Ephemeral X25519 private key for session setup.
+            _msg_recv_private (X25519PrivateKey | None): X25519 private key used in the Double Ratchet.
+            _rekey_in_progress (bool): Whether a rekey exchange is currently in flight.
+            _pending_shared_key (bytes): Combined shared secret staged for the next rekey activation.
+            _pending_encryption_key (bytes): Verification key staged for the next rekey activation.
+            _pending_send_chain_key (bytes): Send chain key staged for the next rekey activation.
+            _pending_receive_chain_key (bytes): Receive chain key staged for the next rekey activation.
+            _pending_hqc_secret (bytes): HQC-256 secret staged for the next rekey activation.
+            _pending_otp_material (bytes): OTP material staged for the next rekey activation.
+            _rekey_mlkem_private_key (bytes): Ephemeral ML-KEM private key for the active rekey.
+            _rekey_hqc_private_key (bytes): Ephemeral HQC-256 private key for the active rekey.
+            _rekey_dh_private (X25519PrivateKey | None): Ephemeral X25519 private key for the active rekey.
         """
+        self.client: "ClientBase | None" = client
+        self._file_handler: ProtocolFileHandler | None = file_handler
         
         # Configuration + protocol
         self.config: ConfigHandler = ConfigHandler()
         
         # Transport + queuing
-        self._message_queue: deque = deque()
+        self._message_queue: deque[tuple[_QueueKind, str | dict[str, Any]]] = deque()
         self._socket: socket.socket | None = None
         self._sender_thread: threading.Thread | None = None
         self._sender_running: bool = False
@@ -198,7 +232,7 @@ class SecureChatProtocol(ProtocolBase):
         self.skipped_counters: LRUCache = LRUCache(1000)
         
         # Rekey state
-        self.rekey_in_progress: bool = False
+        self._rekey_in_progress: bool = False
         self._pending_shared_key: bytes = b""
         self._pending_encryption_key: bytes = b""
         self._pending_send_chain_key: bytes = b""
@@ -219,12 +253,19 @@ class SecureChatProtocol(ProtocolBase):
         variation = round(base_interval * 0.1)
         self.rekey_interval: int = base_interval + (secrets.randbelow(variation + 1) - variation)
     
+    @property
     def has_active_file_transfers(self) -> bool:
         # Set in __init__ of the file handler.
-        ...
+        if self._file_handler is None:
+            return False
+        return self._file_handler.has_active_file_transfers
     
     def reset_auto_rekey_counter(self) -> None:
         self.messages_since_last_rekey = 1
+    
+    @property
+    def rekey_in_progress(self) -> bool:
+        return self._rekey_in_progress
     
     @property
     def encryption_ready(self) -> bool:
@@ -235,13 +276,13 @@ class SecureChatProtocol(ProtocolBase):
     def should_auto_rekey(self) -> bool:
         """Check if automatic rekey should be initiated based on message count."""
         return (self.messages_since_last_rekey >= self.rekey_interval and
-                not self.rekey_in_progress and
+                not self._rekey_in_progress and
                 self.encryption_ready)
     
     @property
     def send_dummy_messages(self) -> bool:
         """Check if dummy messages should be sent."""
-        return self._send_dummy_messages and not self.rekey_in_progress and not self.has_active_file_transfers()
+        return self._send_dummy_messages and not self._rekey_in_progress and not self.has_active_file_transfers
     
     @send_dummy_messages.setter
     def send_dummy_messages(self, value: bool) -> None:
@@ -305,29 +346,20 @@ class SecureChatProtocol(ProtocolBase):
         self._sender_thread = None
         self._socket = None
     
-    def queue_json_and_encrypt(self, message: dict[str, Any]) -> None:
-        """
-        Add a json message in form of a dict to the send queue, to be encrypted and sent.
-        """
-    
-    def queue_message(self, message: bytes | str | dict[str, Any] | tuple[str, Any]) -> None:
-        """
-        Add a message to the send queue.
-        
-        The message can be one of the following:
-        - bytes: already-prepared data to send as-is (control or pre-encrypted)
-        - str: plaintext to be encrypted and sent
-        - dict: JSON-serializable object to be encrypted and sent
-        - tuple: instruction for the sender loop, supported forms:
-            ("encrypt_text", str)
-            ("encrypt_json", dict)
-            ("encrypt_json_then_switch", dict) # send encrypted under current keys, then activate pending keys
-            ("file_chunk", transfer_id: str, chunk_index: int, chunk_data: bytes)
-            ("plaintext", bytes) # send as-is (control)
-            ("encrypted", bytes) # send as-is (already encrypted)
-        """
+    def queue_json(self, obj: dict[str, Any]) -> None:
+        """Encrypt a JSON-serialisable dict and add it to the send queue."""
         with self._sender_lock:
-            self._message_queue.append(message)
+            self._message_queue.append((_QueueKind.ENCRYPT_JSON, obj))
+    
+    def queue_text(self, text: str) -> None:
+        """Encrypt a plain-text chat message and add it to the send queue."""
+        with self._sender_lock:
+            self._message_queue.append((_QueueKind.ENCRYPT_TEXT, text))
+    
+    def queue_json_then_switch(self, obj: dict[str, Any]) -> None:
+        """Encrypt a JSON dict, send it under the current keys, then activate pending keys."""
+        with self._sender_lock:
+            self._message_queue.append((_QueueKind.ENCRYPT_JSON_THEN_SWITCH, obj))
     
     def send_emergency_close(self) -> bool:
         """
@@ -367,20 +399,20 @@ class SecureChatProtocol(ProtocolBase):
     def _sender_loop(self) -> None:
         """Background thread loop that sends messages every 250 ms.
         
-        This loop is responsible for performing encryption for all queued
-        non-control messages before sending them over the socket.
-        Control messages (key exchange, explicit plaintext items) are sent as-is.
+        Dequeues one item per tick, encrypts it, and sends it over the socket.
+        When the queue is empty and dummy-message sending is enabled, a random
+        dummy packet is sent instead to obscure traffic patterns.
         """
         while self._sender_running:
             item = self._get_next_item()
-            to_send, post_action = self._prepare_item_for_sending(item)
+            to_send, switch_keys_after = self._prepare_item_for_sending(item)
             
             if to_send is not None and self._socket is not None:
-                self._send_prepared_item(to_send, post_action)
+                self._send_prepared_item(to_send, switch_keys_after)
             
             time.sleep(0.25)
     
-    def _get_next_item(self):
+    def _get_next_item(self) -> tuple["_QueueKind", Any] | bytes | None:
         """Get the next item from the queue or generate a dummy message."""
         with self._sender_lock:
             if self._message_queue:
@@ -392,60 +424,39 @@ class SecureChatProtocol(ProtocolBase):
         
         return None
     
-    def _prepare_item_for_sending(self, item) -> tuple[bytes | None, str | None]:
-        """Convert a queue item into bytes ready for transmission."""
+    def _prepare_item_for_sending(self, item: tuple["_QueueKind", Any] | bytes | None) -> tuple[bytes | None, bool]:
+        """Convert a queue item into bytes ready for transmission.
+        
+        Returns (data_to_send, switch_keys_after) where switch_keys_after signals
+        that pending keys should be activated after the message is sent.
+        """
         if item is None:
-            return None, None
+            return None, False
         
         try:
+            # Raw bytes from _generate_dummy_message
             if isinstance(item, (bytes, bytearray)):
-                return bytes(item), None
+                return bytes(item), False
             
-            if isinstance(item, (str, dict)):
-                return self._encrypt_plaintext_item(item), None
+            kind, payload = item
             
-            if isinstance(item, tuple) and item:
-                return self._process_instruction_tuple(item)
+            if kind is _QueueKind.ENCRYPT_TEXT:
+                return self._encrypt_text_message(payload), False
             
-            raise ValueError(f"Unsupported item type: {type(item)}")
+            if kind is _QueueKind.ENCRYPT_JSON:
+                return self._encrypt_json_message(payload), False
+            
+            if kind is _QueueKind.ENCRYPT_JSON_THEN_SWITCH:
+                return self._encrypt_json_message(payload), True
+            
+            raise ValueError(f"Unsupported queue kind: {kind}")
         
         except (ValueError, TypeError) as e:
-            print(f"Message preparation error (dropped): {e}")
-            return None, None
+            self._report_error(f"Message preparation error (dropped): {e}")
+            return None, False
         except Exception as e:
-            print(f"Unexpected error preparing message (dropped): {e}")
-            return None, None
-    
-    def _encrypt_plaintext_item(self, item) -> bytes:
-        """Encrypt a string or dict item."""
-        if isinstance(item, dict):
-            item = json.dumps(item)
-        
-        if not (self.shared_key and self._send_chain_key):
-            raise ValueError("Encryption keys not ready for plaintext item")
-        
-        return self.encrypt_message(item)
-    
-    def _process_instruction_tuple(self, item: tuple) -> tuple[bytes, str | None]:
-        """Process instruction tuples like ('encrypt_text', data)."""
-        kind = item[0]
-        
-        if kind == "encrypt_text" and len(item) >= 2:
-            return self._encrypt_text_message(item[1]), None
-        
-        if kind == "encrypt_json" and len(item) >= 2:
-            return self._encrypt_json_message(item[1]), None
-        
-        if kind == "encrypt_json_then_switch" and len(item) >= 2:
-            return self._encrypt_json_message(item[1]), "switch_keys"
-        
-        if kind in ("plaintext", "encrypted") and len(item) >= 2:
-            data = item[1]
-            if isinstance(data, (SupportsIndex, SupportsBytes, Buffer)):
-                return bytes(data), None
-            raise TypeError("Provided data is not bytes-like for plaintext/encrypted send")
-        
-        raise ValueError(f"Unsupported instruction tuple: {kind}")
+            self._report_error(f"Unexpected error preparing message (dropped): {e}")
+            return None, False
     
     def _encrypt_text_message(self, text: str) -> bytes:
         """Encrypt a text message."""
@@ -462,17 +473,24 @@ class SecureChatProtocol(ProtocolBase):
         
         return self.encrypt_message(json.dumps(obj))
     
-    def _send_prepared_item(self, to_send: bytes, post_action: str | None) -> None:
-        """Send prepared bytes and perform any post-send actions."""
+    def _send_prepared_item(self, to_send: bytes, switch_keys_after: bool) -> None:
+        """Send prepared bytes and activate pending keys afterwards if requested."""
         assert self._socket is not None
         result = send_message(self._socket, to_send)
         if result is not None:
-            print(f"Failed to send message: {result}")
+            self._report_error(f"Failed to send message: {result}")
         
-        if post_action == "switch_keys":
+        if switch_keys_after:
             self.activate_pending_keys()
     
-    def generate_dsa_keys(self) -> None:
+    def _report_error(self, message: str) -> None:
+        """Report an error to the client, or fall back to print if no client is set."""
+        if self.client is not None:
+            self.client.on_error(message)
+        else:
+            print(message)
+    
+    def _generate_dsa_keys(self) -> None:
         """Generate ML-DSA keypair for key exchange signing."""
         self._mldsa_public_key, self._mldsa_private_key = ml_dsa_87.generate_keypair()
     
@@ -482,7 +500,7 @@ class SecureChatProtocol(ProtocolBase):
     
     def create_ke_dsa_random(self) -> bytes:
         """Create KE_DSA_RANDOM message: send our DSA public key and a client random."""
-        self.generate_dsa_keys()
+        self._generate_dsa_keys()
         self._ke_client_random = os.urandom(32)
         # Derive combined random if we already have the peer's random (Client B path)
         if self._ke_client_random and self._peer_client_random:
@@ -543,8 +561,8 @@ class SecureChatProtocol(ProtocolBase):
         encrypted_x25519_pubkey = encryptor.encrypt(nonce2, self.dh_public_key_bytes)
         
         return create_ke_mlkem_ct_keys(
-            mlkem_ciphertext, encrypted_hqc_pubkey, encrypted_x25519_pubkey,
-            nonce1, nonce2, self._mldsa_private_key,
+                mlkem_ciphertext, encrypted_hqc_pubkey, encrypted_x25519_pubkey,
+                nonce1, nonce2, self._mldsa_private_key,
         )
     
     def process_ke_mlkem_ct_keys(self, data: bytes) -> None:
@@ -596,8 +614,8 @@ class SecureChatProtocol(ProtocolBase):
         
         # Sign before finalizing (finalize discards ML-DSA keys)
         message = create_ke_x25519_hqc_ct(
-            encrypted_x25519_pubkey, encrypted_hqc_ciphertext,
-            nonce1, nonce2, self._mldsa_private_key,
+                encrypted_x25519_pubkey, encrypted_hqc_ciphertext,
+                nonce1, nonce2, self._mldsa_private_key,
         )
         
         # Derive final keys (step 12)
@@ -643,28 +661,28 @@ class SecureChatProtocol(ProtocolBase):
         
         # OTP material = SHA-3-512-HKDF(HQC secret, salt=combined_random, info=server_id + 'otp_material')
         otp_hkdf = HKDF(
-            algorithm=hashes.SHA3_512(),
-            length=64,
-            salt=self._combined_random,
-            info=server_id + b'otp_material',
+                algorithm=hashes.SHA3_512(),
+                length=64,
+                salt=self._combined_random,
+                info=server_id + b'otp_material',
         )
         self._otp_material = otp_hkdf.derive(self._hqc_secret)
         
         # Own chain key root = SHA-3-512-HKDF(ML-KEM secret + X25519 secret, salt=own_random, info=server_id + 'chain_key_root')
         own_chain_hkdf = HKDF(
-            algorithm=hashes.SHA3_512(),
-            length=64,
-            salt=self._ke_client_random,
-            info=server_id + b'chain_key_root',
+                algorithm=hashes.SHA3_512(),
+                length=64,
+                salt=self._ke_client_random,
+                info=server_id + b'chain_key_root',
         )
         own_chain_key_root = own_chain_hkdf.derive(self._ke_mlkem_shared_secret + dh_shared_secret)
         
         # Peer chain key root = same but with peer's random as salt
         peer_chain_hkdf = HKDF(
-            algorithm=hashes.SHA3_512(),
-            length=64,
-            salt=self._peer_client_random,
-            info=server_id + b'chain_key_root',
+                algorithm=hashes.SHA3_512(),
+                length=64,
+                salt=self._peer_client_random,
+                info=server_id + b'chain_key_root',
         )
         peer_chain_key_root = peer_chain_hkdf.derive(self._ke_mlkem_shared_secret + dh_shared_secret)
         
@@ -717,10 +735,10 @@ class SecureChatProtocol(ProtocolBase):
         larger_random = randoms[1]
         server_id = self._server_identifier.encode('utf-8')
         hkdf = HKDF(
-            algorithm=hashes.SHA512(),
-            length=64,
-            salt=smaller_random,
-            info=server_id + b'comb_rand',
+                algorithm=hashes.SHA512(),
+                length=64,
+                salt=smaller_random,
+                info=server_id + b'comb_rand',
         )
         return hkdf.derive(larger_random)
     
@@ -729,10 +747,10 @@ class SecureChatProtocol(ProtocolBase):
         int_key_1 = SHA-3-512-HKDF(ML-KEM secret, salt=combined_random, info=server_id + 'int_key_1')"""
         server_id = self._server_identifier.encode('utf-8')
         hkdf = HKDF(
-            algorithm=hashes.SHA3_512(),
-            length=64,
-            salt=self._combined_random,
-            info=server_id + b'int_key_1',
+                algorithm=hashes.SHA3_512(),
+                length=64,
+                salt=self._combined_random,
+                info=server_id + b'int_key_1',
         )
         return hkdf.derive(mlkem_shared_secret)
     
@@ -741,10 +759,10 @@ class SecureChatProtocol(ProtocolBase):
         int_key_2 = SHA-3-512-HKDF(int_key_1, salt=X25519_secret, info=server_id + 'int_key_2')"""
         server_id = self._server_identifier.encode('utf-8')
         hkdf = HKDF(
-            algorithm=hashes.SHA3_512(),
-            length=64,
-            salt=dh_shared_secret,
-            info=server_id + b'int_key_2',
+                algorithm=hashes.SHA3_512(),
+                length=64,
+                salt=dh_shared_secret,
+                info=server_id + b'int_key_2',
         )
         return hkdf.derive(intermediary_key_1)
     
@@ -752,10 +770,10 @@ class SecureChatProtocol(ProtocolBase):
     def _derive_combined_shared_secret(mlkem_shared_secret: bytes, dh_shared_secret: bytes) -> bytes:
         """Combine ML-KEM and X25519 shared secrets into a single shared secret (used by rekey)."""
         hkdf = HKDF(
-            algorithm=hashes.SHA512(),
-            length=64,
-            salt=mlkem_shared_secret,
-            info=b"combined_shared_secret",
+                algorithm=hashes.SHA512(),
+                length=64,
+                salt=mlkem_shared_secret,
+                info=b"combined_shared_secret",
         )
         return hkdf.derive(dh_shared_secret)
     
@@ -792,10 +810,10 @@ class SecureChatProtocol(ProtocolBase):
     def _derive_rekey_otp_material(hqc_secret: bytes) -> bytes:
         """Derive OTP material from HQC secret during rekey."""
         hkdf = HKDF(
-            algorithm=hashes.SHA3_512(),
-            length=64,
-            salt=None,
-            info=b"rekey_otp_material",
+                algorithm=hashes.SHA3_512(),
+                length=64,
+                salt=None,
+                info=b"rekey_otp_material",
         )
         return hkdf.derive(hqc_secret)
     
@@ -1203,7 +1221,7 @@ class SecureChatProtocol(ProtocolBase):
     # Rekey methods
     def activate_pending_keys(self) -> None:
         """Atomically switch active session to the pending keys (if available)."""
-        if not self.rekey_in_progress:
+        if not self._rekey_in_progress:
             return
         if not (self._pending_shared_key and self._pending_encryption_key and
                 self._pending_send_chain_key and self._pending_receive_chain_key):
@@ -1237,7 +1255,7 @@ class SecureChatProtocol(ProtocolBase):
         self._rekey_hqc_private_key = b""
         self._rekey_dh_private = None
         self.rekey_dh_public = None
-        self.rekey_in_progress = False
+        self._rekey_in_progress = False
     
     def create_rekey_init(self) -> dict[str, str | int]:
         """Create a REKEY init payload to be sent inside an encrypted message using the old key."""
@@ -1251,7 +1269,7 @@ class SecureChatProtocol(ProtocolBase):
         self._rekey_hqc_private_key = hqc_private_key
         self._rekey_dh_private = dh_private
         self.rekey_dh_public = dh_public
-        self.rekey_in_progress = True
+        self._rekey_in_progress = True
         return create_rekey_init_message(mlkem_public_key, hqc_public_key, dh_public.public_bytes_raw())
     
     def process_rekey_init(self, message: dict[Any, Any]) -> dict[str, int | str]:
@@ -1278,7 +1296,7 @@ class SecureChatProtocol(ProtocolBase):
         self._pending_otp_material = self._derive_rekey_otp_material(hqc_secret)
         self.pending_message_counter = 0
         self.pending_peer_counter = 0
-        self.rekey_in_progress = True
+        self._rekey_in_progress = True
         return create_rekey_response_message(
                 mlkem_ciphertext, hqc_ciphertext,
                 self._rekey_dh_private.public_key().public_bytes_raw())
@@ -1315,5 +1333,5 @@ class SecureChatProtocol(ProtocolBase):
         self._pending_otp_material = self._derive_rekey_otp_material(hqc_secret)
         self.pending_message_counter = 0
         self.pending_peer_counter = 0
-        self.rekey_in_progress = True
+        self._rekey_in_progress = True
         return create_rekey_commit_message()

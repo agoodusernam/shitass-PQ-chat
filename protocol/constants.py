@@ -1,8 +1,8 @@
-from enum import unique, IntEnum
+from enum import IntEnum, unique
 from typing import Final
 
 # Protocol constants
-PROTOCOL_VERSION: Final[str] = "8.0.0b2"
+PROTOCOL_VERSION: Final[str] = "8.0.0"
 # Protocol compatibility is denoted by version number
 # Breaking.Minor.Patch - only Breaking versions are checked for compatibility.
 # Breaking version changes introduce breaking changes that are not compatible with previous versions of the same major version.
@@ -20,8 +20,8 @@ INCOMPRESSIBLE_EXTENSIONS: Final[set[str]] = {
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".svgz",
     ".mp3", ".ogg", ".flac", ".aac", ".wav",
     ".mp4", ".mov", ".avi", ".mkv", ".webm", ".mpeg", ".mpg",
-    ".pdf", ".dmg", ".apk", ".jar"
-    }
+    ".pdf", ".dmg", ".apk", ".jar",
+}
 
 
 @unique
@@ -33,11 +33,11 @@ class MessageType(IntEnum):
     
     KEY_EXCHANGE_RESET = 3
     # Client to client (multi-step key exchange)
-    KE_DSA_RANDOM = 4          # Step 3/6: ML-DSA public key + client random
-    KE_MLKEM_PUBKEY = 5        # Step 8: ML-KEM public key (signed)
-    KE_MLKEM_CT_KEYS = 6       # Step 10: ML-KEM ciphertext + encrypted HQC/X25519 pubkeys
-    KE_X25519_HQC_CT = 7       # Step 13: encrypted X25519 pubkey + encrypted HQC ciphertext
-    KE_VERIFICATION = 8        # Step 15/16: key verification hash
+    KE_DSA_RANDOM = 4  # Step 3/6: ML-DSA public key + client random
+    KE_MLKEM_PUBKEY = 5  # Step 8: ML-KEM public key (signed)
+    KE_MLKEM_CT_KEYS = 6  # Step 10: ML-KEM ciphertext + encrypted HQC/X25519 pubkeys
+    KE_X25519_HQC_CT = 7  # Step 13: encrypted X25519 pubkey + encrypted HQC ciphertext
+    KE_VERIFICATION = 8  # Step 15/16: key verification hash
     
     # Messaging
     ENCRYPTED_MESSAGE = 10
@@ -98,5 +98,5 @@ class MessageType(IntEnum):
     DEADDROP_PROVE = 82
     
     @classmethod
-    def _missing_(cls, value):
+    def _missing_(cls, value) -> "MessageType":
         return cls.NONE

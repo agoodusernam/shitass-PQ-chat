@@ -4,21 +4,21 @@ import json
 from typing import Any
 
 from protocol.constants import PROTOCOL_VERSION
-from protocol.types import FileMetadata, DecodeError
+from protocol.types import DecodeError, FileMetadata
 
 
 def process_file_metadata(message: dict[Any, Any]) -> FileMetadata:
     """Process a file metadata message."""
     try:
         return {
-            "transfer_id":    message["transfer_id"],
-            "filename":       message["filename"],
-            "file_size":      message["file_size"],
-            "file_hash":      message["file_hash"],
-            "total_chunks":   message["total_chunks"],
-            "compressed":     message.get("compressed", False),
-            "compressed_size": message.get("compressed_size", message["file_size"])
-            }
+            "transfer_id":     message["transfer_id"],
+            "filename":        message["filename"],
+            "file_size":       message["file_size"],
+            "file_hash":       message["file_hash"],
+            "total_chunks":    message["total_chunks"],
+            "compressed":      message.get("compressed", False),
+            "compressed_size": message.get("compressed_size", message["file_size"]),
+        }
     except KeyError:
         raise KeyError("Invalid file metadata message")
 
@@ -49,14 +49,14 @@ def parse_ke_dsa_random(data: bytes) -> dict[str, Any]:
     version_warning = ""
     if peer_version and peer_version != PROTOCOL_VERSION:
         version_warning = (
-                f"WARNING: Protocol version mismatch. Local: {PROTOCOL_VERSION}, Peer: {peer_version}. "
-                "Communication may not work properly.")
+            f"WARNING: Protocol version mismatch. Local: {PROTOCOL_VERSION}, Peer: {peer_version}. "
+            "Communication may not work properly.")
     
     return {
         "mldsa_public_key": mldsa_public_key,
         "client_random":    client_random,
         "version_warning":  version_warning,
-        }
+    }
 
 
 def parse_ke_mlkem_pubkey(data: bytes) -> dict[str, Any]:
@@ -71,7 +71,7 @@ def parse_ke_mlkem_pubkey(data: bytes) -> dict[str, Any]:
     return {
         "mlkem_public_key": mlkem_public_key,
         "mldsa_signature":  mldsa_signature,
-        }
+    }
 
 
 def parse_ke_mlkem_ct_keys(data: bytes) -> dict[str, Any]:
@@ -97,7 +97,7 @@ def parse_ke_mlkem_ct_keys(data: bytes) -> dict[str, Any]:
         "nonce2":                  nonce2,
         "mldsa_signature":         mldsa_signature,
         "signed_payload":          signed_payload,
-        }
+    }
 
 
 def parse_ke_x25519_hqc_ct(data: bytes) -> dict[str, Any]:
@@ -121,7 +121,7 @@ def parse_ke_x25519_hqc_ct(data: bytes) -> dict[str, Any]:
         "nonce2":                   nonce2,
         "mldsa_signature":          mldsa_signature,
         "signed_payload":           signed_payload,
-        }
+    }
 
 
 def parse_ke_verification(data: bytes) -> dict[str, Any]:
@@ -134,7 +134,7 @@ def parse_ke_verification(data: bytes) -> dict[str, Any]:
     
     return {
         "verification_key": verification_key,
-        }
+    }
 
 
 def parse_rekey_init(message: dict[Any, Any]) -> dict[str, bytes]:
@@ -157,7 +157,7 @@ def parse_rekey_init(message: dict[Any, Any]) -> dict[str, bytes]:
         "mlkem_public_key": mlkem_public_key,
         "hqc_public_key":   hqc_public_key,
         "dh_public_key":    dh_public_key,
-        }
+    }
 
 
 def parse_rekey_response(message: dict) -> dict[str, bytes]:
@@ -188,4 +188,4 @@ def parse_rekey_response(message: dict) -> dict[str, bytes]:
         "mlkem_ciphertext": mlkem_ciphertext,
         "hqc_ciphertext":   hqc_ciphertext,
         "dh_public_key":    dh_public_key,
-        }
+    }

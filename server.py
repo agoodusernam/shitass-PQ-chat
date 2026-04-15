@@ -16,31 +16,32 @@ Classes:
 # pylint: disable=trailing-whitespace, broad-exception-caught, too-many-instance-attributes
 import base64
 import binascii
+import datetime
 import io
+import json
 import os
 import os.path
+import secrets
 import socket
 import socketserver
 import threading
-import json
 import time
 from collections.abc import Generator
 from pathlib import Path
-from typing import Final, Any
-import datetime
-import secrets
+from typing import Any, Final
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives.constant_time import bytes_eq
 from cryptography.hazmat.primitives.kdf.concatkdf import ConcatKDFHash
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from pqcrypto.kem import ml_kem_1024 # type: ignore
+from pqcrypto.kem import ml_kem_1024  # type: ignore
 
-from utils.network_utils import send_message, encode_send_message, receive_message
-from protocol.create_messages import create_reset_message
-from protocol.constants import PROTOCOL_VERSION, MAGIC_NUMBER_FILE_TRANSFER, MAGIC_NUMBER_DEADDROPS, MessageType
 from config import ConfigHandler
+from protocol.constants import MAGIC_NUMBER_DEADDROPS, MAGIC_NUMBER_FILE_TRANSFER, MessageType, PROTOCOL_VERSION
+from protocol.create_messages import create_reset_message
+from utils.network_utils import encode_send_message, receive_message, send_message
+
 _config = ConfigHandler()
 
 SERVER_VERSION: Final[int] = 8
@@ -73,7 +74,6 @@ class DeadDropManager:
             if file.suffix == ".bin":
                 name = file.stem
                 self.deaddrop_files[name] = file.with_suffix("")
-
     
     def __getitem__(self, item: str) -> Path | None:
         """
@@ -138,7 +138,7 @@ class DeadDropManager:
             f.write(file_hash)
         
         self.deaddrop_files[name] = path
-        
+    
     def remove_file(self, name: str) -> None:
         """
         Remove a file from the deaddrop manager.
@@ -176,29 +176,29 @@ class DeadDropManager:
     
     def chunk_file(self, name: str) -> Generator[bytes, None, None]:
         with self.get_file(name) as f:
-            while data := f.read(1024 * 1024):
+            while data := f.read(1024 * 1024 * 1024):
                 yield data
-
+    
     def get_password_hash(self, name: str) -> str:
         if not self.check_file(name):
             raise FileNotFoundError(f"Deaddrop file '{name}' does not exist")
-
+        
         with open(self.deaddrop_files[name].with_suffix(".metadata"), "r") as f:
             lines = f.readlines()
             if len(lines) < 2:
                 raise ValueError(f"Deaddrop metadata for '{name}' is corrupted")
             return lines[0].strip()
-
+    
     def get_file_hash(self, name: str) -> str:
         if not self.check_file(name):
             raise FileNotFoundError(f"Deaddrop file '{name}' does not exist")
-
+        
         with open(self.deaddrop_files[name].with_suffix(".metadata"), "r") as f:
             lines = f.readlines()
             if len(lines) < 2:
                 raise ValueError(f"Deaddrop metadata for '{name}' is corrupted")
             return lines[1].strip()
-    
+
 
 # noinspection PyBroadException
 class SecureChatServer(socketserver.ThreadingTCPServer):
@@ -241,19 +241,19 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
         print(f"Secure chat server started on {host}:{port}")
         print(f"Server identifier: {self.server_identifier}")
         print("Waiting for clients to connect...")
-
+    
     # --- Identifier management ---
     @staticmethod
     def _get_identifier_path() -> Path:
         """Return path to identifier.txt in the project directory."""
         current_file = Path(__file__)
         return current_file.parent / "identifier.txt"
-
+    
     @staticmethod
     def _get_wordlist_path() -> Path:
         current_file = Path(__file__)
         return current_file.parent / _config["wordlist_file"]
-
+    
     def _load_or_create_identifier(self) -> str:
         """Load server identifier from file or create a new 4-word identifier.
 
@@ -268,7 +268,7 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
                     return ident
         except FileNotFoundError:
             pass
-
+        
         # Create a new identifier
         words: list[str]
         wl_path = self._get_wordlist_path()
@@ -357,10 +357,9 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
                 all_sent = False
         return all_sent
     
-    
     def broadcast_error(self, error_text: str) -> None:
         """Broadcast an error message to all connected clients."""
-        error_msg = json.dumps({"type":  MessageType.ERROR, "error": error_text}).encode('utf-8')
+        error_msg = json.dumps({"type": MessageType.ERROR, "error": error_text}).encode('utf-8')
         with self.clients_lock:
             for client_handler in self.clients.values():
                 send_message(client_handler.request, error_msg)
@@ -390,7 +389,8 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
     server: SecureChatServer
     
     def __init__(self, request: socket.socket | tuple[bytes, socket.socket], client_address: str,
-                 server: SecureChatServer) -> None:
+                 server: SecureChatServer,
+                 ) -> None:
         self.client_id: str = ""
         self.connected: bool = True
         self.sender_lock: threading.Lock = threading.Lock()
@@ -446,9 +446,9 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         try:
             self._handle()
         except ConnectionResetError:
-            self.disconnect("Connection reset", notify = False)
+            self.disconnect("Connection reset", notify=False)
         except ConnectionError:
-            self.disconnect("Unexpected disconnect", notify = False)
+            self.disconnect("Unexpected disconnect", notify=False)
         finally:
             if not self.announced_disconnect:
                 self.disconnect()
@@ -467,7 +467,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             except OSError as e:
                 self.disconnect(f"Error receiving message: {e}", notify=False)
                 break
-
+            
             try:
                 message = json.loads(message_data)
                 message_type = message.get("type")
@@ -495,11 +495,10 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             if message_type == MessageType.DEADDROP_KE_RESPONSE:
                 self.handle_deaddrop_ke_response(message)
                 continue
-
+            
             if message_type == MessageType.DEADDROP_MESSAGE:
                 self.handle_deaddrop_message(message)
                 continue
-            
             
             if not self.key_exchange_complete:
                 if message_type in (MessageType.KE_DSA_RANDOM, MessageType.KE_MLKEM_PUBKEY,
@@ -508,13 +507,12 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                                     MessageType.KEY_EXCHANGE_RESET, MessageType.INITIATE_KEY_EXCHANGE):
                     self.handle_key_exchange(message, message_data)
                     continue
-    
+                
                 # If we get here, it's an unexpected message during key exchange
                 self.handle_unexpected_message("unexpected message during key exchange")
                 continue
-    
+            
             self.server.route_message(self.client_id, message_data)
-    
     
     def handle_key_exchange(self, message: dict[Any, Any], message_data: bytes) -> None:
         """Handle key exchange messages by routing them to the other client."""
@@ -534,7 +532,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                     other_client.key_exchange_complete = True
         else:
             self.server.broadcast_error("Key exchange failed - no other client")
-
+    
     def handle_maybe_bin_data(self, message_data: bytes) -> None:
         """
         Handle data that may be raw binary like deaddrops or file transfers
@@ -543,15 +541,15 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         if magic == MAGIC_NUMBER_FILE_TRANSFER:
             self.server.route_message(self.client_id, message_data)
             return
-
+        
         if magic == MAGIC_NUMBER_DEADDROPS:
             decrypted = self.decrypt_deaddrop_data(message_data[1:13], message_data[13:])
-
+            
             self.handle_deaddrop_data(int.from_bytes(decrypted[0:4], byteorder='little'), decrypted[4:])
             return
-
+        
         self.handle_unexpected_message("unexpected binary message")
-
+    
     def decrypt_deaddrop_data(self, nonce: bytes, ciphertext: bytes) -> bytes:
         """
         Decrypt incoming binary deaddrop data
@@ -564,9 +562,9 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         if not self.shared_secret:
             raise ValueError("No shared secret for deaddrop decryption")
         decryptor = ChaCha20Poly1305(self.shared_secret)
-        data = decryptor.decrypt(nonce, ciphertext, associated_data = nonce)
+        data = decryptor.decrypt(nonce, ciphertext, associated_data=nonce)
         return data
-
+    
     def handle_deaddrop_message(self, message: dict[Any, Any]) -> None:
         """Handle encrypted deaddrop messages."""
         try:
@@ -580,29 +578,29 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         except binascii.Error:
             self.handle_unexpected_message("deaddrop message invalid b64")
             return
-
+        
         if not self.shared_secret:
             self.handle_unexpected_message("deaddrop message before handshake")
             return
-
+        
         try:
             decryptor = ChaCha20Poly1305(self.shared_secret)
             aad_raw = json.dumps({
-                "type": MessageType.DEADDROP_MESSAGE,
+                "type":  MessageType.DEADDROP_MESSAGE,
                 "nonce": nonce_b64,
             }).encode("utf-8")
             inner_bytes = decryptor.decrypt(nonce, ciphertext, aad_raw)
         except Exception:
             self.handle_unexpected_message("failed to decrypt deaddrop message")
             return
-
+        
         # Try parse as JSON; for raw binary chunks we wrap inside json anyhow
         try:
             inner = json.loads(inner_bytes)
         except (json.JSONDecodeError, UnicodeDecodeError):
             self.handle_unexpected_message("invalid inner deaddrop message")
             return
-
+        
         inner_type = inner.get("type", MessageType.NONE)
         if inner_type == MessageType.DEADDROP_CHECK:
             self.handle_deaddrop_check(inner)
@@ -622,7 +620,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         if inner_type == MessageType.DEADDROP_COMPLETE:
             self.handle_deaddrop_complete()
             return
-
+        
         # Unknown inner deaddrop msg
         self.handle_unexpected_message("unknown deaddrop inner message type")
         return
@@ -636,7 +634,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         other_client = self.get_other_client()
         if other_client:
             send_message(other_client.request, message_data)
-            
+        
         else:
             self.server.broadcast_error("Verification failed - no other client")
     
@@ -667,10 +665,10 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                 
                 if not self.connected:
                     break
-
+                
                 if self.server.deaddrop_busy:
                     continue
-
+                
                 if self.waiting_for_keepalive_response:
                     self.keepalive_failures += 1
                     if self.keepalive_failures >= 3:
@@ -690,7 +688,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         try:
             keepalive_message = {
                 "type":      MessageType.KEEP_ALIVE,
-                "timestamp": time.time()
+                "timestamp": time.time(),
             }
             message_data = json.dumps(keepalive_message).encode('utf-8')
             with self.sender_lock:
@@ -744,7 +742,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             
             # End any active deaddrop session and cleanup exclusivity
             self._end_deaddrop_session()
-
+            
             # Attempt to notify client about server-initiated disconnect
             if notify:
                 disconnect_message = {
@@ -752,7 +750,6 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                     "reason": reason if reason else "Server disconnect",
                 }
                 encode_send_message(self.request, disconnect_message)
-            
             
             if self.client_id:
                 self.server.remove_client(self.client_id)
@@ -772,27 +769,27 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         """Handle deaddrop start message from client."""
         if not _config["deaddrop_enabled"]:
             deny_msg = {
-                "type": MessageType.DEADDROP_START,
-                "supported": False
+                "type":      MessageType.DEADDROP_START,
+                "supported": False,
             }
             with self.sender_lock:
                 send_message(self.request, json.dumps(deny_msg).encode('utf-8'))
             return
-
+        
         if self.get_other_client():
             with self.sender_lock:
                 send_message(self.request, json.dumps({
-                "type": MessageType.DEADDROP_DENY,
-                "reason": "Cannot start deaddrop while another client is connected."
-            }).encode('utf-8'))
+                    "type":   MessageType.DEADDROP_DENY,
+                    "reason": "Cannot start deaddrop while another client is connected.",
+                }).encode('utf-8'))
             return
-
+        
         public_key, self.ml_kem_sk = ml_kem_1024.generate_keypair()
         msg = {
             "type":          MessageType.DEADDROP_START,
             "supported":     True,
             "max_file_size": _config["deaddrop_max_size"],
-            "mlkem_public":  base64.b64encode(public_key).decode('utf-8')
+            "mlkem_public":  base64.b64encode(public_key).decode('utf-8'),
         }
         with self.sender_lock:
             send_message(self.request, json.dumps(msg).encode('utf-8'))
@@ -800,33 +797,33 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         with self.server.clients_lock:
             self.server.deaddrop_busy = True
             self.server.deaddrop_owner = self.client_id
-
+        
         print(f"Deaddrop session started by {self.client_id}")
-
+    
     def handle_deaddrop_ke_response(self, message_data: dict[Any, Any]) -> None:
         """Handle deaddrop key exchange response message from client."""
         try:
-            client_mlkem_ct = base64.b64decode(message_data["mlkem_ct"], validate = True)
+            client_mlkem_ct = base64.b64decode(message_data["mlkem_ct"], validate=True)
         except KeyError:
             with self.sender_lock:
                 send_message(self.request, json.dumps({
-                "type": MessageType.DEADDROP_DENY,
-                "reason": "Missing mlkem_ct in deaddrop ke response message"
-            }).encode('utf-8'))
+                    "type":   MessageType.DEADDROP_DENY,
+                    "reason": "Missing mlkem_ct in deaddrop ke response message",
+                }).encode('utf-8'))
             return
         except binascii.Error:
             with self.sender_lock:
                 send_message(self.request, json.dumps({
-                "type": MessageType.DEADDROP_DENY,
-                "reason": "Invalid mlkem_ct in deaddrop ke response message"
-            }).encode('utf-8'))
+                    "type":   MessageType.DEADDROP_DENY,
+                    "reason": "Invalid mlkem_ct in deaddrop ke response message",
+                }).encode('utf-8'))
             return
-
+        
         shared_secret = ml_kem_1024.decrypt(self.ml_kem_sk, client_mlkem_ct)
         self.shared_secret = ConcatKDFHash(algorithm=hashes.SHA3_512(), length=32, otherinfo=b"deaddrop key exchange").derive(shared_secret)
-
+        
         print(f"Deaddrop key exchange completed with {self.client_id}")
-
+    
     def handle_deaddrop_check(self, message_data: dict[Any, Any]) -> None:
         """Handle deaddrop check message from client."""
         # TODO: Add rate limiting, it'll just say false every time if you're rate limited.
@@ -834,94 +831,93 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             name = message_data["name"]
         except KeyError:
             self.send_deaddrop_message(json.dumps({
-                "type": MessageType.DEADDROP_DENY,
-                "reason": "Missing name in deaddrop check message"
+                "type":   MessageType.DEADDROP_DENY,
+                "reason": "Missing name in deaddrop check message",
             }))
             return
         
         if self.server.deaddrop_manager.check_file(name):
             msg = {
-                "type": MessageType.DEADDROP_CHECK_RESPONSE,
-                "exists": True
+                "type":   MessageType.DEADDROP_CHECK_RESPONSE,
+                "exists": True,
             }
             self.send_deaddrop_message(json.dumps(msg))
         else:
             msg = {
-                "type": MessageType.DEADDROP_CHECK_RESPONSE,
-                "exists": False
+                "type":   MessageType.DEADDROP_CHECK_RESPONSE,
+                "exists": False,
             }
             self.send_deaddrop_message(json.dumps(msg))
-
+        
         print(f"Deaddrop check for {name} by {self.client_id} completed")
-
+    
     def handle_deaddrop_download(self, message: dict[Any, Any]) -> None:
         if not _config["deaddrop_enabled"]:
             self.send_deaddrop_message(json.dumps({"type": MessageType.DEADDROP_DENY}).encode('utf-8'))
             return
-
+        
         try:
             name = str(message["name"])
         except KeyError:
             self.send_deaddrop_message(json.dumps({
-                "type": MessageType.DEADDROP_DENY,
-                "reason": "Missing name in deaddrop download message"
+                "type":   MessageType.DEADDROP_DENY,
+                "reason": "Missing name in deaddrop download message",
             }))
             return
         except binascii.Error:
             self.send_deaddrop_message(json.dumps({
-                "type": MessageType.DEADDROP_DENY,
-                "reason": "Invalid name field"
+                "type":   MessageType.DEADDROP_DENY,
+                "reason": "Invalid name field",
             }))
             return
-
+        
         if not self.server.deaddrop_manager.check_file(name):
             not_found_msg = {
-                "type": MessageType.DEADDROP_DENY,
-                "reason": "Deaddrop file not found"
+                "type":   MessageType.DEADDROP_DENY,
+                "reason": "Deaddrop file not found",
             }
             self.send_deaddrop_message(json.dumps(not_found_msg).encode('utf-8'))
             return
-
+        
         download_salt = os.urandom(32)
         msg = {
             "type": MessageType.DEADDROP_PROVE,
-            "salt": base64.b64encode(download_salt).decode('utf-8')
+            "salt": base64.b64encode(download_salt).decode('utf-8'),
         }
         self.send_deaddrop_message(json.dumps(msg).encode('utf-8'))
-
+        
         og_hash = self.server.deaddrop_manager.get_password_hash(name).encode('utf-8')
-
+        
         pbk = PBKDF2HMAC(
-            algorithm=hashes.SHA3_512(),
-            length=32,
-            salt=download_salt,
-            iterations=800000
+                algorithm=hashes.SHA3_512(),
+                length=32,
+                salt=download_salt,
+                iterations=800000,
         )
         self.pending_deaddrop_download = name
-
+        
         self.correct_download_hash = pbk.derive(og_hash)
-
-
+    
     def handle_deaddrop_prove(self, message: dict[Any, Any]) -> None:
         try:
             client_hash = base64.b64decode(message["hash"], validate=True)
         except KeyError:
             self.send_deaddrop_message(json.dumps({
-                "type": MessageType.DEADDROP_DENY,
-                "reason": "Missing hash in deaddrop prove message"
+                "type":   MessageType.DEADDROP_DENY,
+                "reason": "Missing hash in deaddrop prove message",
             }))
             self.pending_deaddrop_download = ""
             self._end_deaddrop_session()
             return
         except binascii.Error:
             self.send_deaddrop_message(json.dumps({
-                "type": MessageType.DEADDROP_DENY,
-                "reason": "Invalid hash in deaddrop prove message"
+                "type":   MessageType.DEADDROP_DENY,
+                "reason": "Invalid hash in deaddrop prove message",
             }))
             self.pending_deaddrop_download = ""
             self._end_deaddrop_session()
             return
-
+        
         if not bytes_eq(client_hash, self.correct_download_hash):
             deny_msg = {
                 "type": MessageType.DEADDROP_DENY,
@@ -929,26 +925,26 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             self.send_deaddrop_message(json.dumps(deny_msg).encode('utf-8'))
             self.pending_deaddrop_download = ""
             return
-
+        
         accept_msg = {
-            "type": MessageType.DEADDROP_ACCEPT,
+            "type":      MessageType.DEADDROP_ACCEPT,
             "file_hash": self.server.deaddrop_manager.get_file_hash(self.pending_deaddrop_download),
         }
         self.send_deaddrop_message(json.dumps(accept_msg).encode('utf-8'))
         self.pending_download_accepted = True
         print(f"Deaddrop download accepted for {self.pending_deaddrop_download} by {self.client_id}")
-
+    
     def handle_deaddrop_accept(self) -> None:
         if not self.pending_download_accepted:
             self.send_deaddrop_message(json.dumps({
-                "type": MessageType.DEADDROP_DENY,
-                "reason": "Deaddrop download not accepted yet"
+                "type":   MessageType.DEADDROP_DENY,
+                "reason": "Deaddrop download not accepted yet",
             }))
             # Reset values just in case
             self.pending_download_accepted = False
             self.pending_deaddrop_download = ""
             return
-
+        
         # Stream the requested deaddrop file to the client as DEADDROP_DATA
         # messages over the encrypted deaddrop channel.
         try:
@@ -956,28 +952,28 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         except Exception as e:  # pragma: no cover - defensive, should not normally happen
             # If we cannot open/chunk the file, abort the download cleanly.
             self.send_deaddrop_message(json.dumps({
-                "type": MessageType.DEADDROP_DENY,
-                "reason": f"Failed to read deaddrop file: {e}"
+                "type":   MessageType.DEADDROP_DENY,
+                "reason": f"Failed to read deaddrop file: {e}",
             }))
             self.pending_download_accepted = False
             self.pending_deaddrop_download = ""
             self._end_deaddrop_session()
             return
-
+        
         for chunk_index, chunk in enumerate(chunks):
             index_bytes = chunk_index.to_bytes(4, byteorder="little")
             self.send_raw_deaddrop_data(index_bytes + chunk)
-
+        
         # Inform the client that all chunks have been transmitted.
         self.send_deaddrop_message({
-            "type": MessageType.DEADDROP_COMPLETE
+            "type": MessageType.DEADDROP_COMPLETE,
         })
-
+        
         # Reset download state and end the deaddrop session.
         self.pending_download_accepted = False
         self.pending_deaddrop_download = ""
         self._end_deaddrop_session()
-
+    
     def handle_deaddrop_upload(self, message: dict[Any, Any]) -> None:
         try:
             name = str(message["name"])
@@ -986,37 +982,37 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             password_hash = str(message["file_password_hash"])
         except KeyError:
             self.send_deaddrop_message(json.dumps({
-                "type": MessageType.DEADDROP_DENY,
-                "reason": "Missing field in deaddrop upload message"
+                "type":   MessageType.DEADDROP_DENY,
+                "reason": "Missing field in deaddrop upload message",
             }))
             return
         except binascii.Error:
             self.send_deaddrop_message(json.dumps({
-                "type": MessageType.DEADDROP_DENY,
-                "reason": "Invalid name or file hash"
+                "type":   MessageType.DEADDROP_DENY,
+                "reason": "Invalid name or file hash",
             }))
             return
         except (ValueError, TypeError):
             self.handle_unexpected_message("deaddrop upload message with invalid file size")
             return
-
+        
         if file_size > _config["deaddrop_max_size"]:
             too_large_msg = {
-                "type": MessageType.DEADDROP_DENY,
-                "reason": "File size exceeds maximum allowed size"
+                "type":   MessageType.DEADDROP_DENY,
+                "reason": "File size exceeds maximum allowed size",
             }
             self.send_deaddrop_message(json.dumps(too_large_msg).encode('utf-8'))
             return
-
+        
         try:
             self.server.deaddrop_manager.add_file(name, password_hash, file_hash)
         except Exception as e:
             self.send_deaddrop_message(json.dumps({
-                "type": MessageType.DEADDROP_DENY,
-                "reason": f"Failed to create deaddrop file: {e}"
+                "type":   MessageType.DEADDROP_DENY,
+                "reason": f"Failed to create deaddrop file: {e}",
             }))
             return
-
+        
         # Initialise upload session state
         self.upload_accepted = True
         self.pending_deaddrop_upload_name = name
@@ -1028,7 +1024,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         self.pending_deaddrop_chunk_size = 0
         self.pending_deaddrop_max_index = -1
         self.send_deaddrop_message(json.dumps({"type": MessageType.DEADDROP_ACCEPT}).encode('utf-8'))
-
+    
     def handle_deaddrop_data(self, chunk_index: int, chunk_data: bytes) -> None:
         """
         Writes decrypted deaddrop chunk data to the pending upload file.
@@ -1038,33 +1034,33 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         """
         if not self.upload_accepted or not self.pending_deaddrop_upload_name:
             self.send_deaddrop_message(json.dumps({
-                "type": MessageType.DEADDROP_DENY,
-                "reason": "No active deaddrop upload"
+                "type":   MessageType.DEADDROP_DENY,
+                "reason": "No active deaddrop upload",
             }))
             return
-
+        
         # Infer chunk size from first chunk
         if self.pending_deaddrop_chunk_size == 0 and len(chunk_data) > 0:
             self.pending_deaddrop_chunk_size = len(chunk_data)
-
+        
         # Track max index
         if chunk_index > self.pending_deaddrop_max_index:
             self.pending_deaddrop_max_index = chunk_index
-
+        
         try:
             self.server.deaddrop_manager.append(self.pending_deaddrop_upload_name, chunk_data)
         except Exception as e:
             self.send_deaddrop_message(json.dumps({
-                "type": MessageType.DEADDROP_DENY,
-                "reason": f"Failed to write chunk: {e}"
+                "type":   MessageType.DEADDROP_DENY,
+                "reason": f"Failed to write chunk: {e}",
             }))
             return
-
+        
         # Track received indexes and size (approximate by unique indexes)
         if chunk_index not in self.pending_deaddrop_received_chunks:
             self.pending_deaddrop_received_chunks.add(chunk_index)
         self.pending_deaddrop_received_size += len(chunk_data)
-
+        
         # Enforce maximum size (hard cap)
         if self.pending_deaddrop_received_size > _config["deaddrop_max_size"]:
             # Cleanup and abort
@@ -1075,55 +1071,55 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             self.upload_accepted = False
             self.pending_deaddrop_upload_name = ""
             self.send_deaddrop_message(json.dumps({
-                "type": MessageType.DEADDROP_DENY,
-                "reason": "Upload exceeded maximum allowed size"
+                "type":   MessageType.DEADDROP_DENY,
+                "reason": "Upload exceeded maximum allowed size",
             }))
             return
-
+    
     def handle_deaddrop_complete(self) -> None:
         if not self.upload_accepted or not self.pending_deaddrop_upload_name:
             self.send_deaddrop_message(json.dumps({
-                "type": MessageType.DEADDROP_DENY,
-                "reason": "No active deaddrop upload to complete"
+                "type":   MessageType.DEADDROP_DENY,
+                "reason": "No active deaddrop upload to complete",
             }))
             return
-
+        
         if self.pending_deaddrop_chunk_size <= 0:
             # Cannot verify without at least one chunk; fail
             self._fail_current_upload("No data received")
             return
-
+        
         expected_last_index = (self.pending_deaddrop_expected_size - 1) // self.pending_deaddrop_chunk_size
         expected_indexes = set(range(0, expected_last_index + 1))
         missing = sorted(list(expected_indexes - self.pending_deaddrop_received_chunks))
-
+        
         if missing and not self.pending_deaddrop_redownload_requested:
             # Request a single redownload pass
             self.pending_deaddrop_redownload_requested = True
             # Send inner instruction via the encrypted channel
             self.send_deaddrop_message({
-                "type": MessageType.DEADDROP_REDOWNLOAD,
+                "type":          MessageType.DEADDROP_REDOWNLOAD,
                 "chunk_indexes": missing,
             })
             return
-
+        
         if missing:
             # Still missing after a redownload cycle
             self._fail_current_upload("Missing chunks after redownload")
             return
-
+        
         # Success
         self.send_deaddrop_message({
-            "type": MessageType.DEADDROP_COMPLETE
+            "type": MessageType.DEADDROP_COMPLETE,
         })
-
+        
         # Reset state and release server busy flag
         self._end_deaddrop_session()
-
+    
     def _fail_current_upload(self, reason: str) -> None:
         self.send_deaddrop_message({
-            "type": MessageType.DEADDROP_DENY,
-            "reason": reason
+            "type":   MessageType.DEADDROP_DENY,
+            "reason": reason,
         })
         # Cleanup file and metadata
         try:
@@ -1132,7 +1128,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         except Exception:
             pass
         self._end_deaddrop_session()
-
+    
     def _end_deaddrop_session(self) -> None:
         # Reset handler state
         self.upload_accepted = False
@@ -1149,7 +1145,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             if self.server.deaddrop_owner == self.client_id:
                 self.server.deaddrop_busy = False
                 self.server.deaddrop_owner = ""
-
+    
     def send_deaddrop_message(self, message: bytes | str | dict[Any, Any]) -> None:
         """Send a deaddrop message to the client."""
         msg: bytes
@@ -1159,22 +1155,22 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             msg = message.encode('utf-8')
         else:
             msg = message
-
+        
         encryptor = ChaCha20Poly1305(self.shared_secret)
         nonce = os.urandom(12)
         aad = {
-            "type": MessageType.DEADDROP_MESSAGE,
+            "type":  MessageType.DEADDROP_MESSAGE,
             "nonce": base64.b64encode(nonce).decode("utf-8"),
         }
         aad_raw = json.dumps(aad).encode("utf-8")
         to_send = {
-            "type": MessageType.DEADDROP_MESSAGE,
-            "nonce": base64.b64encode(nonce).decode('utf-8'),
-            "ciphertext": base64.b64encode(encryptor.encrypt(nonce, msg, aad_raw)).decode('utf-8')
+            "type":       MessageType.DEADDROP_MESSAGE,
+            "nonce":      base64.b64encode(nonce).decode('utf-8'),
+            "ciphertext": base64.b64encode(encryptor.encrypt(nonce, msg, aad_raw)).decode('utf-8'),
         }
         with self.sender_lock:
             send_message(self.request, json.dumps(to_send).encode('utf-8'))
-
+    
     def send_raw_deaddrop_data(self, message: bytes) -> None:
         """Send a raw deaddrop data message to the client."""
         encryptor = ChaCha20Poly1305(self.shared_secret)
@@ -1183,6 +1179,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         to_send = MAGIC_NUMBER_DEADDROPS + nonce + encrypted
         with self.sender_lock:
             send_message(self.request, to_send)
+
 
 def main() -> None:
     """Main entry point to start the secure chat server."""

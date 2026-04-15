@@ -54,7 +54,7 @@ except ImportError:
     SpellChecker = None  # type: ignore
 
 try:
-    import pyaudio
+    import pyaudio  # type: ignore[import-untyped]
     
     PYAUDIO_AVAILABLE = True
 except ImportError:
@@ -247,7 +247,7 @@ class FileTransferWindow:
             self.TEXT_BG_COLOR = "#1e1e1e"
             self.SPEED_LABEL_COLOR = "#4CAF50"
     
-    def create_window(self):
+    def create_window(self) -> None:
         """Create the file transfer window if it doesn't exist."""
         if not self._ui_created:
             self.window.title("File Transfer Progress")
@@ -303,13 +303,13 @@ class FileTransferWindow:
             self.window.protocol("WM_DELETE_WINDOW", self.hide_window)
             self._ui_created = True
     
-    def show_window(self):
+    def show_window(self) -> None:
         """Show the file transfer window."""
         self.create_window()
         self.window.deiconify()
         self.window.lift()
     
-    def hide_window(self):
+    def hide_window(self) -> None:
         """Hide the file transfer window."""
         if self.window:
             self.window.withdraw()
@@ -370,7 +370,7 @@ class FileTransferWindow:
             self.last_update_time = current_time
             self.last_bytes_transferred = total_bytes_transferred
     
-    def clear_speed(self):
+    def clear_speed(self) -> None:
         """Clear the speed display when no transfers are active."""
         self.current_speed = 0.0
         if self.speed_label:
@@ -402,13 +402,16 @@ class DeadDropWindow:
         
         self._build_ui()
     
+    # noinspection PyMissingTypeHints
     def _label(self, parent, text, **kw):
         return tk.Label(parent, text=text, bg=self.BG_COLOR, fg=self.FG_COLOR, **kw)
     
+    # noinspection PyMissingTypeHints
     def _entry(self, parent, show="", **kw):
         return tk.Entry(parent, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR,
                         insertbackground=self.FG_COLOR, relief=ltk.FLAT, show=show, **kw)
     
+    # noinspection PyMissingTypeHints
     def _button(self, parent, text, command, **kw):
         return tk.Button(parent, text=text, command=command,
                          bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT, **kw)
@@ -446,7 +449,7 @@ class DeadDropWindow:
         
         self._label(upload_frame, "File:").grid(row=2, column=0, sticky=ltk.W, **pad)
         file_row: tk.Frame = tk.Frame(upload_frame, bg=self.BG_COLOR)
-        file_row.grid(row=2, column=1, sticky=ltk.W, **pad) # type: ignore
+        file_row.grid(row=2, column=1, sticky=ltk.W, **pad)  # type: ignore
         self.upload_file_var = tk.StringVar()
         self._entry(upload_frame, width=22, textvariable=self.upload_file_var).grid(row=2, column=1, sticky=ltk.W, **pad)
         self._button(upload_frame, "Browse…", self._browse_upload_file).grid(row=2, column=2, **pad)
@@ -495,7 +498,7 @@ class DeadDropWindow:
         for tab_name, btn in self._tab_buttons.items():
             btn.config(relief=ltk.FLAT if tab_name != name else ltk.SUNKEN)
     
-    def _browse_upload_file(self):
+    def _browse_upload_file(self) -> None:
         path = filedialog.askopenfilename()
         if path:
             self.upload_file_var.set(path)
@@ -509,7 +512,7 @@ class DeadDropWindow:
     
     # --- Actions (run on background thread so UI stays responsive) ---
     
-    def _do_upload(self):
+    def _do_upload(self) -> None:
         name = self.upload_name.get().strip()
         password = self.upload_password.get()
         file_path = self.upload_file_var.get().strip()
@@ -526,7 +529,7 @@ class DeadDropWindow:
             return
         self.client.deaddrop_upload(name, password, file_path)
     
-    def _do_check(self):
+    def _do_check(self) -> None:
         name = self.check_name.get().strip()
         if not name:
             messagebox.showerror("Dead Drop", "Please enter a name.", parent=self.window)
@@ -542,7 +545,7 @@ class DeadDropWindow:
                 return
         self.client.deaddrop_check(name)
     
-    def _do_download(self):
+    def _do_download(self) -> None:
         name = self.download_name.get().strip()
         password = self.download_password.get()
         if not name or not password:
@@ -609,7 +612,6 @@ def display_image(image: Image.Image, root: tk.Tk) -> None:
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 THEMES_DIR = str(_PROJECT_ROOT / "themes")
-THEME_SELECTION_FILE = str(_PROJECT_ROOT / "theme_selection.json")
 
 
 def get_available_themes() -> list[str]:
@@ -650,10 +652,10 @@ def load_theme_colors(theme_name: tk.StringVar | None = None) -> dict[str, str]:
     selected = theme_name
     if selected is None:
         try:
-            with open(THEME_SELECTION_FILE, "r") as f:
-                data = json.load(f)
-                selected = data.get("theme")
-        except (OSError, json.JSONDecodeError):
+            _cfg = ConfigHandler()
+            _selected_str = _cfg["theme"]
+            selected = tk.StringVar(value=_selected_str) if _selected_str else None
+        except Exception:
             selected = None
     
     if selected:
@@ -681,11 +683,12 @@ def load_theme_colors(theme_name: tk.StringVar | None = None) -> dict[str, str]:
 
 
 def save_theme_selection(theme_name: tk.StringVar) -> None:
-    """Persist the selected theme name to theme_selection.json."""
+    """Persist the selected theme name to config.json."""
     try:
-        with open(THEME_SELECTION_FILE, "w") as f:
-            json.dump({"theme": str(theme_name)}, f, indent=4)
-    except (OSError, PermissionError):
+        _cfg = ConfigHandler()
+        _cfg["theme"] = str(theme_name)
+        _cfg.save()
+    except Exception:
         pass
 
 
@@ -695,11 +698,11 @@ class WordFrequency:
 
 
 class SpellCheckerWrap:
-    def __init__(self):
+    def __init__(self) -> None:
         if SPELLCHECKER_AVAILABLE:
             self.sc = SpellChecker()
         else:
-            self.sc = None
+            self.sc = None  # type: ignore[assignment]
     
     def unknown(self, words: Iterable[str]) -> set[str]:
         if self.sc:
@@ -779,10 +782,9 @@ class GUI(UIBase):
     def _load_saved_theme_name() -> str:
         """Return the persisted theme name, or empty string if none saved."""
         try:
-            with open(THEME_SELECTION_FILE, "r") as f:
-                data = json.load(f)
-                return data.get("theme", "")
-        except (OSError, json.JSONDecodeError):
+            _cfg = ConfigHandler()
+            return _cfg["theme"]
+        except Exception:
             return ""
     
     def apply_theme(self, theme_name: tk.StringVar) -> None:
@@ -934,7 +936,6 @@ class GUI(UIBase):
                                          underlinefg=self.theme_colors.get("SPELLCHECK_ERROR_COLOR", "red"))
         
         self.message_entry.bind("<Return>", self.send_message)
-        self.message_entry.bind("<KeyPress>", self.on_key_press)
         self.message_entry.bind("<Control-v>", self.on_paste)
         self.message_entry.bind("<KeyRelease>", self.on_text_change)
         self.message_entry.bind("<Button-1>", self.on_text_change)
@@ -1063,9 +1064,9 @@ class GUI(UIBase):
         agreed_fmt = negotiate_audio_format(local_max_fmt, peer_max_fmt)
         self._start_audio_streams(local_rate, peer_rate, local_chunk, agreed_fmt)
         self.no_types_tk_thread(
-            self.voice_call_btn.configure,
-            text="End Call",
-            command=self._end_call_from_ui,
+                self.voice_call_btn.configure,
+                text="End Call",
+                command=self._end_call_from_ui,
         )
         self.on_tk_thread(self.show_mute_button)
     
@@ -1085,9 +1086,9 @@ class GUI(UIBase):
         self._stop_audio_streams()
         if PYAUDIO_AVAILABLE:
             self.no_types_tk_thread(
-                self.voice_call_btn.configure,
-                text="Voice Call",
-                command=self.start_call,
+                    self.voice_call_btn.configure,
+                    text="Voice Call",
+                    command=self.start_call,
             )
             self.on_tk_thread(self.hide_mute_button)
     
@@ -1130,7 +1131,7 @@ class GUI(UIBase):
         
         if self.client.connected:
             self.client.disconnect()
-            
+        
         else:
             host = self.host_entry.get()
             try:
@@ -1229,10 +1230,6 @@ class GUI(UIBase):
         for f in files:
             if os.path.isfile(f) and self.client:
                 threading.Thread(target=self.client.send_file, args=(Path(f),), daemon=True).start()
-    
-    def on_key_press(self, event: tk.Event) -> None:
-        # Ported from old_gui.py
-        pass
     
     def on_paste(self, event: tk.Event) -> None:
         img = get_image_from_clipboard()
@@ -1398,27 +1395,27 @@ class GUI(UIBase):
             self.mute_btn.pack_forget()
     
     def _start_audio_streams(
-        self,
-        local_rate: int,
-        peer_rate: int,
-        chunk_size: int,
-        audio_format: int,
+            self,
+            local_rate: int,
+            peer_rate: int,
+            chunk_size: int,
+            audio_format: int,
     ) -> None:
         """Open PyAudio streams and launch send/receive threads."""
         if not self.audio_interface:
             return
         self._voice_data_queue.clear()
         in_stream = self.audio_interface.open(
-            rate=local_rate, channels=1, format=audio_format, input=True
+                rate=local_rate, channels=1, format=audio_format, input=True,
         )
         out_stream = self.audio_interface.open(
-            rate=peer_rate, channels=1, format=audio_format, output=True
+                rate=peer_rate, channels=1, format=audio_format, output=True,
         )
         threading.Thread(
-            target=self._send_voice_thread, args=(in_stream, chunk_size), daemon=True
+                target=self._send_voice_thread, args=(in_stream, chunk_size), daemon=True,
         ).start()
         threading.Thread(
-            target=self._receive_voice_thread, args=(out_stream,), daemon=True
+                target=self._receive_voice_thread, args=(out_stream,), daemon=True,
         ).start()
     
     def _stop_audio_streams(self) -> None:
@@ -1459,12 +1456,13 @@ class GUI(UIBase):
     def prompt_voice_call(self, init_msg: dict[str, Any]) -> None:
         if not self.client:
             return
+        
         def play_ringtone(stop_event: threading.Event):
             if not PYAUDIO_AVAILABLE or not self.audio_interface:
                 return
             try:
                 wf: Wave_read
-                with wave.open(self.config["ringtone_file"], 'rb') as wf: # type: ignore
+                with wave.open(self.config["ringtone_file"], 'rb') as wf:  # type: ignore
                     stream = self.audio_interface.open(
                             format=self.audio_interface.get_format_from_width(wf.getsampwidth()),
                             channels=wf.getnchannels(),
@@ -1501,9 +1499,9 @@ class GUI(UIBase):
             self.client.on_user_response(True, local_rate, local_chunk, local_max_fmt)
             self._start_audio_streams(local_rate, peer_rate, local_chunk, agreed_fmt)
             self.no_types_tk_thread(
-                self.voice_call_btn.configure,
-                text="End Call",
-                command=self._end_call_from_ui,
+                    self.voice_call_btn.configure,
+                    text="End Call",
+                    command=self._end_call_from_ui,
             )
             self.on_tk_thread(self.show_mute_button)
             self._pending_voice_init = {}
@@ -1587,18 +1585,17 @@ class GUI(UIBase):
             try:
                 if TYPE_CHECKING:
                     wf: Wave_read
-                    assert isinstance(self.audio_interface, pyaudio.PyAudio) # type: ignore
-                with wave.open(self.config["message_notif_sound_file"], 'rb') as wf: # type: ignore
+                    assert isinstance(self.audio_interface, pyaudio.PyAudio)  # type: ignore
+                with wave.open(self.config["message_notif_sound_file"], 'rb') as wf:  # type: ignore
                     stream = self.audio_interface.open(
                             format=self.audio_interface.get_format_from_width(wf.getsampwidth()),
                             channels=wf.getnchannels(),
                             rate=wf.getframerate(),
                             output=True,
                     )
-                    data = wf.readframes(1024)
-                    while data:
+                    while (data := wf.readframes(1024)) and stream.is_active():
                         stream.write(data)
-                        data = wf.readframes(1024)
+                    
                     stream.stop_stream()
                     stream.close()
             except Exception:

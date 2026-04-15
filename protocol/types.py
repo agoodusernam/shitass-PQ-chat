@@ -1,6 +1,6 @@
-from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TypedDict, NotRequired
+from typing import NotRequired, TypedDict
+
 
 class FileMetadata(TypedDict):
     """
@@ -22,6 +22,7 @@ class FileTransfer(TypedDict):
     file_path: Path
     metadata: FileMetadata
     compress: bool
+
 
 class DecodeError(Exception):
     pass

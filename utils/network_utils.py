@@ -3,6 +3,7 @@ import socket
 import struct
 from typing import Any
 
+
 def encode_send_message(sock: socket.socket, data: Any) -> str | None:
     encoded: bytes = json.dumps(data).encode('utf-8')
     return send_message(sock, encoded)

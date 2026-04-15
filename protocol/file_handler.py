@@ -5,32 +5,27 @@ import os
 import tempfile
 import typing
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from protocol.constants import SEND_CHUNK_SIZE
 from protocol.types import FileMetadata
 from utils.file_utils import (
-    safe_remove,
     cleanup_paths,
-    hash_file_hexdigest,
     decompress_gzip_file,
+    hash_file_hexdigest,
+    safe_remove
 )
-
-if TYPE_CHECKING:
-    from protocol.shared import SecureChatProtocol
 
 
 class ProtocolFileHandler:
     """
     Handles all file and related IO for the protocol.
     """
-    def __init__(self, protocol: SecureChatProtocol) -> None:
-        self.protocol = protocol
+    
+    def __init__(self) -> None:
         self.received_chunks: dict[str, set[int]] = {}
         self.temp_file_paths: dict[str, Path] = {}
         self.open_file_handles: dict[str, typing.BinaryIO] = {}
         self.sending_transfers: dict[str, FileMetadata] = {}
-        self.protocol.has_active_file_transfers = self.has_active_transfers_func
     
     def clear(self) -> None:
         self.received_chunks = {}
@@ -57,16 +52,13 @@ class ProtocolFileHandler:
         """Stop tracking a sending file transfer."""
         if transfer_id in self.sending_transfers:
             del self.sending_transfers[transfer_id]
-        
+    
     @property
     def has_active_file_transfers(self) -> bool:
         """Check if any file transfers (sending or receiving) are currently active."""
         if self.received_chunks or self.open_file_handles or self.sending_transfers:
             return True
         return False
-    
-    def has_active_transfers_func(self) -> bool:
-        return self.has_active_file_transfers
     
     def add_file_chunk(self, transfer_id: str, chunk_index: int, chunk_data: bytes, total_chunks: int) -> bool:
         """
@@ -96,12 +88,12 @@ class ProtocolFileHandler:
                         prefix=f'transfer_{transfer_id}_',
                         suffix='.tmp',
                         delete=False,
-                        )
+                )
                 temp_file_path = Path(temp_file.name)
                 
                 # Store the path and handle
                 self.temp_file_paths[transfer_id] = temp_file_path
-                self.open_file_handles[transfer_id] = temp_file # type: ignore
+                self.open_file_handles[transfer_id] = temp_file  # type: ignore
             
             except OSError as e:
                 raise ValueError(f"Failed to create temporary file: {e}")
@@ -121,7 +113,7 @@ class ProtocolFileHandler:
             bytes_written = file_handle.write(chunk_data)
             if bytes_written != len(chunk_data):
                 raise ValueError(f"Failed to write complete chunk: wrote {bytes_written} of {len(chunk_data)} bytes")
-                
+        
         except (OSError, IOError) as e:
             raise ValueError(f"Failed to write chunk {chunk_index} at position {position}: {e}")
         
@@ -142,7 +134,7 @@ class ProtocolFileHandler:
                         transfer_id: str,
                         output_path: str,
                         expected_hash: str,
-                        compressed: bool = True
+                        compressed: bool = True,
                         ) -> bool:
         """
         Finalise file transfer, optionally decompress, and verify integrity.

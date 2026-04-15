@@ -20,8 +20,8 @@ def allowed_unverified_inner_fields() -> set[str]:
         # ephemeral mode / nickname
         "mode", "owner_id", "nickname",
         # voice call (GUI/client variants may use these)
-        "rate", "chunk_size", "audio_format", "audio_data"
-        }
+        "rate", "chunk_size", "audio_format", "audio_data",
+    }
 
 
 def allowed_outer_fields(msg_type: Any) -> set[str]:

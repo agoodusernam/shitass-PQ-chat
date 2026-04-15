@@ -31,16 +31,16 @@ I didn't feel like doing it manually, and it's not that important
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import random
 import statistics
 import string
 import sys
 import time
 from dataclasses import dataclass
-from typing import Sequence, Any
-import json
-import os
 from datetime import datetime
+from typing import Any, Sequence
 
 from protocol.shared import SecureChatProtocol
 
@@ -134,7 +134,8 @@ def bucket_for(size: int) -> str:
 # ---------------------------------- Benchmark Core ---------------------------------- #
 
 def run_benchmark(num_messages: int, size_mode: str, min_size: int, max_size: int, fixed_size: int,
-                  explicit_sizes: Sequence[int] | None, warmup: int, seed: int | None) -> dict[str, Any]:
+                  explicit_sizes: Sequence[int] | None, warmup: int, seed: int | None,
+                  ) -> dict[str, Any]:
     if seed is not None:
         random.seed(seed)
     
@@ -277,14 +278,14 @@ def run_benchmark(num_messages: int, size_mode: str, min_size: int, max_size: in
             "dec_msgs_per_sec":               num_messages / dec_total_s if dec_total_s else 0.0,
             "end_to_end_msgs_per_sec":        num_messages / wall_s if wall_s else 0.0,
             "enc_throughput_plain_MBps":      (total_plaintext_bytes / (
-                        1024 * 1024)) / enc_total_s if enc_total_s else 0.0,
+                    1024 * 1024)) / enc_total_s if enc_total_s else 0.0,
             "dec_throughput_plain_MBps":      (total_plaintext_bytes / (
-                        1024 * 1024)) / dec_total_s if dec_total_s else 0.0,
+                    1024 * 1024)) / dec_total_s if dec_total_s else 0.0,
             "combined_throughput_plain_MBps": (total_plaintext_bytes / (1024 * 1024)) / wall_s if wall_s else 0.0,
             "enc_throughput_encrypted_MBps":  (total_encrypted_bytes / (
-                        1024 * 1024)) / enc_total_s if enc_total_s else 0.0,
+                    1024 * 1024)) / enc_total_s if enc_total_s else 0.0,
             "dec_throughput_encrypted_MBps":  (total_encrypted_bytes / (
-                        1024 * 1024)) / dec_total_s if dec_total_s else 0.0,
+                    1024 * 1024)) / dec_total_s if dec_total_s else 0.0,
         },
         "latency":   {
             "encryption": enc_stats.as_dict(),
@@ -296,7 +297,7 @@ def run_benchmark(num_messages: int, size_mode: str, min_size: int, max_size: in
                 "plaintext_bytes": bucket_plain_bytes[b],
                 "encrypted_bytes": bucket_enc_bytes[b],
             } for b in sorted(bucket_counts.keys(), key=lambda x: (len(x), x))
-        }
+        },
     }
     
     return results
@@ -305,6 +306,7 @@ def run_benchmark(num_messages: int, size_mode: str, min_size: int, max_size: in
 # ---------------------------------- Reporting ---------------------------------- #
 
 RESULTS_FILE = "speed_test_last.json"
+
 
 def load_previous_results(path: str) -> dict[str, Any] | None:
     try:
@@ -358,14 +360,14 @@ def print_comparison(prev: dict[str, Any] | None, curr: dict[str, Any]) -> None:
     deltas = compute_deltas(prev, curr)
     # Friendly labels
     labels = {
-        "encryption_time_s": "Encryption time (s)",
-        "decryption_time_s": "Decryption time (s)",
-        "wall_clock_time_s": "Wall clock time (s)",
-        "enc_msgs_per_sec": "Enc msgs/sec",
-        "dec_msgs_per_sec": "Dec msgs/sec",
-        "end_to_end_msgs_per_sec": "End-to-end msgs/sec",
-        "enc_throughput_plain_MBps": "Enc throughput (MB/s)",
-        "dec_throughput_plain_MBps": "Dec throughput (MB/s)",
+        "encryption_time_s":              "Encryption time (s)",
+        "decryption_time_s":              "Decryption time (s)",
+        "wall_clock_time_s":              "Wall clock time (s)",
+        "enc_msgs_per_sec":               "Enc msgs/sec",
+        "dec_msgs_per_sec":               "Dec msgs/sec",
+        "end_to_end_msgs_per_sec":        "End-to-end msgs/sec",
+        "enc_throughput_plain_MBps":      "Enc throughput (MB/s)",
+        "dec_throughput_plain_MBps":      "Dec throughput (MB/s)",
         "combined_throughput_plain_MBps": "Combined throughput (MB/s)",
     }
     for k, stat in deltas.items():
@@ -375,6 +377,7 @@ def print_comparison(prev: dict[str, Any] | None, curr: dict[str, Any]) -> None:
         pct = stat["pct"]
         pct_str = (f"{pct:+.2f}%" if pct != float('inf') else "n/a")
         print(f"  {labels.get(k, k):28}: {curr_v:.4f} (Δ {delta:+.4f}, {pct_str} vs prev {prev_v:.4f})")
+
 
 def human_bytes(n: int) -> str:
     units = ["B", "KB", "MB", "GB"]
@@ -475,13 +478,13 @@ def main(argv: Sequence[str]) -> int:
     
     # Load previous results before printing
     prev = load_previous_results(RESULTS_FILE)
-
+    
     if not args.json_only:
         print_report(results)
         print_comparison(prev, results)
     if args.json_out or args.json_only:
         print(json.dumps(results, indent=2, default=str))
-
+    
     # Save current results for next run comparison
     try:
         save_results(RESULTS_FILE, results)
