@@ -2,7 +2,7 @@ Secure Chat Protocol (SCP)
 
 
 ## 1. Scope
-This document specifies the Secure Chat Protocol (SCP) as implemented by this repository’s reference components: server.py, client.py, shared.py, and gui_client.py. SCP provides end‑to-end encrypted, low‑latency messaging with optional file transfer, and optional extensions for ephemeral messaging and voice calls. The protocol targets two-party sessions routed by a minimal relay server.
+This document specifies the Secure Chat Protocol (SCP) as implemented by this repository's reference components: server.py, new_client.py, and shared.py. SCP provides end-to-end encrypted, low-latency messaging with optional file transfer, and optional extensions for ephemeral messaging, voice calls, and dead drops. The protocol targets two-party sessions routed by a minimal relay server.
 
       The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL
       NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED",  "MAY", and
@@ -11,18 +11,20 @@ This document specifies the Secure Chat Protocol (SCP) as implemented by this re
 
 ## 2. Normative references
 - RFC 2119: Keywords for use in RFCs to Indicate Requirement Levels
-- NIST SP 800‑56A (informative): Recommendation for Pair-Wise Key Establishment Schemes
-- NIST SP 800‑38D (informative): AES-GCM recommendations
+- NIST SP 800-56A (informative): Recommendation for Pair-Wise Key Establishment Schemes
+- NIST SP 800-38D (informative): AES-GCM recommendations
 - RFC 8439 (informative): ChaCha20-Poly1305 for AEAD
-- CRYSTALS-Kyber (informative): ML‑KEM 1024 parameter set
-- HQC (informative): Hamming Quasi-Cyclic KEM, HQC‑256 parameter set
-- FIPS 202 (informative): SHA‑3 and SHAKE‑256
+- CRYSTALS-Kyber (informative): ML-KEM 1024 parameter set
+- CRYSTALS-Dilithium (informative): ML-DSA-87 parameter set (used for key exchange authentication)
+- HQC (informative): Hamming Quasi-Cyclic KEM, HQC-256 parameter set
+- FIPS 202 (informative): SHA-3 and SHAKE-256
+- FIPS 180-4 (informative): SHA-2 (SHA-512)
 
 ## 3. Terminology
 - Client: An endpoint participating in a two-party session.
 - Server: A simple relay that pairs two clients, forwards messages, and provides keepalives and basic control signals.
 - Session: A cryptographic context established via key exchange between two clients.
-- Encrypted message: An application payload protected by SCP’s message protection scheme.
+- Encrypted message: An application payload protected by SCP's message protection scheme.
 - Control message: A plaintext JSON message used for server control, keepalive, key exchange signals, etc.
 
 ## 4. Protocol overview
@@ -36,10 +38,10 @@ This document specifies the Secure Chat Protocol (SCP) as implemented by this re
   - **Message routing**: The server routes messages only between the two clients in the same session. Messages from Client A are delivered only to Client B, never to Client C or Client D.
   - **Capacity limits**: If a server supports N total clients, it can support N/2 concurrent sessions. Implementations SHOULD document their capacity limits.
   
-  **Example**: A server allowing four simultaneous clients can operate two independent sessions: {Client A ↔ Client B} and {Client C ↔ Client D}. Client A can only communicate with Client B and is unaware of the existence of Clients C and D.
+  **Example**: A server allowing four simultaneous clients can operate two independent sessions: {Client A <-> Client B} and {Client C <-> Client D}. Client A can only communicate with Client B and is unaware of the existence of Clients C and D.
 
 - The Server acts as a router for messages between the two connected Clients in a session and coordinates the start of key exchange for that session.
-- After a successful key exchange, Clients communicate using end‑to‑end encryption. The Server MUST NOT attempt to decrypt application data.
+- After a successful key exchange, Clients communicate using end-to-end encryption. The Server MUST NOT attempt to decrypt application data.
 
 ### 4.2 Versioning
 - The protocol version is represented as a dotted string.
@@ -51,55 +53,73 @@ This document specifies the Secure Chat Protocol (SCP) as implemented by this re
 - Patch version (x.y.Z) differences MAY be silently ignored
 
 ### 4.3 Transport and framing
-- Transport MUST be reliable and connection-oriented. TCP is RECOMMENDED.
-- All messages relayed by the Server are length‑prefixed: a 4‑byte big‑endian unsigned integer indicating payload length, followed by that many bytes.
-- Control messages (key exchange, server control, keepalive) are UTF‑8 JSON objects.
+- Transport SHOULD be reliable and connection-oriented. TCP is RECOMMENDED.
+- All messages relayed by the Server are length-prefixed: a 4-byte big-endian unsigned integer indicating payload length, followed by that many bytes.
+- Control messages (key exchange, server control, keepalive) are UTF-8 JSON objects.
 - ENCRYPTED_MESSAGE messages are UTF-8 JSON objects with base64-encoded ciphertext and metadata.
-- FILE_CHUNK messages use an optimised binary frame format (see §9.3) for performance.
+- FILE_CHUNK messages use an optimised binary frame format (see section 9.3) for performance.
   
 ## 5. Message types
-MessageType values are 16‑bit signed integers in the reference implementation (enumerated in shared.py). The following symbolic names and semantics are normative.
+MessageType values are 16-bit signed integers in the reference implementation (enumerated in constants.py). The following symbolic names and semantics are normative.
 
 Key exchange and verification
-- INITIATE_KEY_EXCHANGE (1): Server → Client. Signals a selected Client to initiate the key exchange.
-- KEY_EXCHANGE_COMPLETE (2): Server → Clients. Announces that both sides reported key exchange completion; Clients SHOULD transition into the encrypted state.
-- KEY_EXCHANGE_RESET (3): Server → Client. Informs the remaining Client to reset its key exchange state when its peer disconnects.
-- KEY_EXCHANGE_RESPONSE (4): Client → Server (to peer). Carries KEM response and the responder’s session DH public key.
-- KEY_EXCHANGE_INIT (5): Client → Server (to peer). Carries initiator’s KEM public key and session DH public key.
-- KEY_VERIFICATION (62): Client ↔ Client (encrypted). Carries user confirmation of out‑of‑band key verification.
+- INITIATE_KEY_EXCHANGE (1): Server -> Client. Signals a selected Client to initiate the key exchange.
+- KEY_EXCHANGE_COMPLETE (2): Server -> Clients. Announces that both sides reported key exchange completion; Clients SHOULD transition into the encrypted state.
+- KEY_EXCHANGE_RESET (3): Server -> Client. Informs the remaining Client to reset its key exchange state when its peer disconnects.
+- KE_DSA_RANDOM (4): Client -> Server (to peer). Carries the sender's ML-DSA-87 public key and a 32-byte client random. Sent by both clients (steps 3 and 6).
+- KE_MLKEM_PUBKEY (5): Client -> Server (to peer). Carries the initiator's ML-KEM-1024 public key, signed with ML-DSA-87 (step 8).
+- KE_MLKEM_CT_KEYS (6): Client -> Server (to peer). Carries the ML-KEM ciphertext and the responder's HQC-256 and X25519 public keys encrypted under intermediary key 1, signed with ML-DSA-87 (step 10).
+- KE_X25519_HQC_CT (7): Client -> Server (to peer). Carries the initiator's X25519 public key encrypted under intermediary key 1 and the HQC ciphertext encrypted under intermediary key 2, signed with ML-DSA-87 (step 13).
+- KE_VERIFICATION (8): Client -> Server (to peer). Carries a verification hash derived from the final key material (steps 15/16). Both sides MUST verify this hash matches before transitioning to the encrypted state.
+- KEY_VERIFICATION (62): Client <-> Client (encrypted). Carries user confirmation of out-of-band key verification.
 
 Messaging
-- ENCRYPTED_MESSAGE (10): Client ↔ Client (encrypted). Carries text or structured inner messages.
-- DELIVERY_CONFIRMATION (11): Client ↔ Client (encrypted). Reserved for GUI use; MAY be implemented.
-- DUMMY_MESSAGE (12): Client ↔ Client (encrypted). Noise packets carrying random data to mask traffic patterns. RECOMMENDED.
+- ENCRYPTED_MESSAGE (10): Client <-> Client (encrypted). Carries text or structured inner messages.
+- DELIVERY_CONFIRMATION (11): Client <-> Client (encrypted). Reserved for GUI use; MAY be implemented.
+- DUMMY_MESSAGE (12): Client <-> Client (encrypted). Noise packets carrying random data to mask traffic patterns. RECOMMENDED.
 - TEXT_MESSAGE (13): Inner type encapsulated inside ENCRYPTED_MESSAGE; carries plaintext text payload prior to encryption.
 
 File transfer
-- FILE_METADATA (20): Client ↔ Client (encrypted). Announces a proposed file transfer (name, size, hash, chunking, compression flag).
-- FILE_ACCEPT (21): Client ↔ Client (encrypted). Accepts a pending file transfer by transfer_id.
-- FILE_REJECT (22): Client ↔ Client (encrypted). Rejects a pending file transfer; includes reason.
-- FILE_CHUNK (23): Client ↔ Client (encrypted, binary frame). Carries an encrypted chunk for an accepted transfer.
-- FILE_COMPLETE (24): Client ↔ Client (encrypted). Signals that all chunks were sent/received.
+- FILE_METADATA (20): Client <-> Client (encrypted). Announces a proposed file transfer (name, size, hash, chunking, compression flag).
+- FILE_ACCEPT (21): Client <-> Client (encrypted). Accepts a pending file transfer by transfer_id.
+- FILE_REJECT (22): Client <-> Client (encrypted). Rejects a pending file transfer; includes reason.
+- FILE_CHUNK (23): Client <-> Client (encrypted, binary frame). Carries an encrypted chunk for an accepted transfer.
+- FILE_COMPLETE (24): Client <-> Client (encrypted). Signals that all chunks were sent/received.
 
 Voice calls (OPTIONAL)
 - VOICE_CALL_INIT (30), VOICE_CALL_ACCEPT (31), VOICE_CALL_REJECT (32), VOICE_CALL_DATA (33), VOICE_CALL_END (34): Optional extension messages used by GUI clients; implementations MAY omit.
 
 Server control
-- SERVER_FULL (40): Server → Client. Indicates the server is at capacity (two clients connected).
-- SERVER_VERSION_INFO (41): Server → Client. Announces protocol_version.
-- SERVER_DISCONNECT (42): Server → Client. Informs the client the server is disconnecting and SHOULD include a reason.
-- ERROR (43): Server → Clients. Broadcast error notification.
-- KEEP_ALIVE (44): Server → Client. Liveness probe.
+- SERVER_FULL (40): Server -> Client. Indicates the server is at capacity (two clients connected).
+- SERVER_VERSION_INFO (41): Server -> Client. Announces protocol_version and server identifier.
+- SERVER_DISCONNECT (42): Server -> Client. Informs the client the server is disconnecting and SHOULD include a reason.
+- ERROR (43): Server -> Clients. Broadcast error notification.
+- KEEP_ALIVE (44): Server -> Client. Liveness probe.
 
 Client control
-- CLIENT_DISCONNECT (50): Client → Server. Client intends to disconnect.
-- KEEP_ALIVE_RESPONSE (51): Client → Server. Response to KEEP_ALIVE.
+- CLIENT_DISCONNECT (50): Client -> Server. Client intends to disconnect.
+- KEEP_ALIVE_RESPONSE (51): Client -> Server. Response to KEEP_ALIVE.
 
-Client‑to‑client control (encrypted)
-- EMERGENCY_CLOSE (60): Client ↔ Client. Immediate end of session.
-- EPHEMERAL_MODE_CHANGE (61): Client ↔ Client. Optional toggle for ephemeral mode (OPTIONAL feature).
-- NICKNAME_CHANGE (63): Client ↔ Client. Requests/announces nickname change.
-- REKEY (64): Client ↔ Client. Rekey sub‑protocol messages (init/response/commit/commit_ack), encrypted.
+Client-to-client control (encrypted)
+- EMERGENCY_CLOSE (60): Client <-> Client. Immediate end of session.
+- EPHEMERAL_MODE_CHANGE (61): Client <-> Client. Optional toggle for ephemeral mode (OPTIONAL feature).
+- NICKNAME_CHANGE (63): Client <-> Client. Requests/announces nickname change.
+- REKEY (64): Client <-> Client. Rekey sub-protocol messages (init/response/commit/commit_ack), encrypted.
+
+Dead drop (OPTIONAL)
+- DEADDROP_START (70): Client -> Server. Requests a dead drop session.
+- DEADDROP_KE_RESPONSE (71): Client -> Server. Carries ML-KEM ciphertext for dead drop key exchange.
+- DEADDROP_CHECK (72): Client -> Server. Checks for pending dead drop messages.
+- DEADDROP_CHECK_RESPONSE (73): Server -> Client. Response to dead drop check.
+- DEADDROP_UPLOAD (74): Client -> Server. Uploads data to a dead drop.
+- DEADDROP_DOWNLOAD (75): Client -> Server. Requests download of dead drop data.
+- DEADDROP_REDOWNLOAD (76): Client -> Server. Requests re-download of dead drop data.
+- DEADDROP_ACCEPT (77): Server -> Client. Accepts a dead drop operation.
+- DEADDROP_DENY (78): Server -> Client. Denies a dead drop operation.
+- DEADDROP_DATA (79): Server -> Client. Carries dead drop data payload.
+- DEADDROP_COMPLETE (80): Client/Server. Signals dead drop transfer completion.
+- DEADDROP_MESSAGE (81): Client -> Server. Carries an encrypted dead drop message.
+- DEADDROP_PROVE (82): Client -> Server. Proves ownership of a dead drop.
 
 ## 6. Server behavior
 - **Capacity**: The Server MAY allow more than two simultaneous Clients across multiple sessions. If capacity is limited to a single session, additional connections beyond two SHOULD receive SERVER_FULL and be closed. 
@@ -108,99 +128,150 @@ Client‑to‑client control (encrypted)
   - **Client pairing**: Implementations MAY use different pairing strategies (first-come-first-served pairing, explicit room/session IDs, etc.) but MUST ensure clients are aware only of their paired peer, never of other sessions.
 
 - **Pairing and initiation**: For each session between a specific pair of Clients, the Server MUST select one Client in that pair and send INITIATE_KEY_EXCHANGE to start that session's handshake.
-- **Routing**: For any received client message intended for a peer within a specific session (key exchange signals and all post‑exchange traffic), the Server MUST forward the bytes unchanged to the correct peer in that session. The Server MUST NOT route messages across session boundaries.
-- **Version announcement**: Upon connection, the Server SHOULD send SERVER_VERSION_INFO with protocol_version = PROTOCOL_VERSION.
+- **Routing**: For any received client message intended for a peer within a specific session (key exchange signals and all post-exchange traffic), the Server MUST forward the bytes unchanged to the correct peer in that session. The Server MUST NOT route messages across session boundaries.
+- **Version announcement**: Upon connection, the Server SHOULD send SERVER_VERSION_INFO with protocol_version = PROTOCOL_VERSION and the server's identifier string. The identifier is used in key derivations (section 7) but is not cryptographically authenticated.
 - **Keepalive**: The Server SHOULD send KEEP_ALIVE roughly every 60 seconds to each connected Client in all sessions. If a Client fails to respond with KEEP_ALIVE_RESPONSE to three consecutive probes, the Server SHOULD disconnect that Client with SERVER_DISCONNECT and MAY include an explanatory reason.
 - **Reset on peer loss**: When a Client in a session disconnects, the Server MUST send KEY_EXCHANGE_RESET to its peer in that session. Other parallel sessions MUST be unaffected by the disconnect.
 
 ## 7. Key exchange and session establishment
 
-### 7.1 Cryptographic construction
-- Hybrid key agreement: ML‑KEM‑1024 (Kyber) and HQC‑256 KEMs are used alongside X25519 Diffie‑Hellman.
-- Session secrets:
-  - ML‑KEM shared secret and X25519 DH shared secret are combined via HKDF‑SHA‑512 to produce the session shared secret used for AEAD keys:
-    - salt = mlkem_shared_secret (32 bytes)
-    - info = b"hybrid kem+x25519"
-    - output length = 32 bytes
-  - HQC shared secret is retained separately and used to derive a per‑message one‑time keystream for an OTP‑style XOR layer (see §8.1).
-- From the combined 32‑byte session shared secret, session-specific keys are derived using per-session salts:
-  - **Per-session salt derivation**: Both parties independently compute a deterministic salt from the session's public key material:
-    ```
-    Algorithm: Derive per-session salt
-    Input: mlkem_pk_initiator, mlkem_pk_responder (ML-KEM-1024 public keys, 1568 bytes each)
-           hqc_pk_initiator, hqc_pk_responder (HQC-256 public keys, variable length)
-           x25519_pk_initiator, x25519_pk_responder (X25519 public keys, 32 bytes each)
-    Output: salt (32 bytes)
-    
-    1. Create a list: keys = [mlkem_pk_initiator, mlkem_pk_responder,
-                               hqc_pk_initiator, hqc_pk_responder,
-                               x25519_pk_initiator, x25519_pk_responder]
-    2. Sort keys lexicographically by comparing bytes:
-       - Treat each key as a byte sequence
-       - Compare byte-by-byte (0x00 < 0x01 < ... < 0xFF)
-       - Shorter sequences sort before longer sequences if all compared bytes are equal
-    3. Concatenate sorted keys: combined = keys[0] || keys[1] || ... || keys[5]
-    4. Append context string: material = combined || b"encryption_key_salt"
-    5. Compute hash: salt = SHA‑512(material)[0:32] (first 32 bytes of SHA-512 digest)
-    ```
-    
-    **Implementation note**: Lexicographic sorting ensures both initiator and responder compute identical salts regardless of role. The sorted order is deterministic based on the byte representation of public keys.
-    
-  - **Encryption key** (32 bytes): HKDF‑SHA‑512(ikm=session_shared_secret, salt=per_session_salt, info=b"derive_root_encryption_mac_keys", length=32)
-  - **Root chain key** (64 bytes): HKDF‑SHA3‑512(ikm=session_shared_secret, salt=per_session_salt, info=b"chain_key_root", length=64)
-- Both send_chain_key and receive_chain_key are initialised to the root chain key value (they start identical and diverge through ratcheting).
+### 7.1 Overview
+The key exchange is a multi-step handshake between two clients (Client A, the initiator, and Client B, the responder) coordinated by the server. All messages after the initial ML-DSA public key exchange are signed with ML-DSA-87 to authenticate the handshake. The server provides its identifier to both clients upon connection; this identifier is incorporated into key derivations but is not cryptographically authenticated.
 
-Rationale: The hybrid construction provides post‑quantum security against KEM breakage and mitigates single‑algorithm failure. Combining ML‑KEM with X25519 via HKDF ensures both secrets must be compromised to derive session AEAD keys. Retaining an independent HQC secret to drive an OTP‑style XOR layer adds defence‑in‑depth for ciphertext confidentiality even if an AEAD layer is weakened. Per-session salts derived from public keys ensure uniqueness of derived keys. Lexicographic sorting ensures both parties compute identical salts regardless of initiator/responder roles. Separate SHA‑512 and SHA3‑512 derivations for encryption and chain keys provide algorithm diversity.
+All text added to HKDF `info` arguments is encoded in UTF-8. A '+' indicates concatenation. All HKDF derivations produce 512-bit (64-byte) output unless stated otherwise.
 
-### 7.2 Messages
-KEY_EXCHANGE_INIT (JSON):
-{
-  "version": string,                  // MUST be PROTOCOL_VERSION
-  "type": 5,
-  "mlkem_public_key": base64,        // ML‑KEM public key of initiator
-  "hqc_public_key": base64,          // HQC‑256 public key of initiator (for OTP keystream secret)
-  "dh_public_key": base64            // X25519 session public key of initiator
-}
+### 7.2 Handshake steps
 
-KEY_EXCHANGE_RESPONSE (JSON):
+1. Client A receives INITIATE_KEY_EXCHANGE from the server.
+2. Client A generates key pairs and a client random (32 bytes):
+   - ML-DSA-87, ML-KEM-1024, X25519 key pairs; client random.
+3. Client A sends KE_DSA_RANDOM containing its ML-DSA public key and client random.
+4. Client B saves Client A's ML-DSA public key and client random.
+5. Client B generates its own key pairs, client random, and derives the combined random:
+   - ML-DSA-87, HQC-256, X25519 key pairs; client random.
+   - combined_random = HKDF-SHA-512(ikm=[lexicographically larger of the two randoms], salt=[smaller random], info=server_identifier + 'comb_rand')
+6. Client B sends KE_DSA_RANDOM containing its ML-DSA public key and client random.
+7. Client A saves Client B's ML-DSA public key and client random, and derives the same combined_random.
+
+From this point onward, every key exchange message is signed with ML-DSA-87.
+
+8. Client A sends KE_MLKEM_PUBKEY containing its ML-KEM public key (signed).
+9. Client B encapsulates to Client A's ML-KEM public key, obtaining the ML-KEM ciphertext and shared secret, then derives:
+   - intermediary_key_1 = HKDF-SHA3-512(ikm=ML-KEM secret, salt=combined_random, info=server_identifier + 'int_key_1')
+10. Client B encrypts its own HQC and X25519 public keys with intermediary_key_1, then sends KE_MLKEM_CT_KEYS containing:
+    - ML-KEM ciphertext (unencrypted)
+    - Encrypted HQC public key
+    - Encrypted X25519 public key
+    - Nonces for each encrypted payload
+    - ML-DSA signature over the concatenation of all fields
+11. Client A decapsulates the ML-KEM ciphertext, derives intermediary_key_1, and decrypts Client B's HQC and X25519 public keys.
+12. Client A performs X25519 DH with Client B's public key, encapsulates to Client B's HQC public key, and derives:
+    - intermediary_key_2 = HKDF-SHA3-512(ikm=intermediary_key_1, salt=X25519 secret, info=server_identifier + 'int_key_2')
+    - Final keys (see section 7.3)
+13. Client A sends KE_X25519_HQC_CT containing:
+    - X25519 public key, encrypted with intermediary_key_1
+    - HQC ciphertext, encrypted with intermediary_key_2
+    - Nonces for each encrypted payload
+    - ML-DSA signature over the concatenation of all fields
+14. Client B decrypts the X25519 public key (using intermediary_key_1), performs DH, derives intermediary_key_2, decrypts the HQC ciphertext (using intermediary_key_2), decapsulates HQC, and derives final keys (see section 7.3).
+15. Client B sends KE_VERIFICATION containing its verification hash.
+16. Client A verifies the hash, then sends its own KE_VERIFICATION.
+
+Both clients MUST verify that the received verification hash matches their locally derived value before transitioning to the encrypted state.
+
+Note: The client randoms are combined with SHA-2 (HKDF-SHA-512), rather than SHA-3 like the other derivations; this is to provide algorithm diversity.
+
+### 7.3 Final key derivation
+After both the ML-KEM, X25519, and HQC shared secrets are established, each client derives:
+
+- **OTP material** (64 bytes): HKDF-SHA3-512(ikm=HQC secret, salt=combined_random, info=server_identifier + 'otp_material')
+- **Own chain key root** (64 bytes): HKDF-SHA3-512(ikm=ML-KEM secret + X25519 secret, salt=own client random, info=server_identifier + 'chain_key_root')
+- **Peer chain key root** (64 bytes): HKDF-SHA3-512(ikm=ML-KEM secret + X25519 secret, salt=peer's client random, info=server_identifier + 'chain_key_root')
+
+The own chain key root is used as the initial send_chain_key; the peer chain key root is used as the initial receive_chain_key. They start with different values and diverge further through ratcheting.
+
+512-bit keys are generated on purpose to support the DoubleEncryptor construction (section 8.1).
+
+### 7.4 Cryptographic verification (KE_VERIFICATION)
+The verification key is computed by:
+1. Taking the OTP material, own chain key root, and peer chain key root.
+2. Sorting them lexicographically.
+3. Hashing the concatenation with SHA3-512.
+4. Truncating the result to 256 bits.
+
+The verification key is sent in plaintext (not encrypted) in the KE_VERIFICATION message. Both sides MUST verify that the received value matches their locally derived verification key.
+
+### 7.5 User verification (out-of-band)
+- After both KE_VERIFICATION messages are exchanged successfully, Clients SHOULD display a human-readable session fingerprint derived from the verification key and provide a mechanism to exchange KEY_VERIFICATION {verified: bool}.
+- The fingerprint is order-independent because the verification key is derived from lexicographically sorted materials.
+
+### 7.6 Wire formats
+
+KE_DSA_RANDOM (JSON, steps 3 and 6):
 {
   "version": string,                  // MUST be PROTOCOL_VERSION
   "type": 4,
-  "mlkem_ciphertext": base64,        // ML‑KEM encapsulation to initiator’s ML‑KEM key
-  "mlkem_public_key": base64,        // Responder’s ML‑KEM public key (for verification context)
-  "hqc_ciphertext": base64,          // HQC encapsulation to initiator’s HQC key
-  "hqc_public_key": base64,          // Responder’s HQC public key (for verification context)
-  "dh_public_key": base64            // Responder’s X25519 session public key
+  "mldsa_public_key": base64,        // ML-DSA-87 public key
+  "client_random": base64             // 32-byte client random
 }
 
-- The initiator, upon receiving KEY_EXCHANGE_RESPONSE, decapsulates ML‑KEM and HQC ciphertexts, mixes the ML‑KEM shared secret with DH(X25519) via HKDF to derive the session secret, sets the HQC shared secret aside for the OTP keystream, initialises encryption and ratchet state, and transitions to the encrypted state.
-- The responder, upon processing KEY_EXCHANGE_INIT, encapsulates to the provided ML‑KEM and HQC public keys, performs DH with the initiator’s X25519 key, derives the same secrets, initialises its state, and sends KEY_EXCHANGE_RESPONSE.
-- Version mismatch: If the peer version differs, Clients SHOULD warn the user, but MAY continue.
+KE_MLKEM_PUBKEY (JSON, step 8):
+{
+  "type": 5,
+  "mlkem_public_key": base64,        // ML-KEM-1024 public key
+  "mldsa_signature": base64           // ML-DSA-87 signature over mlkem_public_key
+}
 
-### 7.3 Verification (out‑of‑band)
-- After Server sends KEY_EXCHANGE_COMPLETE, Clients SHOULD display a human‑readable session fingerprint derived from the combined key material and provide a mechanism to exchange KEY_VERIFICATION {verified: bool}.
-- The fingerprint MUST be computed from a deterministic, order‑independent combination of both parties’ public keys, including ML‑KEM public keys, X25519 session public keys, and HQC public keys (e.g. lexicographic sort then concatenate before hashing to words). This ensures both parties see the same fingerprint regardless of initiator/responder roles.
+KE_MLKEM_CT_KEYS (JSON, step 10):
+{
+  "type": 6,
+  "mlkem_ciphertext": base64,        // ML-KEM ciphertext (unencrypted)
+  "encrypted_hqc_pubkey": base64,    // HQC-256 public key encrypted with intermediary key 1
+  "encrypted_x25519_pubkey": base64, // X25519 public key encrypted with intermediary key 1
+  "nonce1": base64,                   // Nonce for HQC public key encryption
+  "nonce2": base64,                   // Nonce for X25519 public key encryption
+  "mldsa_signature": base64           // ML-DSA-87 signature over concatenation of all above fields
+}
 
-Rationale: The hybrid construction provides post‑quantum security against KEM breakage and mitigates single‑algorithm failure. The user verification step defends against active MITM at the relay, and inclusion of all public keys (ML‑KEM, X25519, HQC) binds the full handshake context.
+KE_X25519_HQC_CT (JSON, step 13):
+{
+  "type": 7,
+  "encrypted_x25519_pubkey": base64,  // X25519 public key encrypted with intermediary key 1
+  "encrypted_hqc_ciphertext": base64, // HQC ciphertext encrypted with intermediary key 2
+  "nonce1": base64,                    // Nonce for X25519 public key encryption
+  "nonce2": base64,                    // Nonce for HQC ciphertext encryption
+  "mldsa_signature": base64            // ML-DSA-87 signature over concatenation of all above fields
+}
+
+KE_VERIFICATION (JSON, steps 15 and 16):
+{
+  "type": 8,
+  "verification_key": base64           // 256-bit verification hash
+}
+
+- Version mismatch: If the peer version in KE_DSA_RANDOM differs, Clients SHOULD warn the user, but MAY continue.
+- ML-DSA keys MUST be discarded after the key exchange is complete.
+
+Rationale: The multi-step handshake progressively establishes trust: ML-DSA signatures authenticate each step, intermediary keys protect later key material from passive observers who might compromise a single layer, and the combined_random binds both parties' contributions to the derivation. The hybrid construction (ML-KEM + HQC + X25519) provides post-quantum security and mitigates single-algorithm failure. Retaining an independent HQC secret to drive an OTP-style XOR layer adds defence-in-depth. Separate SHA-512 and SHA3-512 derivations provide algorithm diversity. Per-client chain key roots (using each client's own random as salt) ensure asymmetric initial state between sender and receiver chains.
 
 ## 8. Message protection and ratcheting
 
 ### 8.1 Primitives
-- AEAD composition: A DoubleEncryptor composes AES‑GCM‑SIV and ChaCha20‑Poly1305 sequentially under keys derived from HKDF. Nonces are XOR‑mixed with secret material derived from the ratchet chain, ensuring the actual nonce used internally by the AEAD ciphers is hidden from adversaries. Although a nonce value appears in the wire format (§8.3), the true AEAD nonce is secret and not public knowledge. This prevents known-nonce attacks against ChaCha20-Poly1305 and AES-GCM-SIV, as an adversary observing network traffic cannot determine the actual nonce values used in the encryption operations.
+- AEAD composition: A DoubleEncryptor composes AES-GCM-SIV and ChaCha20-Poly1305 sequentially under keys derived from HKDF. Nonces are XOR-mixed with secret material derived from the ratchet chain, ensuring the actual nonce used internally by the AEAD ciphers is hidden from adversaries. Although a nonce value appears in the wire format (section 8.3), the true AEAD nonce is secret and not public knowledge. This prevents known-nonce attacks against ChaCha20-Poly1305 and AES-GCM-SIV, as an adversary observing network traffic cannot determine the actual nonce values used in the encryption operations.
   - **Nonce mixing**: The DoubleEncryptor derives secret nonces for each AEAD cipher by XORing the public nonce with portions of the encryption key:
     - AES-GCM-SIV nonce (12 bytes): `aes_nonce = public_nonce XOR encryption_key[0:12]` (first 12 bytes of the 64-byte encryption key)
     - ChaCha20-Poly1305 nonce (12 bytes): `chacha_nonce = public_nonce XOR encryption_key[-12:]` (last 12 bytes of the 64-byte encryption key)
-  - The public nonce (12 random bytes) is transmitted in the message (§8.3), but the actual nonces provided to the AEAD primitives remain secret because the encryption key is never transmitted and is derived independently by both parties from the shared secret.
-- OTP layer from HQC secret: In addition to the double AEAD, an OTP‑style XOR layer is applied using a per‑message keystream derived from the HQC shared secret and the message counter. The keystream is generated as SHAKE‑256(hqc_secret || counter_be_32) and truncated to the ciphertext length. Encryption applies XOR before the AEAD layers; decryption removes the XOR after AEAD decryption. This layer adds confidentiality even if an AEAD layer is weakened. Implementations MUST use the exact same counter value as in the message AAD to derive the keystream.
+  - The public nonce (12 random bytes) is transmitted in the message (section 8.3), but the actual nonces provided to the AEAD primitives remain secret because the encryption key is never transmitted and is derived independently by both parties from the shared secret.
+- OTP layer from HQC secret: In addition to the double AEAD, an OTP-style XOR layer is applied using a per-message keystream derived from the HQC shared secret and the message counter. The keystream is generated as SHAKE-256(hqc_secret || counter_be_32) and truncated to the ciphertext length. Encryption applies XOR before the AEAD layers; decryption removes the XOR after AEAD decryption. This layer adds confidentiality even if an AEAD layer is weakened. Implementations MUST use the exact same counter value as in the message AAD to derive the keystream.
 - Padding: Plaintext is padded to a multiple of 512 bytes (PKCS7) prior to encryption to hinder traffic analysis.
-- Additional MAC: A separate HMAC‑SHA‑512 over selected metadata further authenticates fields (e.g. counters and per‑message DH keys) to mitigate CPU‑exhaustion attacks on high counters.
+- Additional MAC: A separate HMAC-SHA-512 over selected metadata further authenticates fields (e.g. counters and per-message DH keys) to mitigate CPU-exhaustion attacks on high counters.
 
 ### 8.2 Counters and AAD
 - Each message increments a sender counter (uint32). The receiver maintains a peer_counter.
 - The receiver MUST reject messages with counter ≤ peer_counter unless it has saved chain state for that counter (out-of-order delivery).
 - Implementations SHOULD support limited out-of-order message delivery by saving intermediate chain states for skipped counters.
 - A bounded buffer (RECOMMENDED: 1000 entries) SHOULD be used to store skipped counter states to prevent memory exhaustion.
-- For ENCRYPTED_MESSAGE and FILE_CHUNK, AAD includes type, counter, nonce, and the sender's per‑message X25519 public key.
+- For ENCRYPTED_MESSAGE and FILE_CHUNK, AAD includes type, counter, nonce, and the sender's per-message X25519 public key.
 
 ### 8.3 ENCRYPTED_MESSAGE format (JSON)
 Outer (after encryption, sent as bytes):
@@ -210,20 +281,20 @@ Outer (after encryption, sent as bytes):
   "nonce": base64(12 bytes),
   "ciphertext": base64,
   "dh_public_key": base64(32 bytes),
-  "verification": base64(HMAC‑SHA‑512)
+  "verification": base64(HMAC-SHA-512)
 }
 
 Inner (plaintext JSON, examples):
 - Text: {"type": 13, "text": string}
-- File metadata: see §9.1
+- File metadata: see section 9.1
 - Control: e.g. {"type": 60} for EMERGENCY_CLOSE, {"type": 64, ...} for REKEY
 
 ### 8.4 State updates
-- Send path: Mix DH(ephemeral, peer base) into the send chain, derive per‑message key, ratchet the send chain forward.
-- Receive path: Advance a temp chain from receive_chain_key up to the counter, mix DH(peer ephemeral, own receive private), derive per‑message key, verify/decrypt, then commit the receive_chain_key to the new state and update peer_counter.
+- Send path: Mix DH(ephemeral, peer base) into the send chain, derive per-message key, ratchet the send chain forward.
+- Receive path: Advance a temp chain from receive_chain_key up to the counter, mix DH(peer ephemeral, own receive private), derive per-message key, verify/decrypt, then commit the receive_chain_key to the new state, and update peer_counter.
 
 ## 9. File transfer
-Implementations MAY support file transfer as specified here. Compression is OPTIONAL; see §9.4.
+Implementations MAY support file transfer as specified here. Compression is OPTIONAL; see section 9.4.
 
 ### 9.1 Metadata (encrypted JSON inside ENCRYPTED_MESSAGE)
 {
@@ -231,7 +302,7 @@ Implementations MAY support file transfer as specified here. Compression is OPTI
   "transfer_id": string (<= 64, alnum),
   "filename": string,
   "file_size": int,
-  "file_hash": hex(blake2b‑256),        // hash of the original file
+  "file_hash": hex(blake2b-256),        // hash of the original file
   "total_chunks": int,
   "compressed": bool,
   "processed_size": int                 // size of the data stream after (optional) compression
@@ -261,32 +332,31 @@ Header JSON:
 
 - The receiver MUST verify AAD (type/counter/nonce/dh_public_key), decrypt, parse header_json, and associate chunk_bytes with transfer_id, chunk_index.
 - Recommended chunk size is SEND_CHUNK_SIZE = 1 MiB. Implementations MAY use different sizes when interoperable.
-- The receiver SHOULD write chunks to a temporary file at offset chunk_index * SEND_CHUNK_SIZE and track received indices; upon completion it SHOULD verify the final file hash and move to the destination path atomically. If compressed=true, it SHOULD decompress before final verification and move.
+- Upon completion, the receiver SHOULD verify the final file hash and move to the destination path atomically. If compressed=true, it SHOULD decompress before final verification and move.
 
 ### 9.4 Compression
 - The sender MAY compress the file stream before chunking. The metadata.compressed flag MUST reflect the decision.
-- Implementations SHOULD avoid compressing known incompressible types (e.g. zip, png, mp3).
 
 ## 10. Keepalive and liveness
-- The Server SHOULD send KEEP_ALIVE every ~60 seconds to each Client.
+- The Server MAY send KEEP_ALIVE every ~60 seconds to each Client.
 - Clients MUST respond with KEEP_ALIVE_RESPONSE promptly upon receipt.
 - If three consecutive responses are missed, the Server SHOULD disconnect the Client and MAY notify with SERVER_DISCONNECT.
 
 ## 11. Rate limits and field validation
 ### 11.1 Message throttling
 - Clients MAY apply rate limits of at least five messages per second per peer. Excess messages SHOULD be dropped.
-- Clients MAY reject single messages larger than 33.260 bytes from unverified peers, unless an allowed high‑volume activity (file transfer, voice call, or rekey) is in progress.
+- Clients MAY reject single messages larger than 33.260 bytes from unverified peers, unless an allowed high-volume activity (file transfer, voice call, or rekey) is in progress.
 - Client MUST NOT reject messages <= 33.260 bytes due to their size. That is the size of the KEY_EXCHANGE_RESPONSE message.
 
 ### 11.2 Field validation
-- For plaintext outer JSON, Clients SHOULD enforce an allow‑list of fields per message type and drop messages containing unexpected fields.
-- For decrypted inner JSON, Clients SHOULD enforce a superset allow‑list of fields for known message categories and drop messages with unexpected fields.
+- For plaintext outer JSON, Clients SHOULD enforce an allow-list of fields per message type and drop messages containing unexpected fields.
+- For decrypted inner JSON, Clients SHOULD enforce a superset allow-list of fields for known message categories and drop messages with unexpected fields.
 
-Rationale: Conservative validation limits attack surface and reduces parsing risks from untrusted peers during the most vulnerable phases (pre‑verification).
+Rationale: Conservative validation limits attack surface and reduces parsing risks from untrusted peers during the most vulnerable phases (pre-verification).
 
 ## 12. Traffic shaping and intervals
 ### 12.1 Defined send interval
-- Clients MAY send at a regular interval (e.g. every 250 ms tick) from a background sender loop. When no application data is pending, Clients MAY consider sending dummy messages (§12.2) to preserve a consistent traffic pattern.
+- Clients MAY send at a regular interval (e.g. every 250 ms tick) from a background sender loop. When no application data is pending, Clients MAY consider sending dummy messages (section 12.2) to preserve a consistent traffic pattern.
 
 ### 12.2 Dummy messages
 - When encryption is active and no file transfer is in progress, Clients MAY send DUMMY_MESSAGE packets at the defined interval containing random data up to a configurable limit (default MAX_DUMMY_PACKET_SIZE = 512 bytes).
@@ -297,11 +367,11 @@ Rationale: Conservative validation limits attack surface and reduces parsing ris
 Rationale: Regular intervals and dummy traffic hinder traffic analysis by flattening observable timing and size patterns. Counter sharing prevents adversaries from distinguishing dummy traffic by observing counter gaps.
 
 ## 13. Rekeying
-- Rekeying messages (type REKEY=64) MUST be sent inside ENCRYPTED_MESSAGE and follow a three‑step flow: {action: "init"} → {action: "response"} → {action: "commit"}. A fourth {action: "commit_ack"} step MAY be used by implementations that desire explicit acknowledgement.
+- Rekeying messages (type REKEY=64) MUST be sent inside ENCRYPTED_MESSAGE and follow a three-step flow: {action: "init"} -> {action: "response"} -> {action: "commit"}. A fourth {action: "commit_ack"} step MAY be used by implementations that desire explicit acknowledgement.
 - Upon successful commit, both sides MUST activate pending keys atomically after sending an encrypted "encrypt_json_then_switch" instruction to avoid ambiguity.
 
 13.1 REKEY message schemas (inner JSON)
-- Init (sender → peer):
+- Init (sender -> peer):
   {
     "type": 64,
     "action": "init",
@@ -309,7 +379,7 @@ Rationale: Regular intervals and dummy traffic hinder traffic analysis by flatte
     "hqc_public_key": base64,
     "dh_public_key": base64
   }
-- Response (responder → sender):
+- Response (responder -> sender):
   {
     "type": 64,
     "action": "response",
@@ -317,7 +387,7 @@ Rationale: Regular intervals and dummy traffic hinder traffic analysis by flatte
     "hqc_ciphertext": base64,
     "dh_public_key": base64
   }
-- Commit (sender → responder):
+- Commit (sender -> responder):
   {
     "type": 64,
     "action": "commit"
@@ -329,14 +399,14 @@ Rationale: Regular intervals and dummy traffic hinder traffic analysis by flatte
   }
 
 13.2 Rekey semantics
-- The responder MUST derive pending keys from ML‑KEM and X25519 (as in §7.1) and set the HQC secret aside for the OTP keystream (as in §8.1). Active keys MUST NOT change until commit is processed.
+- The responder MUST derive pending keys from ML-KEM and X25519 and set the HQC secret aside for the OTP keystream (as in section 8.1). Active keys MUST NOT change until commit is processed.
 - After processing the response, the initiator MUST derive pending keys and then send commit. Both sides MUST switch to the pending keys atomically after the next encrypted instruction ("encrypt_json_then_switch").
 - After switching, message counters MUST reset to zero on both sides.
 
 13.3 Automatic rekeying (OPTIONAL)
 - Implementations MAY initiate rekeying automatically. Triggers MAY include:
   - Message count threshold (e.g. after N messages, possibly with randomised jitter per session), and/or
-  - Time‑based threshold (e.g. every T minutes of active messaging).
+  - Time-based threshold (e.g. every T minutes of active messaging).
 - When automatic rekeying is enabled, peers SHOULD avoid synchronised rekeys by applying random jitter around the base threshold.
 - If a peer rejects or ignores REKEY, the initiator SHOULD back off and MAY retry later, or allow manual rekey.
 
@@ -347,28 +417,29 @@ Rationale: Regular intervals and dummy traffic hinder traffic analysis by flatte
 
 ## 15. Optional features
 - Ephemeral mode: EPHEMERAL_MODE_CHANGE (61) MAY be implemented to instruct peers/GUI to apply ephemeral retention rules. Protocol behaviour remains identical on the wire.
-- Voice calls: VOICE_CALL_* (30–34) MAY be implemented for real‑time audio. These messages MUST be sent inside ENCRYPTED_MESSAGE when used.
+- Voice calls: VOICE_CALL_* (30–34) MAY be implemented for real-time audio. These messages MUST be sent inside ENCRYPTED_MESSAGE when used.
+- Dead drops: DEADDROP_* (70–82) MAY be implemented for asynchronous, server-mediated encrypted message/file exchange when no peer is connected. Dead drop sessions use a separate ML-KEM key exchange with the server and are independent of the peer-to-peer session protocol.
 
 ## 16. Conformance
 A conformant SCP implementation MUST:
-- Implement transport framing (§4.3) with length-prefixed messages.
-- Implement Server capacity rules (§6) with at least two-client support and keepalive (§10).
-- Implement the hybrid KEM+X25519 key exchange (§7) with version announcement.
-- Implement message protection and Double Ratchet (§8) with per-message ephemeral DH.
-- Implement ENCRYPTED_MESSAGE messaging (§8.3) with counter-based replay protection.
-- Support KEY_VERIFICATION signalling and fingerprint display (§7.3).
-- Support REKEY (§13) and EMERGENCY_CLOSE.
-- Enforce counter monotonicity with support for bounded out-of-order delivery (§8.2).
+- Implement transport framing (section 4.3) with length-prefixed messages.
+- Implement Server capacity rules (section 6) with at least two-client support and keepalive (section 10).
+- Implement the multi-step hybrid key exchange (section 7) with ML-DSA signing, intermediary keys, and version announcement.
+- Implement message protection and Double Ratchet (section 8) with per-message ephemeral DH.
+- Implement ENCRYPTED_MESSAGE messaging (section 8.3) with counter-based replay protection.
+- Support KE_VERIFICATION (section 7.4) and KEY_VERIFICATION signalling with fingerprint display (section 7.5).
+- Support REKEY (section 13) and EMERGENCY_CLOSE.
+- Enforce counter monotonicity with support for bounded out-of-order delivery (section 8.2).
 
 A conformant implementation SHOULD:
-- Implement rate limiting and field validation (§11).
-- Implement traffic shaping with regular send intervals and dummy messages (§12).
+- Implement rate limiting and field validation (section 11).
+- Implement traffic shaping with regular send intervals and dummy messages (section 12).
 
 A conformant implementation MAY:
-- Implement file transfer (§9) with binary chunk framing. 
-- Support compression for file transfers (§9.4) with automatic detection of incompressible types.
-- Implement ephemeral mode and voice call extensions (§15).
-- Support more than two simultaneous clients with independent session management (§6).
+- Implement file transfer (section 9) with binary chunk framing. 
+- Support compression for file transfers (section 9.4) with automatic detection of incompressible types.
+- Implement ephemeral mode and voice call extensions (section 15).
+- Support more than two simultaneous clients with independent session management (section 6).
 
 ## 17. Trust and threat model
 
@@ -376,8 +447,8 @@ A conformant implementation MAY:
 The protocol relies on the following trust assumptions:
 - **Endpoint security**: Both communicating parties maintain secure endpoints (devices, operating systems, application environment) that are not compromised. The protocol cannot protect against compromised endpoints that leak keys, plaintext, or metadata.
 - **Server relay fidelity**: The server is trusted to faithfully relay messages between clients without modification, dropping, or injection. The server is NOT trusted with confidentiality or authenticity of message content, but it MUST correctly forward encrypted payloads.
-- **Out-of-band verification**: Both parties perform the fingerprint verification step (§7.3) correctly over an authenticated out-of-band channel (e.g. in-person comparison, authenticated video call, trusted messenger).
-- **Cryptographic primitives**: ML-KEM-1024 (Kyber), HQC-256, X25519, ChaCha20-Poly1305, AES-GCM-SIV, HMAC-SHA-512, HKDF-SHA-512, HKDF-SHA3-512, BLAKE2b, SHAKE-256, and SHA-512 remain cryptographically secure against the adversary's computational capabilities.
+- **Out-of-band verification**: Both parties perform the fingerprint verification step (section 7.5) correctly over an authenticated out-of-band channel (e.g. in-person comparison, authenticated video call, trusted messenger).
+- **Cryptographic primitives**: ML-KEM-1024 (Kyber), ML-DSA-87 (Dilithium), HQC-256, X25519, ChaCha20-Poly1305, AES-GCM-SIV, HMAC-SHA-512, HKDF-SHA-512, HKDF-SHA3-512, BLAKE2b, SHAKE-256, and SHA-512 remain cryptographically secure against the adversary's computational capabilities.
 
 ### 17.2 Security guarantees
 Under the trust assumptions above, the protocol provides:
@@ -395,13 +466,13 @@ The protocol is designed to resist the following adversary capabilities:
 - **Active network attacker**: Can intercept, modify, drop, replay, delay, or inject messages on the network. Such modifications are detected and rejected by cryptographic authentication.
 - **Malicious or compromised server**: Can observe encrypted message metadata (sizes, timing, connection tuples), attempt to drop or reorder messages, or attempt message injection. Cannot decrypt content, forge authenticated messages, or perform undetected modification. If the server drops or modifies messages, clients will detect the tampering (authentication failure) or session disruption, but communication cannot continue without a faithful relay.
 - **Retrospective attacker with quantum computer**: An adversary who records traffic today and later obtains a quantum computer must break ML-KEM-1024, HQC-256, and X25519 to recover session keys. Breaking only one or two of these algorithms (e.g., X25519 via Shor's algorithm) is insufficient.
-- **Traffic analysis attacker**: An adversary observing encrypted traffic patterns to infer metadata (message frequency, size, conversation structure). Mitigated by padding (§8.1), dummy messages (§12.2), and regular send intervals (§12.1).
+- **Traffic analysis attacker**: An adversary observing encrypted traffic patterns to infer metadata (message frequency, size, conversation structure). Mitigated by padding (section 8.1), dummy messages (section 12.2), and regular send intervals (section 12.1).
 
 #### 17.3.2 Out-of-scope attacks
 The protocol does NOT protect against:
 - **Endpoint compromise**: If an endpoint is compromised (malware, physical access, OS vulnerability), the adversary can extract keys, plaintext, and metadata directly. Endpoint security is the responsibility of the user.
-- **Man-in-the-middle during key exchange**: If the out-of-band fingerprint verification (§7.3) is not performed, or is performed over a channel controlled by the attacker, the adversary can establish separate sessions with each party and relay messages (MITM). Fingerprint verification is REQUIRED to prevent this attack.
-- **Compromised cryptographic primitives**: If the core primitives (ML-KEM-1024, HQC-256, X25519, ChaCha20-Poly1305, AES-GCM-SIV, HMAC, HKDF, SHA-512, SHAKE-256) are fundamentally broken, security guarantees may fail. The hybrid and layered construction provides defence-in-depth but does not guarantee security if multiple primitives fail simultaneously. However, HQC-256 must be broken in addition to other failures to compromise message confidentiality (see §17.6).
+- **Man-in-the-middle during key exchange**: If the out-of-band fingerprint verification (section 7.5) is not performed, or is performed over a channel controlled by the attacker, the adversary can establish separate sessions with each party and relay messages (MITM). Fingerprint verification is REQUIRED to prevent this attack.
+- **Compromised cryptographic primitives**: If the core primitives (ML-KEM-1024, ML-DSA-87, HQC-256, X25519, ChaCha20-Poly1305, AES-GCM-SIV, HMAC, HKDF, SHA-512, SHAKE-256) are fundamentally broken, security guarantees may fail. The hybrid and layered construction provides defence-in-depth but does not guarantee security if multiple primitives fail simultaneously. However, HQC-256 must be broken in addition to other failures to compromise message confidentiality (see section 17.6).
 - **Side-channel attacks**: Timing attacks, power analysis, cache attacks, and other side-channel vectors against implementations are not explicitly mitigated by the protocol specification. Implementations SHOULD use constant-time cryptographic libraries where available.
 - **Denial of service**: A malicious server or network attacker can always deny service by dropping connections or messages. Availability is not guaranteed.
 - **Social engineering and user errors**: The protocol cannot prevent users from accepting malicious files, sharing keys, verifying fingerprints incorrectly, or using compromised out-of-band channels.
@@ -413,26 +484,26 @@ The protocol does NOT protect against:
 - **Forward secrecy limitations**: Forward secrecy protects past messages if keys are compromised in the future. However, if an adversary compromises an endpoint in real-time, they can capture messages as they are decrypted. Forward secrecy does not protect against active, ongoing compromise.
 - **Key verification requirement**: Security against active MITM attacks is CONDITIONAL on users performing the fingerprint verification step correctly. If users skip verification or perform it incorrectly, the protocol degrades to server-trust.
 - **Implementation vulnerabilities**: This specification describes the protocol; actual security depends on correct, secure implementation. Implementation bugs, weak random number generation, improper key storage, or side-channel leakage can undermine protocol-level security guarantees.
-- **Quantum algorithm advances**: While ML-KEM-1024 and HQC-256 are currently believed to be quantum-resistant, unexpected advances in quantum algorithms or cryptanalysis could weaken these assumptions. However, the triple-hybrid construction (§17.6) ensures that ML-KEM-1024, HQC-256, AND X25519 must all be broken simultaneously to compromise session key security. Even if two algorithms are broken, the third provides full protection. Additionally, HQC-256 must be broken to compromise message confidentiality regardless of other algorithm failures.
-- **Memory exhaustion attacks**: Despite bounded skipped-message buffers (§8.2), an adversary sending many out-of-order messages can still consume memory and CPU resources. Implementations SHOULD enforce strict rate limits (§11.1) and resource quotas.
+- **Quantum algorithm advances**: While ML-KEM-1024 and HQC-256 are currently believed to be quantum-resistant, unexpected advances in quantum algorithms or cryptanalysis could weaken these assumptions. However, the triple-hybrid construction (section 17.6) ensures that ML-KEM-1024, HQC-256, AND X25519 must all be broken simultaneously to compromise session key security. Even if two algorithms are broken, the third provides full protection. Additionally, HQC-256 must be broken to compromise message confidentiality regardless of other algorithm failures.
+- **Memory exhaustion attacks**: Despite bounded skipped-message buffers (section 8.2), an adversary sending many out-of-order messages can still consume memory and CPU resources. Implementations SHOULD enforce strict rate limits (section 11.1) and resource quotas.
 
 ### 17.5 Recommended operational security practices
 To maximise security under the trust and threat model:
-- Perform fingerprint verification (§7.3) for every new session over a trusted, authenticated out-of-band channel
+- Perform fingerprint verification (section 7.5) for every new session over a trusted, authenticated out-of-band channel
 - Use the latest version of the protocol and implementation to benefit from security updates
 - Run clients and servers on hardened, up-to-date operating systems
 - Consider using Tor or VPNs to protect connection metadata from network observers
-- Enable dummy message transmission (§12.2) to hinder traffic analysis
-- Regularly rekey sessions (§13) to limit the impact of potential key compromise
+- Enable dummy message transmission (section 12.2) to hinder traffic analysis
+- Regularly rekey sessions (section 13) to limit the impact of potential key compromise
 - Do not reuse the same server for highly sensitive communications if the server operator is not fully trusted
 - Use encrypted, ephemeral storage on endpoints where feasible to reduce forensic exposure
-- Implement and enforce rate limits (§11.1) to protect against resource exhaustion
+- Implement and enforce rate limits (section 11.1) to protect against resource exhaustion
 
 ### 17.6 Cryptographic resilience and defence-in-depth
 The protocol is designed with layered cryptographic defences such that breaking a single algorithm in each cryptographic layer does NOT compromise security. An adversary must break BOTH algorithms AND HQC in each hybrid construction simultaneously to succeed:
 
 #### 17.6.1 Hybrid key exchange resilience
-**Construction**: The session key is derived by combining ML-KEM-1024, HQC-256, and X25519 shared secrets (§7.1). The ML-KEM shared secret serves as HKDF salt, X25519 is mixed via HKDF for session key derivation, and HQC is retained separately to derive per-message OTP keystreams. All three secrets are cryptographically bound in the key derivation process.
+**Construction**: The session key is derived by combining ML-KEM-1024, HQC-256, and X25519 shared secrets (section 7.3). The ML-KEM and X25519 shared secrets are concatenated and used as HKDF input keying material for chain key derivation, while HQC is retained separately to derive per-message OTP keystreams. All three secrets are cryptographically bound in the key derivation process.
 
 **Security property**: To recover session keys and decrypt messages, an adversary must break ALL THREE:
 - ML-KEM-1024 (post-quantum KEM), AND
@@ -449,7 +520,7 @@ The protocol is designed with layered cryptographic defences such that breaking 
 **Rationale**: This triple-hybrid construction provides "defence-in-depth" quantum-hedge security. Communications remain secure against future quantum computers breaking X25519 (via two post-quantum KEMs), while also remaining secure if one post-quantum KEM is unexpectedly broken (via the other PQ KEM and classical ECDH). All three must fail for session establishment to be compromised. Additionally, HQC's role in the OTP layer means that even if session key derivation is partially compromised, message confidentiality is preserved as long as HQC remains secure.
 
 #### 17.6.2 Double encryption resilience
-**Construction**: Each message is encrypted with a DoubleEncryptor that applies AES-256-GCM-SIV and ChaCha20-Poly1305 sequentially (§8.1). Additionally, an OTP-style XOR layer derived from the HQC-256 shared secret is applied before the AEAD layers. Plaintext is first XORed with a per-message keystream (SHAKE-256 of HQC secret + counter), then encrypted with one AEAD cipher, then encrypted again with the second AEAD cipher. All three layers use independent key material.
+**Construction**: Each message is encrypted with a DoubleEncryptor that applies AES-256-GCM-SIV and ChaCha20-Poly1305 sequentially (section 8.1). Additionally, an OTP-style XOR layer derived from the HQC-256 shared secret is applied before the AEAD layers. Plaintext is first XORed with a per-message keystream (SHAKE-256 of HQC secret + counter), then encrypted with one AEAD cipher, then encrypted again with the second AEAD cipher. All three layers use independent key material.
 
 **Security property**: To decrypt a message, an adversary must break ALL THREE:
 - HQC-256 (for the OTP keystream), AND
@@ -467,7 +538,7 @@ The protocol is designed with layered cryptographic defences such that breaking 
 (cryptanalysis, implementation vulnerabilities, side-channels) and provides diversity in cryptographic design 
 (OTP, stream cipher, block cipher, different internal structures). 
 An adversary must develop successful attacks against three independent, well-studied cryptographic constructions. 
-Additionally, the protocol's nonce-hiding mechanism (§8.1) ensures that the actual nonces used by the AEAD ciphers 
+Additionally, the protocol's nonce-hiding mechanism (section 8.1) ensures that the actual nonces used by the AEAD ciphers 
 remain secret preventing known-nonce attacks against ChaCha20-Poly1305 and AES-GCM-SIV even if other aspects of the protocol are compromised.
 
 #### 17.6.3 Combined resilience
@@ -483,7 +554,7 @@ The protocol's defence-in-depth approach applies at both the key exchange layer 
   - If ML-KEM-1024, X25519, AES-GCM-SIV, and ChaCha20-Poly1305 are all broken, content stays secure (HQC-256 still protects via the OTP layer).
   - An adversary must break at least three algorithms: AES-GCM-SIV + ChaCha20-Poly1305 + HQC-256, OR ML-KEM-1024 + X25519 + HQC-256.
 - **HQC-256 requirement**: HQC-256 MUST always be broken to compromise content security, regardless of which other algorithms are broken. This is because:
-  - The HQC shared secret drives a per-message OTP-style XOR layer (§8.1) applied to all ciphertexts.
+  - The HQC shared secret drives a per-message OTP-style XOR layer (section 8.1) applied to all ciphertexts.
   - Even if both AEAD layers (AES-GCM-SIV and ChaCha20-Poly1305) are broken, the OTP layer derived from HQC provides confidentiality.
   - Even if key exchange is compromised (ML-KEM-1024 and X25519 both broken), the OTP keystream derived from the HQC secret remains secure and protects message content.
 
@@ -497,16 +568,17 @@ The protocol's defence-in-depth approach applies at both the key exchange layer 
 This multi-layer hybrid approach with three key exchange algorithms and two AEAD layers significantly increases the difficulty for adversaries and provides resilience against single-algorithm failures, unexpected cryptanalytic advances, implementation vulnerabilities, and future quantum computers.
 
 ## 18. Security considerations
-- Post‑quantum and classical hybridisation reduces the risk of single‑algorithm compromise; combining KEM and DH via HKDF binds secrets and ensures both are required to fail for a full break.
+- Post-quantum and classical hybridisation reduces the risk of single-algorithm compromise; combining KEM and DH via HKDF binds secrets and ensures both are required to fail for a full break.
+- ML-DSA-87 signatures during the key exchange authenticate each handshake step, preventing message tampering by an active attacker during key establishment. ML-DSA keys are ephemeral to the handshake and discarded after completion.
 - Padding to 512 bytes and dummy traffic defend against size and timing analysis; these do not eliminate all side channels but increase the cost for an adversary.
-- Separate HMAC over counters and per‑message DH public keys reduce the feasibility of CPU‑exhaustion via forged high counters without early rejection.
+- Separate HMAC over counters and per-message DH public keys reduce the feasibility of CPU-exhaustion via forged high counters without early rejection.
 - Replay protection via counters and ratchet advancement is mandatory; implementations MUST reject stale counters.
-- Keys and sensitive state SHOULD be overwritten after use where practical (best‑effort erasure).
+- Keys and sensitive state SHOULD be overwritten after use where practical (best-effort erasure).
 - The Double Ratchet mechanism with per-message X25519 ephemeral keys provides forward secrecy: compromise of long-term keys does not expose past messages. Breaking secrecy of message N requires both: (1) the chain key state at counter N, and (2) the ephemeral DH private key for message N.
 - Implementations SHOULD limit the skipped counter buffer to prevent memory exhaustion attacks where an adversary sends messages with very high counter values.
 
 ## 19. Privacy considerations
-- The Server observes only metadata needed to route and maintain liveness (connection timing, message sizes, connection tuples). Payloads are end‑to-end encrypted.
+- The Server observes only metadata needed to route and maintain liveness (connection timing, message sizes, connection tuples). Payloads are end-to-end encrypted.
 - Server implementations SHOULD minimise operational logs and avoid storing connection metadata (IP addresses, message sizes, timestamps, session durations) beyond immediate operational needs.
 - Server implementations MUST NOT log message content, counters, nonces, key exchange material, or any cryptographic state under any circumstances.
 - Server implementations SHOULD NOT persist connection logs to disk; in-memory operational state is preferred.
@@ -530,7 +602,7 @@ This multi-layer hybrid approach with three key exchange algorithms and two AEAD
 - Dummy traffic generation SHOULD be disabled during large file transfers to conserve bandwidth
 - Implementations MAY batch multiple small messages into a single send interval
 
-## 22. Appendix A: Wire examples (non‑normative)
+## 22. Appendix A: Wire examples (non-normative)
 A.1 ENCRYPTED_MESSAGE (text)
 {
   "type": 10,

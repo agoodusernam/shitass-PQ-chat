@@ -1,0 +1,20 @@
+{
+    "BG_COLOR":                 "#000000",
+    "FG_COLOR":                 "#ffffff",
+    "ENTRY_BG_COLOR":           "#1a1a1a",
+    "BUTTON_BG_COLOR":          "#333333",
+    "BUTTON_ACTIVE_BG":         "#555555",
+    "TEXT_BG_COLOR":            "#000000",
+    "STATUS_CONNECTED":         "#00ff00",
+    "STATUS_NOT_CONNECTED":     "#ff0000",
+    "STATUS_KEY_EXCHANGE":      "#ffaa00",
+    "STATUS_VERIFIED":          "#00aaff",
+    "MESSAGE_TIME_COLOR":       "#aaaaaa",
+    "MESSAGE_NICKNAME_COLOR":   "#00aaff",
+    "SYSTEM_MESSAGE_COLOR":     "#ffaa00",
+    "ERROR_MESSAGE_COLOR":      "#ff0000",
+    "DELIVERY_PENDING_COLOR":   "#aaaaaa",
+    "DELIVERY_CONFIRMED_COLOR": "#00ff00",
+    "SPELLCHECK_ERROR_COLOR":   "#ff0000",
+    "SPEED_LABEL_COLOR":        "#00ff00"
+}

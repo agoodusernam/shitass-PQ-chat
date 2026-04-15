@@ -31,18 +31,18 @@ I didn't feel like doing it manually, and it's not that important
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import random
 import statistics
 import string
 import sys
 import time
 from dataclasses import dataclass
-from typing import Sequence, Any
-import json
-import os
 from datetime import datetime
+from typing import Any, Sequence
 
-from shared import SecureChatProtocol
+from protocol.shared import SecureChatProtocol
 
 
 # ---------------------------------- Data Structures ---------------------------------- #
@@ -134,20 +134,46 @@ def bucket_for(size: int) -> str:
 # ---------------------------------- Benchmark Core ---------------------------------- #
 
 def run_benchmark(num_messages: int, size_mode: str, min_size: int, max_size: int, fixed_size: int,
-                  explicit_sizes: Sequence[int] | None, warmup: int, seed: int | None) -> dict[str, Any]:
+                  explicit_sizes: Sequence[int] | None, warmup: int, seed: int | None,
+                  ) -> dict[str, Any]:
     if seed is not None:
         random.seed(seed)
     
-    # Initialize protocols & perform key exchange
+    # Initialize protocols & perform multi-step key exchange
     proto_a = SecureChatProtocol()
     proto_b = SecureChatProtocol()
-    pub_a = proto_a.generate_keys()
-    init_msg = proto_a.create_key_exchange_init(pub_a)
-    hqc_ciphertext, mlkem_ciphertext, _ = proto_b.process_key_exchange_init(init_msg)
-    resp_msg = proto_b.create_key_exchange_response(mlkem_ciphertext, hqc_ciphertext)
-    proto_a.process_key_exchange_response(resp_msg)
     
-    assert proto_a.verification_key == proto_b.verification_key, "Shared secrets mismatch during setup"
+    # Step 3: Client A sends DSA random
+    msg1 = proto_a.create_ke_dsa_random()
+    proto_a.ke_step = 1
+    # Step 4-5: Client B receives and processes
+    proto_b.process_ke_dsa_random(msg1)
+    proto_b.ke_step = 2
+    # Step 6: Client B sends DSA random
+    msg2 = proto_b.create_ke_dsa_random()
+    # Step 7: Client A receives
+    proto_a.process_ke_dsa_random(msg2)
+    # Step 8: Client A sends ML-KEM pubkey
+    msg3 = proto_a.create_ke_mlkem_pubkey()
+    # Step 9: Client B receives
+    proto_b.process_ke_mlkem_pubkey(msg3)
+    # Step 10: Client B sends ML-KEM ct + encrypted keys
+    msg4 = proto_b.create_ke_mlkem_ct_keys()
+    # Step 11: Client A receives
+    proto_a.process_ke_mlkem_ct_keys(msg4)
+    # Step 13: Client A sends X25519 + HQC ct
+    msg5 = proto_a.create_ke_x25519_hqc_ct()
+    # Step 14: Client B receives and finalizes
+    proto_b.process_ke_x25519_hqc_ct(msg5)
+    # Step 15: Client B sends verification
+    msg6 = proto_b.create_ke_verification()
+    # Step 16: Client A verifies (keys already finalized in create_ke_x25519_hqc_ct)
+    assert proto_a.process_ke_verification(msg6), "Verification failed A->B"
+    # Client A sends verification back
+    msg7 = proto_a.create_ke_verification()
+    assert proto_b.process_ke_verification(msg7), "Verification failed B->A"
+    
+    assert proto_a._verification_key == proto_b._verification_key, "Shared secrets mismatch during setup"
     
     # Prepare size sequence
     sizes: list[int] = []
@@ -252,14 +278,14 @@ def run_benchmark(num_messages: int, size_mode: str, min_size: int, max_size: in
             "dec_msgs_per_sec":               num_messages / dec_total_s if dec_total_s else 0.0,
             "end_to_end_msgs_per_sec":        num_messages / wall_s if wall_s else 0.0,
             "enc_throughput_plain_MBps":      (total_plaintext_bytes / (
-                        1024 * 1024)) / enc_total_s if enc_total_s else 0.0,
+                    1024 * 1024)) / enc_total_s if enc_total_s else 0.0,
             "dec_throughput_plain_MBps":      (total_plaintext_bytes / (
-                        1024 * 1024)) / dec_total_s if dec_total_s else 0.0,
+                    1024 * 1024)) / dec_total_s if dec_total_s else 0.0,
             "combined_throughput_plain_MBps": (total_plaintext_bytes / (1024 * 1024)) / wall_s if wall_s else 0.0,
             "enc_throughput_encrypted_MBps":  (total_encrypted_bytes / (
-                        1024 * 1024)) / enc_total_s if enc_total_s else 0.0,
+                    1024 * 1024)) / enc_total_s if enc_total_s else 0.0,
             "dec_throughput_encrypted_MBps":  (total_encrypted_bytes / (
-                        1024 * 1024)) / dec_total_s if dec_total_s else 0.0,
+                    1024 * 1024)) / dec_total_s if dec_total_s else 0.0,
         },
         "latency":   {
             "encryption": enc_stats.as_dict(),
@@ -271,7 +297,7 @@ def run_benchmark(num_messages: int, size_mode: str, min_size: int, max_size: in
                 "plaintext_bytes": bucket_plain_bytes[b],
                 "encrypted_bytes": bucket_enc_bytes[b],
             } for b in sorted(bucket_counts.keys(), key=lambda x: (len(x), x))
-        }
+        },
     }
     
     return results
@@ -280,6 +306,7 @@ def run_benchmark(num_messages: int, size_mode: str, min_size: int, max_size: in
 # ---------------------------------- Reporting ---------------------------------- #
 
 RESULTS_FILE = "speed_test_last.json"
+
 
 def load_previous_results(path: str) -> dict[str, Any] | None:
     try:
@@ -333,14 +360,14 @@ def print_comparison(prev: dict[str, Any] | None, curr: dict[str, Any]) -> None:
     deltas = compute_deltas(prev, curr)
     # Friendly labels
     labels = {
-        "encryption_time_s": "Encryption time (s)",
-        "decryption_time_s": "Decryption time (s)",
-        "wall_clock_time_s": "Wall clock time (s)",
-        "enc_msgs_per_sec": "Enc msgs/sec",
-        "dec_msgs_per_sec": "Dec msgs/sec",
-        "end_to_end_msgs_per_sec": "End-to-end msgs/sec",
-        "enc_throughput_plain_MBps": "Enc throughput (MB/s)",
-        "dec_throughput_plain_MBps": "Dec throughput (MB/s)",
+        "encryption_time_s":              "Encryption time (s)",
+        "decryption_time_s":              "Decryption time (s)",
+        "wall_clock_time_s":              "Wall clock time (s)",
+        "enc_msgs_per_sec":               "Enc msgs/sec",
+        "dec_msgs_per_sec":               "Dec msgs/sec",
+        "end_to_end_msgs_per_sec":        "End-to-end msgs/sec",
+        "enc_throughput_plain_MBps":      "Enc throughput (MB/s)",
+        "dec_throughput_plain_MBps":      "Dec throughput (MB/s)",
         "combined_throughput_plain_MBps": "Combined throughput (MB/s)",
     }
     for k, stat in deltas.items():
@@ -350,6 +377,7 @@ def print_comparison(prev: dict[str, Any] | None, curr: dict[str, Any]) -> None:
         pct = stat["pct"]
         pct_str = (f"{pct:+.2f}%" if pct != float('inf') else "n/a")
         print(f"  {labels.get(k, k):28}: {curr_v:.4f} (Δ {delta:+.4f}, {pct_str} vs prev {prev_v:.4f})")
+
 
 def human_bytes(n: int) -> str:
     units = ["B", "KB", "MB", "GB"]
@@ -450,13 +478,13 @@ def main(argv: Sequence[str]) -> int:
     
     # Load previous results before printing
     prev = load_previous_results(RESULTS_FILE)
-
+    
     if not args.json_only:
         print_report(results)
         print_comparison(prev, results)
     if args.json_out or args.json_only:
         print(json.dumps(results, indent=2, default=str))
-
+    
     # Save current results for next run comparison
     try:
         save_results(RESULTS_FILE, results)
