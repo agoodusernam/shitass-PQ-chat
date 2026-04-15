@@ -19,6 +19,12 @@ The server only routes encrypted data and cannot read message contents.
 -   **Replay Attack Prevention**: A monotonic message counter with out-of-order delivery support prevents attackers from replaying old messages.
 -   **Traffic Analysis Resistance**: Padding to 512-byte blocks and optional dummy messages obscure message patterns.
 -   **Rekey Support**: Allows generation of fresh session keys without reconnecting, limiting exposure from potential key compromise.
+-   **Dead Drop File Sharing**: Anonymously upload and download files via the server's dead drop facility without revealing the transfer to your peer.
+-   **Voice Calling**: Optional peer-to-peer voice calls (requires PyAudio).
+-   **Multiple UI Options**: Choose between a full GUI, a terminal UI (TUI), or a debug GUI at launch.
+-   **Themes**: Supports dark, light, and high-contrast themes (configured in `config.json`).
+-   **Spell Checking**: Built-in spell checker in the GUI client.
+-   **Delivery Receipts**: Optional message delivery confirmation.
 
 ## Getting Started
 
@@ -36,74 +42,92 @@ The server only routes encrypted data and cannot read message contents.
     ```
 
 2.  Install the required packages:
+
+    **Client:**
     ```bash
     pip install -r requirements.txt
     ```
 
+    **Server only** (lighter install, no UI dependencies):
+    ```bash
+    pip install -r requirements_server.txt
+    ```
+
+### Configuration
+
+Application settings are stored in `config.json` and managed by `config.py`. Key options include:
+
+| Option | Default | Description |
+|---|---|---|
+| `theme` | `"dark"` | UI theme (`"dark"`, `"light"`, or `"high_contrast"`) |
+| `notification_sound` | `true` | Play a sound on new messages |
+| `system_notifications` | `true` | Show OS-level notifications |
+| `auto_display_images` | `true` | Automatically render received images inline |
+| `allow_voice_calls` | `true` | Enable/disable voice call support |
+| `allow_file_transfer` | `true` | Enable/disable file transfers |
+| `delivery_receipts` | `true` | Send and display delivery confirmations |
+| `send_dummy_packets` | `true` | Send dummy packets to obscure traffic patterns |
+| `rekey_interval` | `480` | Seconds between automatic rekeys |
+| `deaddrop_enabled` | `true` | Enable the server-side dead drop facility |
+| `deaddrop_max_size` | `10737418240` | Maximum total dead drop storage in bytes (10 GB) |
+
 ### Running the Application
 
-#### Option 1: GUI Client (Recommended)
+#### Starting the Server
 
-1.  **Start the server** in a terminal window. It will wait for two clients to connect.
-    ```bash
-    python server.py
-    ```
+Start the server first. It will wait for two clients to connect.
+```bash
+python server.py
+```
 
-2.  **Start the GUI clients** - Run this command in two separate terminal windows or double-click the file:
-    ```bash
-    python gui_client.py
-    ```
+The server requires only `requirements_server.txt` dependencies and has no UI.
 
-The GUI client provides a user-friendly interface with:
+#### Starting the Client
+
+Run the client launcher and pick a UI when prompted:
+```bash
+python run_client.py
+```
+
+Available UIs:
+- **GUI** — Full graphical interface built with tkinter. Recommended for most users.
+- **TUI** — Simple terminal-based interface using `print`/`input`.
+- **debug_GUI** — GUI with additional debug output, useful for development.
+
+The GUI client provides:
 - Connection controls (host and port configuration)
 - Real-time status updates
-- Scrollable chat display area
-- Message input box at the bottom
+- Scrollable chat display with inline image rendering
+- Message input with built-in spell checker
 - Key verification button for enhanced security
 - File transfer support with drag-and-drop
-- Optional voice calling (requires PyAudio)
-
-#### Option 2: Command-Line Client
-
-1.  **Start the server** in a terminal window. It will wait for two clients to connect.
-    ```bash
-    python server.py
-    ```
-
-2.  **Start the first client** in a new terminal window.
-    ```bash
-    python client.py
-    ```
-
-3.  **Start the second client** in a third terminal window.
-    ```bash
-    python client.py
-    ```
-
-Once both clients are connected, the key exchange will complete automatically. You can then begin sending secure messages.
+- Dead drop upload/download window
+- Voice calling (requires PyAudio)
+- Themeable interface
 
 ## Testing
 
-To verify the cryptographic implementation and protocol security, run the test suite:
+To run the test suite:
 
 ```bash
-python test_secure_chat.py
+pip install pytest
+python -m pytest tests/
 ```
 
-The tests cover key exchange, encryption/decryption, message authentication, and replay protection.
+The tests cover client initialisation, message routing, encryption/decryption, key exchange steps, rekeying, rate limiting, file transfer handling, and replay protection.
 
 ## Architecture
 
-The application consists of four main components:
+The application is split into clearly separated layers:
 
--   `server.py`: The central server that listens for client connections and relays 
-encrypted messages between them. It has no knowledge of the encryption keys and cannot decrypt traffic.
--   `gui_client.py`: A user-friendly GUI client built with tkinter (no additional dependencies). 
-Features a chat interface with input box at the bottom and message display above.
--   `client.py`: A command-line client application for terminal-based interaction. 
-Handles the same cryptographic operations as the GUI client.
--   `shared.py`: A core module containing the cryptographic protocol logic used 
-by both clients and server for message handling and key exchange.
+-   `server.py`: The central relay server. Listens for two clients, routes encrypted messages between them, and manages the dead drop facility. It has no knowledge of encryption keys and cannot decrypt traffic.
+-   `run_client.py`: The client launcher. Discovers available UIs in the `UIs/` folder and lets the user pick one at startup.
+-   `new_client.py`: Core client logic (`SecureChatClient`). Handles all networking, cryptography, protocol state, and background operations. Fully UI-agnostic — all user-facing interaction is delegated to a pluggable UI object.
+-   `UIs/`: Pluggable UI implementations (`GUI.py`, `TUI.py`, `debug_GUI.py`). Each exposes a `run(client_class)` entry point.
+-   `protocol/`: Protocol implementation — message creation/parsing, cryptographic classes, file handling, shared key-exchange logic, message types, and constants.
+-   `SecureChatABCs/`: Abstract base classes (`ClientBase`, `UIBase`, `ProtocolBase`) that define the interface contract between layers.
+-   `utils/`: Utility modules for network I/O, file operations, input validation, and voice call negotiation.
+-   `config.py`: Unified `ConfigHandler` that manages all static constants and runtime user preferences, persisted to `config.json`.
 
 ### Protocol Flow (Simplified Overview)
 
@@ -126,18 +150,18 @@ by both clients and server for message handling and key exchange.
     -   Per-message X25519 ephemeral keys are mixed into the ratchet chain to provide forward secrecy.
     -   HMAC-SHA-512 authenticates message metadata (counters, ephemeral keys).
 
-**Note**: This is a simplified overview. See `SPEC.md` for the complete protocol specification including message formats, rekeying, file transfer, and security considerations.
+**Note**: This is a simplified overview. See `docs/SPEC.md` for the complete protocol specification including message formats, rekeying, file transfer, dead drops, and security considerations.
 
 ## Security Overview
 
-This project is NOT intended for production use. It is an educational implementation to 
+This project is NOT intended for production use. It is an educational implementation to
 demonstrate concepts in post-quantum cryptography, end-to-end encryption, forward secrecy, and defence-in-depth cryptographic design.
 
 **Important Security Notes**:
 - This Python reference implementation may not provide constant-time guarantees and may be vulnerable to side-channel attacks.
 - Endpoint security is assumed. Compromised endpoints will leak keys and plaintext.
 - The server is trusted to faithfully relay messages but is NOT trusted with confidentiality.
-- Out-of-band fingerprint verification (§7.3 in SPEC.md) is REQUIRED to prevent man-in-the-middle attacks.
+- Out-of-band fingerprint verification (section 7.3 in `docs/SPEC.md`) is REQUIRED to prevent man-in-the-middle attacks.
 - Before use in production, a thorough security audit and formal verification of the protocol and implementation is necessary.
 
 ### Cryptographic Details
@@ -150,4 +174,4 @@ demonstrate concepts in post-quantum cryptography, end-to-end encryption, forwar
 -   **Hash Functions**: SHA-512, SHA-3-512, BLAKE2b-256 (file integrity)
 -   **Forward Secrecy**: Per-message X25519 ephemeral keys mixed into ratchet chain
 
-For detailed security analysis, threat model, and cryptographic resilience properties, see §17-18 in `SPEC.md`.
+For detailed security analysis, threat model, and cryptographic resilience properties, see sections 17-18 in `docs/SPEC.md`.
