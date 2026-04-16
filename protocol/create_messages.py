@@ -128,7 +128,7 @@ def create_file_reject_message(transfer_id: str, reason: str = "User declined") 
     }
 
 
-def create_file_metadata_message(file_path: Path, compress: bool = True) -> FileMetadata:
+def create_file_metadata_message(file_path: Path, compress: bool = True, chunk_size: int = SEND_CHUNK_SIZE) -> FileMetadata:
     """Create a file metadata message for file transfer initiation.
     Automatically disables compression for known incompressible types.
     """
@@ -152,20 +152,20 @@ def create_file_metadata_message(file_path: Path, compress: bool = True) -> File
     total_processed_size: int = 0
     
     try:
-        for chunk in chunk_file(file_path, compress=effective_compress):
+        for chunk in chunk_file(file_path, compress=effective_compress, chunk_size=chunk_size):
             total_chunks += 1
             total_processed_size += len(chunk)
     except (OSError, IOError) as e:
         print(f"Warning: I/O error during pre-chunking, using estimation: {e}")
-        total_chunks = (file_size + SEND_CHUNK_SIZE - 1) // SEND_CHUNK_SIZE
+        total_chunks = (file_size + chunk_size - 1) // chunk_size
         total_processed_size = file_size if not effective_compress else int(file_size * 0.85)
     except ValueError as e:
         print(f"Warning: Value error during pre-chunking, using estimation: {e}")
-        total_chunks = (file_size + SEND_CHUNK_SIZE - 1) // SEND_CHUNK_SIZE
+        total_chunks = (file_size + chunk_size - 1) // chunk_size
         total_processed_size = file_size if not effective_compress else int(file_size * 0.85)
     except Exception as e:
         print(f"Warning: Unexpected error during pre-chunking, using estimation: {e}")
-        total_chunks = (file_size + SEND_CHUNK_SIZE - 1) // SEND_CHUNK_SIZE
+        total_chunks = (file_size + chunk_size - 1) // chunk_size
         total_processed_size = file_size if not effective_compress else int(file_size * 0.85)
     
     # Generate unique transfer ID. It should be unique but does not have to be cryptographically secure.

@@ -35,11 +35,10 @@ from SecureChatABCs.ui_base import UIBase, UICapability
 from config import ClientConfigHandler
 from protocol import constants, types, utils
 from protocol.constants import (
-    MessageType, PROTOCOL_VERSION, SEND_CHUNK_SIZE,
+    MessageType, PROTOCOL_VERSION,
     NONCE_SIZE, CTR_NONCE_SIZE, DOUBLE_KEY_SIZE,
     DEADDROP_KDF_KEY_LENGTH, DEADDROP_PBKDF2_ITERATIONS,
     DEADDROP_FILE_EXT_HEADER_SIZE, DEADDROP_HKDF_SALT_SIZE,
-    MAX_NICKNAME_LENGTH,
     MAGIC_SIZE, FILE_CHUNK_CIPHERTEXT_OFFSET,
     DEADDROP_NONCE_OFFSET, DEADDROP_CIPHERTEXT_OFFSET,
     DEADDROP_LENGTH_PREFIX_SIZE,
@@ -377,7 +376,7 @@ class SecureChatClient(ClientBase):
                         "Warning: Sending file over an unverified connection. This is vulnerable to MitM attacks.",
                 )
             
-            metadata = create_file_metadata_message(file_path_obj, compress=compress)
+            metadata = create_file_metadata_message(file_path_obj, compress=compress, chunk_size=config["send_chunk_size"])
             compress = metadata["compressed"]
             
             transfer_id = metadata["transfer_id"]
@@ -699,11 +698,11 @@ class SecureChatClient(ClientBase):
             first = True
             while True:
                 if first:
-                    chunk_data = f.read(SEND_CHUNK_SIZE - DEADDROP_FILE_EXT_HEADER_SIZE)
+                    chunk_data = f.read(config["send_chunk_size"] - DEADDROP_FILE_EXT_HEADER_SIZE)
                     plaintext_chunk = header + chunk_data
                     first = False
                 else:
-                    chunk_data = f.read(SEND_CHUNK_SIZE)
+                    chunk_data = f.read(config["send_chunk_size"])
                     plaintext_chunk = chunk_data
                 nonce = hashlib.sha3_256(key + chunk_index.to_bytes(4, byteorder='little')).digest()[:CTR_NONCE_SIZE]
                 if not chunk_data:
@@ -801,7 +800,7 @@ class SecureChatClient(ClientBase):
         """Background thread loop: read raw frames from the socket and dispatch them to handle_message."""
         while self.connected:
             try:
-                message_data = receive_message(self._socket)
+                message_data = receive_message(self._socket, max_size=config["max_message_size"])
                 self.handle_message(message_data)
             except ConnectionError:
                 self.ui.display_system_message("Connection to server lost.")
@@ -1340,7 +1339,7 @@ class SecureChatClient(ClientBase):
         if not self.nickname_change_allowed:
             self.ui.display_system_message("Peer attempted to change nickname")
             return
-        self.peer_nickname = str(message.get("nickname", "Other User"))[:MAX_NICKNAME_LENGTH]
+        self.peer_nickname = str(message.get("nickname", "Other User"))[:config["max_nickname_length"]]
         self.ui.on_nickname_change(self.peer_nickname)
         self.ui.display_system_message(f"Peer changed nickname to: {self.peer_nickname}")
     
@@ -1359,6 +1358,7 @@ class SecureChatClient(ClientBase):
                 chunk_info["chunk_index"],
                 chunk_info["chunk_data"],
                 metadata["total_chunks"],
+                chunk_size=config["send_chunk_size"],
         )
         
         received_chunks = len(self.file_handler.received_chunks.get(transfer_id, set()))
@@ -1464,7 +1464,7 @@ class SecureChatClient(ClientBase):
             compress = transfer_info.get("compress", True)
             filename = transfer_info["metadata"]["filename"]
             
-            chunk_generator = chunk_file(file_path, compress=compress)
+            chunk_generator = chunk_file(file_path, compress=compress, chunk_size=config["send_chunk_size"])
             bytes_transferred = 0
             
             for i, chunk in enumerate(chunk_generator):

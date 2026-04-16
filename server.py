@@ -39,7 +39,7 @@ from pqcrypto.kem import ml_kem_1024  # type: ignore
 
 from config import ServerConfigHandler
 from protocol.constants import (
-    DEADDROP_MAX_CHUNKS, DEADDROP_MIN_CHUNK_SIZE, MAGIC_NUMBER_DEADDROPS, MAGIC_NUMBER_FILE_TRANSFER, MISSING_CHUNKS_LIMIT, MessageType, PROTOCOL_VERSION,
+    MAGIC_NUMBER_DEADDROPS, MAGIC_NUMBER_FILE_TRANSFER, MessageType, PROTOCOL_VERSION,
     NONCE_SIZE, DEADDROP_KDF_KEY_LENGTH, DEADDROP_SALT_SIZE, DEADDROP_PBKDF2_ITERATIONS,
     SINGLE_KEY_SIZE,
     MAGIC_SIZE, DEADDROP_NONCE_OFFSET, DEADDROP_CIPHERTEXT_OFFSET,
@@ -486,7 +486,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         
         while self.connected:
             try:
-                message_data = receive_message(self.request)
+                message_data = receive_message(self.request, max_size=_config["max_message_size"])
             except OSError as e:
                 self.disconnect(f"Error receiving message: {e}", notify=False)
                 break
@@ -1104,8 +1104,8 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         if self.pending_deaddrop_chunk_size == 0 and len(chunk_data) > 0:
             self.pending_deaddrop_chunk_size = len(chunk_data)
         
-        if self.pending_deaddrop_chunk_size <= DEADDROP_MIN_CHUNK_SIZE:
-            self._fail_current_upload(f"Deaddrop chunk size too small. Min: {DEADDROP_MIN_CHUNK_SIZE} bytes")
+        if self.pending_deaddrop_chunk_size <= _config["deaddrop_min_chunk_size"]:
+            self._fail_current_upload(f"Deaddrop chunk size too small. Min: {_config['deaddrop_min_chunk_size']} bytes")
             return
         
         # Track max index
@@ -1126,7 +1126,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                 self._fail_current_upload(f"Internal server error")
                 return
         
-        if len(self.pending_deaddrop_received_chunks) > DEADDROP_MAX_CHUNKS:
+        if len(self.pending_deaddrop_received_chunks) > _config["deaddrop_max_chunks"]:
             self._fail_current_upload("Max chunk limit exceeded")
             return
     
@@ -1135,7 +1135,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         for i in range(expected_last_index + 1):
             if i not in self.pending_deaddrop_received_chunks:
                 missing.append(i)
-                if len(missing) >= MISSING_CHUNKS_LIMIT:
+                if len(missing) >= _config["missing_chunks_limit"]:
                     return None
         return missing
     

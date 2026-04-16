@@ -33,22 +33,27 @@ class ClientConfigDict(TypedDict):
     peer_nickname_change: bool
     own_nickname: str
     theme: str
-    
+
     # File paths (stored as strings in JSON, exposed as Path)
     message_notif_sound_file: str
     ringtone_file: str
     wordlist_file: str
-    
+
     # Voice settings
     voice_send_frequency: float
     voice_rate: int
     voice_channels: int
     voice_format: int
-    
+
     # Security settings
     send_dummy_packets: bool
     max_dummy_packet_size: int
     rekey_interval: int
+
+    # Network / transfer settings
+    send_chunk_size: int
+    max_message_size: int
+    max_nickname_length: int
 
 
 # Keys whose public type is Path (stored as str in JSON)
@@ -81,6 +86,9 @@ ClientIntKeys = Literal[
     "voice_format",
     "max_dummy_packet_size",
     "rekey_interval",
+    "send_chunk_size",
+    "max_message_size",
+    "max_nickname_length",
 ]
 ClientFloatKeys = Literal["voice_send_frequency"]
 ClientConfigKey: TypeAlias = ClientBoolKeys | ClientStrKeys | ClientPathKeys | ClientIntKeys | ClientFloatKeys
@@ -111,6 +119,10 @@ def _create_default_client_config() -> ClientConfigDict:
             send_dummy_packets=True,
             max_dummy_packet_size=512,
             rekey_interval=2048,
+            # Network / transfer settings
+            send_chunk_size=1024 * 1024,
+            max_message_size=64 * 1024 * 1024,
+            max_nickname_length=32,
     )
 
 
@@ -150,6 +162,12 @@ def _validate_client(config: ClientConfigDict) -> None:
         raise ValueError("voice_format must be a valid PyAudio format constant")
     if config["rekey_interval"] < 5:
         raise ValueError("rekey_interval must be at least 5")
+    if config["send_chunk_size"] < 1024:
+        raise ValueError("send_chunk_size must be at least 1024 bytes")
+    if config["max_message_size"] < 1024:
+        raise ValueError("max_message_size must be at least 1024 bytes")
+    if config["max_nickname_length"] < 1:
+        raise ValueError("max_nickname_length must be at least 1")
 
 
 class ServerConfigDict(TypedDict):
@@ -158,6 +176,10 @@ class ServerConfigDict(TypedDict):
     deaddrop_enabled: bool
     deaddrop_file_location: str
     wordlist_file: str
+    missing_chunks_limit: int
+    deaddrop_max_chunks: int
+    deaddrop_min_chunk_size: int
+    max_message_size: int
 
 
 _SERVER_PATH_KEYS: frozenset[str] = frozenset({
@@ -173,6 +195,10 @@ ServerPathKeys = Literal[
 ServerIntKeys = Literal[
     "max_unexpected_msgs",
     "deaddrop_max_size",
+    "missing_chunks_limit",
+    "deaddrop_max_chunks",
+    "deaddrop_min_chunk_size",
+    "max_message_size",
 ]
 ServerConfigKey: TypeAlias = ServerBoolKeys | ServerPathKeys | ServerIntKeys
 
@@ -184,6 +210,10 @@ def _create_default_server_config() -> ServerConfigDict:
             deaddrop_enabled=True,
             deaddrop_file_location="deaddrop_files",
             wordlist_file="resources/wordlist.txt",
+            missing_chunks_limit=20000,
+            deaddrop_max_chunks=1024 * 1024,
+            deaddrop_min_chunk_size=2048,
+            max_message_size=64 * 1024 * 1024,
     )
 
 
@@ -215,6 +245,14 @@ def _validate_server(config: ServerConfigDict) -> None:
         raise ValueError("max_unexpected_msgs must be a positive integer")
     if config["deaddrop_max_size"] <= 0:
         raise ValueError("deaddrop_max_size must be a positive integer")
+    if config["missing_chunks_limit"] < 1:
+        raise ValueError("missing_chunks_limit must be at least 1")
+    if config["deaddrop_max_chunks"] < 1:
+        raise ValueError("deaddrop_max_chunks must be at least 1")
+    if config["deaddrop_min_chunk_size"] < 1:
+        raise ValueError("deaddrop_min_chunk_size must be at least 1")
+    if config["max_message_size"] < 1024:
+        raise ValueError("max_message_size must be at least 1024 bytes")
 
 
 class _BaseConfigHandler:

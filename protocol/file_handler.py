@@ -60,7 +60,7 @@ class ProtocolFileHandler:
             return True
         return False
     
-    def add_file_chunk(self, transfer_id: str, chunk_index: int, chunk_data: bytes, total_chunks: int) -> bool:
+    def add_file_chunk(self, transfer_id: str, chunk_index: int, chunk_data: bytes, total_chunks: int, chunk_size: int = SEND_CHUNK_SIZE) -> bool:
         """
         Add a received file chunk and return True if file is complete.
 
@@ -101,7 +101,7 @@ class ProtocolFileHandler:
         # Get the open file handle
         file_handle = self.open_file_handles[transfer_id]
         
-        position = chunk_index * SEND_CHUNK_SIZE
+        position = chunk_index * chunk_size
         
         try:
             file_handle.seek(position, 0)

@@ -21,7 +21,7 @@ def send_message(sock: socket.socket, data: bytes) -> str | None:
         return str(e)
 
 
-def receive_message(sock: Any) -> bytes:
+def receive_message(sock: Any, max_size: int = MAX_MESSAGE_SIZE) -> bytes:
     """Receive a length-prefixed message from a socket."""
     # First, receive the length
     length_data = b''
@@ -30,10 +30,10 @@ def receive_message(sock: Any) -> bytes:
         if not chunk:
             raise ConnectionError("Connection closed")
         length_data += chunk
-    
+
     length = struct.unpack('!I', length_data)[0]
-    if length > MAX_MESSAGE_SIZE:
-        raise ValueError(f"Message too large (max {MAX_MESSAGE_SIZE} bytes)")
+    if length > max_size:
+        raise ValueError(f"Message too large (max {max_size} bytes)")
     
     # Then receive the message
     message_data = b''

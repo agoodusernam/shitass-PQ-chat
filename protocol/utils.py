@@ -193,7 +193,7 @@ def sanitize_str(s: str) -> str:
     return s[:MAX_SANITIZED_STR_LENGTH] or "?"
 
 
-def chunk_file(file_path: Path | str, compress: bool = True) -> Generator[bytes, None, None]:
+def chunk_file(file_path: Path | str, compress: bool = True, chunk_size: int = SEND_CHUNK_SIZE) -> Generator[bytes, None, None]:
     """Generate file chunks for transmission one at a time.
     
     This is a streaming generator function that optionally compresses and yields chunks
@@ -210,38 +210,38 @@ def chunk_file(file_path: Path | str, compress: bool = True) -> Generator[bytes,
         with open(file_path, 'rb') as original_file:
             while True:
                 # Read a chunk from the original file
-                file_chunk = original_file.read(SEND_CHUNK_SIZE)
+                file_chunk = original_file.read(chunk_size)
                 if not file_chunk:
                     break
                 yield file_chunk
         return
-    
+
     # Use streaming compression
     compressor: StreamingGzipCompressor = StreamingGzipCompressor()
     pending_data: bytes = b""
-    
+
     try:
         with open(file_path, 'rb') as original_file:
             while True:
                 # Read a chunk from the original file
-                file_chunk = original_file.read(SEND_CHUNK_SIZE)
-                
+                file_chunk = original_file.read(chunk_size)
+
                 if not file_chunk:
                     # End of file - finalize compression
                     final_compressed = compressor.finalise()
                     if final_compressed:
                         pending_data += final_compressed
                     break
-                
+
                 # Compress this chunk
                 compressed_chunk = compressor.compress_chunk(file_chunk)
                 if compressed_chunk:
                     pending_data += compressed_chunk
-                
+
                 # Yield complete chunks when we have enough data
-                while len(pending_data) >= SEND_CHUNK_SIZE:
-                    yield pending_data[:SEND_CHUNK_SIZE]
-                    pending_data = pending_data[SEND_CHUNK_SIZE:]
+                while len(pending_data) >= chunk_size:
+                    yield pending_data[:chunk_size]
+                    pending_data = pending_data[chunk_size:]
             
             # Yield any remaining data
             if pending_data:
