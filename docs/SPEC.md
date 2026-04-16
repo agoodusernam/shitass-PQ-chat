@@ -64,7 +64,6 @@ MessageType values are 16-bit signed integers in the reference implementation (e
 
 Key exchange and verification
 - INITIATE_KEY_EXCHANGE (1): Server -> Client. Signals a selected Client to initiate the key exchange.
-- KEY_EXCHANGE_COMPLETE (2): Server -> Clients. Announces that both sides reported key exchange completion; Clients SHOULD transition into the encrypted state.
 - KEY_EXCHANGE_RESET (3): Server -> Client. Informs the remaining Client to reset its key exchange state when its peer disconnects.
 - KE_DSA_RANDOM (4): Client -> Server (to peer). Carries the sender's ML-DSA-87 public key and a 32-byte client random. Sent by both clients (steps 3 and 6).
 - KE_MLKEM_PUBKEY (5): Client -> Server (to peer). Carries the initiator's ML-KEM-1024 public key, signed with ML-DSA-87 (step 8).
@@ -193,13 +192,14 @@ The own chain key root is used as the initial send_chain_key; the peer chain key
 512-bit keys are generated on purpose to support the DoubleEncryptor construction (section 8.1).
 
 ### 7.4 Cryptographic verification (KE_VERIFICATION)
-The verification key is computed by:
-1. Taking the OTP material, own chain key root, and peer chain key root.
-2. Sorting them lexicographically.
-3. Hashing the concatenation with SHA3-512.
-4. Truncating the result to 256 bits.
+The verification proof is computed as follows:
+1. Take the OTP material, own chain key root, and peer chain key root.
+2. Sort them lexicographically.
+3. Hash the concatenation with SHA3-512 to produce `verification_hash` (64 bytes).
+4. Compute `HMAC-SHA3-512(key=verification_hash, message=b"key-verification-v1")`.
+5. Send the resulting 64-byte HMAC proof as the `verification_key` field.
 
-The verification key is sent in plaintext (not encrypted) in the KE_VERIFICATION message. Both sides MUST verify that the received value matches their locally derived verification key.
+The proof is sent in plaintext (not encrypted) in the KE_VERIFICATION message. Both sides MUST recompute the expected proof locally and verify that the received value matches before transitioning to the encrypted state.
 
 ### 7.5 User verification (out-of-band)
 - After both KE_VERIFICATION messages are exchanged successfully, Clients SHOULD display a human-readable session fingerprint derived from the verification key and provide a mechanism to exchange KEY_VERIFICATION {verified: bool}.
@@ -246,7 +246,7 @@ KE_X25519_HQC_CT (JSON, step 13):
 KE_VERIFICATION (JSON, steps 15 and 16):
 {
   "type": 8,
-  "verification_key": base64           // 256-bit verification hash
+  "verification_key": base64           // HMAC-SHA3-512 proof (64 bytes), see section 7.4
 }
 
 - Version mismatch: If the peer version in KE_DSA_RANDOM differs, Clients SHOULD warn the user, but MAY continue.
@@ -261,8 +261,8 @@ Rationale: The multi-step handshake progressively establishes trust: ML-DSA sign
   - **Nonce mixing**: The DoubleEncryptor derives secret nonces for each AEAD cipher by XORing the public nonce with portions of the encryption key:
     - AES-GCM-SIV nonce (12 bytes): `aes_nonce = public_nonce XOR encryption_key[0:12]` (first 12 bytes of the 64-byte encryption key)
     - ChaCha20-Poly1305 nonce (12 bytes): `chacha_nonce = public_nonce XOR encryption_key[-12:]` (last 12 bytes of the 64-byte encryption key)
-  - The public nonce (12 random bytes) is transmitted in the message (section 8.3), but the actual nonces provided to the AEAD primitives remain secret because the encryption key is never transmitted and is derived independently by both parties from the shared secret.
-- OTP layer from HQC secret: In addition to the double AEAD, an OTP-style XOR layer is applied using a per-message keystream derived from the HQC shared secret and the message counter. The keystream is generated as SHAKE-256(hqc_secret || counter_be_32) and truncated to the ciphertext length. Encryption applies XOR before the AEAD layers; decryption removes the XOR after AEAD decryption. This layer adds confidentiality even if an AEAD layer is weakened. Implementations MUST use the exact same counter value as in the message AAD to derive the keystream.
+  - The public nonce (12 random bytes) is transmitted in the message (section 8.3). However, the actual nonces provided to the AEAD primitives remain secret because the encryption key is never transmitted and is derived independently by both parties from the shared secret.
+- OTP layer from HQC secret: In addition to the double AEAD, an OTP-style XOR layer is applied using a per-message keystream derived from the OTP material (itself derived from the HQC shared secret via HKDF; see section 7.3) and the message-specific nonces and counter. The keystream is generated as SHAKE-256(otp_material || aes_nonce || chacha_nonce || counter_le_8) and truncated to the padded plaintext length, where `aes_nonce` and `chacha_nonce` are the 12-byte nonces derived by XORing the public nonce with the first and last 12 bytes of the encryption key respectively, and `counter_le_8` is the 8-byte little-endian message counter. Encryption applies XOR before the AEAD layers; decryption removes the XOR after AEAD decryption. This layer adds confidentiality even if an AEAD layer is weakened. Implementations MUST use the exact same nonces and counter value as used in the AEAD operations to derive the keystream.
 - Padding: Plaintext is padded to a multiple of 512 bytes (PKCS7) prior to encryption to hinder traffic analysis.
 - Additional MAC: A separate HMAC-SHA-512 over selected metadata further authenticates fields (e.g. counters and per-message DH keys) to mitigate CPU-exhaustion attacks on high counters.
 
@@ -305,12 +305,12 @@ Implementations MAY support file transfer as specified here. Compression is OPTI
   "file_hash": hex(blake2b-256),        // hash of the original file
   "total_chunks": int,
   "compressed": bool,
-  "processed_size": int                 // size of the data stream after (optional) compression
+  "compressed_size": int                // size of the data stream after (optional) compression
 }
 
 - The sender MUST generate a transfer_id that is unique within the session and contains only alphanumeric characters (maximum 64 characters).
 - The sender SHOULD derive transfer_id deterministically from file metadata to enable idempotent retries.
-- The receiver MUST validate required fields, that transfer_id is alphanumeric and ≤ 64 characters, and that file_size and total_chunks are reasonable values.
+- The receiver MUST validate required fields, that transfer_id is hex and exactly 32 characters, and that file_size and total_chunks are reasonable values.
 
 ### 9.2 Acceptance / rejection (encrypted JSON)
 - FILE_ACCEPT {"type": 21, "transfer_id": string}
@@ -318,7 +318,9 @@ Implementations MAY support file transfer as specified here. Compression is OPTI
 
 ### 9.3 Chunk data (binary frame)
 Frame layout:
-[ counter(4) | nonce(12) | sender_ephemeral_dh(32) | ciphertext(variable) ]
+[ magic(1) | counter(4) | nonce(12) | sender_ephemeral_dh(32) | ciphertext(variable) ]
+
+The magic byte is `0x89` (MAGIC_NUMBER_FILE_TRANSFER) and distinguishes file chunk frames from JSON messages at the framing layer.
 
 Ciphertext plaintext layout (before encryption):
 [ header_len(2) | header_json | chunk_bytes ]
@@ -367,48 +369,89 @@ Rationale: Conservative validation limits attack surface and reduces parsing ris
 Rationale: Regular intervals and dummy traffic hinder traffic analysis by flattening observable timing and size patterns. Counter sharing prevents adversaries from distinguishing dummy traffic by observing counter gaps.
 
 ## 13. Rekeying
-- Rekeying messages (type REKEY=64) MUST be sent inside ENCRYPTED_MESSAGE and follow a three-step flow: {action: "init"} -> {action: "response"} -> {action: "commit"}. A fourth {action: "commit_ack"} step MAY be used by implementations that desire explicit acknowledgement.
-- Upon successful commit, both sides MUST activate pending keys atomically after sending an encrypted "encrypt_json_then_switch" instruction to avoid ambiguity.
-
-13.1 REKEY message schemas (inner JSON)
-- Init (sender -> peer):
-  {
-    "type": 64,
-    "action": "init",
-    "mlkem_public_key": base64,
-    "hqc_public_key": base64,
-    "dh_public_key": base64
-  }
-- Response (responder -> sender):
-  {
-    "type": 64,
-    "action": "response",
-    "mlkem_ciphertext": base64,
-    "hqc_ciphertext": base64,
-    "dh_public_key": base64
-  }
-- Commit (sender -> responder):
-  {
-    "type": 64,
-    "action": "commit"
-  }
-- Commit ack (OPTIONAL):
-  {
-    "type": 64,
-    "action": "commit_ack"
-  }
-
-13.2 Rekey semantics
-- The responder MUST derive pending keys from ML-KEM and X25519 and set the HQC secret aside for the OTP keystream (as in section 8.1). Active keys MUST NOT change until commit is processed.
-- After processing the response, the initiator MUST derive pending keys and then send commit. Both sides MUST switch to the pending keys atomically after the next encrypted instruction ("encrypt_json_then_switch").
+- Rekeying messages (type REKEY=64) MUST be sent inside ENCRYPTED_MESSAGE.
+- The rekey protocol uses the same hybrid key exchange as the initial handshake (section 7), adapted to run over the existing encrypted channel. The two sides assume roles A (initiator) and B (responder) using a random-based tiebreak identical to the initial handshake race-condition resolution.
+- Upon successful verification, the initiator (A) queues the final REKEY `verification` message and then activates pending keys atomically after the message is sent ("encrypt_json_then_switch" semantics). B activates pending keys when it receives A's verification and its own verification has been sent.
 - After switching, message counters MUST reset to zero on both sides.
 
-13.3 Automatic rekeying (OPTIONAL)
+### 13.1 Rekey flow (5-step protocol)
+
+Both sides generate ephemeral ML-DSA-87 keypairs and client randoms before the exchange starts.
+
+1. **dsa_random** — The initiator (A) sends its ML-DSA public key and client random. If B receives this before initiating its own rekey, B becomes the responder. If both sides initiate simultaneously (race), the side with the smaller client random becomes B (responder).
+
+2. **dsa_random** (response) — B responds with its own ML-DSA public key and client random (same message type, `is_response: true`). Both sides derive `combined_random` = HKDF-SHA-512(larger_random, salt=smaller_random, info=server_id + 'comb_rand').
+
+3. **mlkem_pubkey** — A sends its ML-KEM-1024 public key, signed with its ephemeral ML-DSA-87 key.
+
+4. **mlkem_ct_keys** — B encapsulates A's ML-KEM key, derives `intermediary_key_1` = HKDF-SHA3-512(ML-KEM secret, salt=combined_random, info=server_id + 'int_key_1'), encrypts its HQC-256 and X25519 public keys under `intermediary_key_1`, and sends the ML-KEM ciphertext plus encrypted keys, signed with ML-DSA-87.
+
+5. **x25519_hqc_ct** — A decapsulates, derives `intermediary_key_1`, decrypts B's HQC and X25519 public keys, performs X25519 DH, encapsulates to B's HQC public key, derives `intermediary_key_2` = HKDF-SHA3-512(intermediary_key_1, salt=X25519_secret, info=server_id + 'int_key_2'), encrypts its X25519 public key under `intermediary_key_1` and the HQC ciphertext under `intermediary_key_2`, and sends both encrypted payloads signed with ML-DSA-87. A derives pending session keys using the same final key derivation as section 7.3.
+
+6. **verification** — After B processes step 5 and derives pending keys, B sends its verification proof. A verifies, then sends its own verification and activates pending keys. Both sides MUST verify the peer's proof before activating.
+
+The pending key derivation uses the same HKDF constructions as section 7.3, but domain-separated: `combined_random` uses info string `server_id + 'comb_rand'` (same), and chain key roots use `server_id + 'chain_key_root'` (same). The OTP material derivation is identical to section 7.3.
+
+### 13.2 REKEY message schemas (inner JSON, sent inside ENCRYPTED_MESSAGE)
+
+All rekey messages have `"type": 64` and an `"action"` field.
+
+dsa_random:
+  {
+    "type": 64,
+    "action": "dsa_random",
+    "is_response": bool,               // false = initiating, true = responding to peer's dsa_random
+    "mldsa_public_key": base64,
+    "client_random": base64            // 32-byte client random
+  }
+
+mlkem_pubkey (A -> B):
+  {
+    "type": 64,
+    "action": "mlkem_pubkey",
+    "mlkem_public_key": base64,
+    "mldsa_signature": base64          // ML-DSA-87 signature over mlkem_public_key
+  }
+
+mlkem_ct_keys (B -> A):
+  {
+    "type": 64,
+    "action": "mlkem_ct_keys",
+    "mlkem_ciphertext": base64,
+    "encrypted_hqc_pubkey": base64,
+    "encrypted_x25519_pubkey": base64,
+    "nonce1": base64,
+    "nonce2": base64,
+    "mldsa_signature": base64          // ML-DSA-87 signature over concatenation of all above fields
+  }
+
+x25519_hqc_ct (A -> B):
+  {
+    "type": 64,
+    "action": "x25519_hqc_ct",
+    "encrypted_x25519_pubkey": base64,
+    "encrypted_hqc_ciphertext": base64,
+    "nonce1": base64,
+    "nonce2": base64,
+    "mldsa_signature": base64          // ML-DSA-87 signature over concatenation of all above fields
+  }
+
+verification (both sides):
+  {
+    "type": 64,
+    "action": "verification",
+    "verification_key": base64         // HMAC-SHA3-512(pending_key_verification_material, b"key-verification-v1")
+  }
+
+### 13.3 Race condition handling
+If both peers initiate a rekey simultaneously, the side with the lexicographically smaller `client_random` becomes the responder (B). The side that sent a `dsa_random` with `is_response: false` and has the larger random stays as initiator (A). If both randoms are equal, the initiating side remains A.
+
+### 13.4 Automatic rekeying (OPTIONAL)
 - Implementations MAY initiate rekeying automatically. Triggers MAY include:
   - Message count threshold (e.g. after N messages, possibly with randomised jitter per session), and/or
   - Time-based threshold (e.g. every T minutes of active messaging).
-- When automatic rekeying is enabled, peers SHOULD avoid synchronised rekeys by applying random jitter around the base threshold.
-- If a peer rejects or ignores REKEY, the initiator SHOULD back off and MAY retry later, or allow manual rekey.
+- When automatic rekeying is enabled, peers SHOULD apply random jitter (±10% of the base threshold) to avoid synchronised rekeys.
+- If a peer fails to respond to REKEY, the initiator SHOULD abort and MAY retry later, or allow manual rekey.
 
 ## 14. Error handling and disconnects
 - Server errors SHOULD be broadcast using ERROR {error: string}. Clients SHOULD surface the message to the user.

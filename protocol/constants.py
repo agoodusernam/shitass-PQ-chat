@@ -39,6 +39,7 @@ DEADDROP_FILE_EXT_HEADER_SIZE: Final[int] = 12  # bytes, file extension header i
 DEADDROP_HKDF_SALT_SIZE: Final[int] = 32  # bytes, salt for deaddrop file key HKDF
 MISSING_CHUNKS_LIMIT: Final[int] = 20000
 DEADDROP_MIN_CHUNK_SIZE: Final[int] = 2048  # bytes, minimum chunk size for deaddrop
+DEADDROP_MAX_CHUNKS: Final[int] = 1024 * 1024 # max amount of chunks that can be in a deaddrop upload (to prevent mem exhaustion)
 
 # Nickname / sanitisation limits
 MAX_NICKNAME_LENGTH: Final[int] = 32

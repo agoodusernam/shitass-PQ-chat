@@ -12,7 +12,7 @@ def allowed_unverified_inner_fields() -> set[str]:
         # delivery
         "confirmed_counter",
         # file transfer
-        "transfer_id", "filename", "file_size", "file_hash", "total_chunks", "processed_size", "compressed",
+        "transfer_id", "filename", "file_size", "file_hash", "total_chunks", "compressed_size", "compressed",
         # rekey
         "action", "is_response",
         "mldsa_public_key", "client_random", "mldsa_signature",

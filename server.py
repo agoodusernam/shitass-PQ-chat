@@ -39,7 +39,7 @@ from pqcrypto.kem import ml_kem_1024  # type: ignore
 
 from config import ServerConfigHandler
 from protocol.constants import (
-    DEADDROP_MIN_CHUNK_SIZE, MAGIC_NUMBER_DEADDROPS, MAGIC_NUMBER_FILE_TRANSFER, MISSING_CHUNKS_LIMIT, MessageType, PROTOCOL_VERSION,
+    DEADDROP_MAX_CHUNKS, DEADDROP_MIN_CHUNK_SIZE, MAGIC_NUMBER_DEADDROPS, MAGIC_NUMBER_FILE_TRANSFER, MISSING_CHUNKS_LIMIT, MessageType, PROTOCOL_VERSION,
     NONCE_SIZE, DEADDROP_KDF_KEY_LENGTH, DEADDROP_SALT_SIZE, DEADDROP_PBKDF2_ITERATIONS,
     SINGLE_KEY_SIZE,
     MAGIC_SIZE, DEADDROP_NONCE_OFFSET, DEADDROP_CIPHERTEXT_OFFSET,
@@ -1125,6 +1125,10 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             except Exception:
                 self._fail_current_upload(f"Internal server error")
                 return
+        
+        if len(self.pending_deaddrop_received_chunks) > DEADDROP_MAX_CHUNKS:
+            self._fail_current_upload("Max chunk limit exceeded")
+            return
     
     def _find_missing_chunks(self, expected_last_index: int) -> list[int] | None:
         missing = []
