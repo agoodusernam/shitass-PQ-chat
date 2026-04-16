@@ -2,17 +2,66 @@ from enum import IntEnum, unique
 from typing import Final
 
 # Protocol constants
-PROTOCOL_VERSION: Final[str] = "8.0.0"
+PROTOCOL_VERSION: Final[str] = "8.1.0"
 # Protocol compatibility is denoted by version number
 # Breaking.Minor.Patch - only Breaking versions are checked for compatibility.
-# Breaking version changes introduce breaking changes that are not compatible with previous versions of the same major version.
-# Minor version changes may add features but remain compatible with previous minor versions of the same major version.
+# Breaking version changes introduce breaking changes that are not compatible with the previous major version.
+# Minor version changes may add or change features but remain largely compatible with previous minor versions of the same major version.
 # Patch versions are for bug fixes and minor changes that do not affect compatibility.
 
 # File transfer constants
 SEND_CHUNK_SIZE: Final[int] = 1024 * 1024  # 1 MiB chunks for sending
-MAGIC_NUMBER_FILE_TRANSFER: Final[bytes] = b'\x89'
-MAGIC_NUMBER_DEADDROPS: Final[bytes] = b'\x45'
+MAGIC_NUMBER_FILE_TRANSFER: Final[bytes] = b"\x89"
+MAGIC_NUMBER_DEADDROPS: Final[bytes] = b"\x45"
+
+# Cryptographic size constants
+NONCE_SIZE: Final[int] = 12  # bytes, for ChaCha20-Poly1305 and AES-GCM-SIV nonces
+CTR_NONCE_SIZE: Final[int] = 16  # bytes, for AES-CTR / deaddrop chunk nonces
+CLIENT_RANDOM_SIZE: Final[int] = 32  # bytes, for key exchange client randoms
+DOUBLE_KEY_SIZE: Final[int] = 64  # bytes, for double-encryptor keys (32 AES + 32 ChaCha)
+single_key_size: float = DOUBLE_KEY_SIZE / 2
+if not single_key_size.is_integer():
+    raise ValueError("DOUBLE_KEY_SIZE must be divisible by 2 without remainder")
+SINGLE_KEY_SIZE: Final[int] = DOUBLE_KEY_SIZE // 2
+HKDF_KEY_LENGTH: Final[int] = 64  # bytes, output length for HKDF key derivations
+DEADDROP_KDF_KEY_LENGTH: Final[int] = 32  # bytes, output length for deaddrop KDF derivations
+VERIFICATION_HASH_SIZE: Final[int] = 32  # bytes, truncated verification hash
+BLAKE2B_DIGEST_SIZE: Final[int] = 32  # bytes, digest size for BLAKE2b file hashing
+TRANSFER_ID_LENGTH: Final[int] = 32  # characters, hex transfer ID truncation length
+FINGERPRINT_HASH_SIZE: Final[int] = 32  # bytes, truncated hash for key fingerprint generation
+FINGERPRINT_WORD_COUNT: Final[int] = 8  # number of words in a key fingerprint
+HASH_TO_WORDS_DEFAULT: Final[int] = 16  # default number of words for hash_to_words
+
+# Deaddrop constants
+DEADDROP_SALT_SIZE: Final[int] = 32  # bytes, salt for deaddrop download PBKDF2
+DEADDROP_PBKDF2_ITERATIONS: Final[int] = 800_000  # iterations for deaddrop download hash
+DEADDROP_FILE_EXT_HEADER_SIZE: Final[int] = 12  # bytes, file extension header in deaddrop chunks
+DEADDROP_HKDF_SALT_SIZE: Final[int] = 32  # bytes, salt for deaddrop file key HKDF
+MISSING_CHUNKS_LIMIT: Final[int] = 20000
+DEADDROP_MIN_CHUNK_SIZE: Final[int] = 2048  # bytes, minimum chunk size for deaddrop
+
+# Nickname / sanitisation limits
+MAX_NICKNAME_LENGTH: Final[int] = 32
+MAX_SANITIZED_STR_LENGTH: Final[int] = 32
+
+# Struct / frame layout sizes
+MAGIC_SIZE: Final[int] = 1  # bytes, magic number prefix
+COUNTER_SIZE: Final[int] = 4  # bytes, message counter (uint32)
+HEADER_LENGTH_SIZE: Final[int] = 2  # bytes, file chunk header length prefix (uint16)
+DEADDROP_LENGTH_PREFIX_SIZE: Final[int] = 4  # bytes, length prefix in deaddrop data
+
+# Computed frame offsets for file chunk: [magic][counter][nonce][eph_pub][ciphertext]
+FILE_CHUNK_COUNTER_OFFSET: Final[int] = MAGIC_SIZE
+FILE_CHUNK_NONCE_OFFSET: Final[int] = MAGIC_SIZE + COUNTER_SIZE
+FILE_CHUNK_EPH_PUB_OFFSET: Final[int] = MAGIC_SIZE + COUNTER_SIZE + NONCE_SIZE
+FILE_CHUNK_CIPHERTEXT_OFFSET: Final[int] = MAGIC_SIZE + COUNTER_SIZE + NONCE_SIZE + SINGLE_KEY_SIZE
+
+# Computed frame offsets for deaddrop data: [magic][nonce][ciphertext]
+DEADDROP_NONCE_OFFSET: Final[int] = MAGIC_SIZE
+DEADDROP_CIPHERTEXT_OFFSET: Final[int] = MAGIC_SIZE + NONCE_SIZE
+
+# Network constants
+MAX_MESSAGE_SIZE: Final[int] = 64 * 1024 * 1024  # 64 MiB
 
 # Incompressible file types where compression is wasteful
 INCOMPRESSIBLE_EXTENSIONS: Final[set[str]] = {
@@ -33,11 +82,11 @@ class MessageType(IntEnum):
     
     KEY_EXCHANGE_RESET = 3
     # Client to client (multi-step key exchange)
-    KE_DSA_RANDOM = 4  # Step 3/6: ML-DSA public key + client random
-    KE_MLKEM_PUBKEY = 5  # Step 8: ML-KEM public key (signed)
-    KE_MLKEM_CT_KEYS = 6  # Step 10: ML-KEM ciphertext + encrypted HQC/X25519 pubkeys
-    KE_X25519_HQC_CT = 7  # Step 13: encrypted X25519 pubkey + encrypted HQC ciphertext
-    KE_VERIFICATION = 8  # Step 15/16: key verification hash
+    KE_DSA_RANDOM = 4
+    KE_MLKEM_PUBKEY = 5
+    KE_MLKEM_CT_KEYS = 6
+    KE_X25519_HQC_CT = 7
+    KE_VERIFICATION = 8
     
     # Messaging
     ENCRYPTED_MESSAGE = 10

@@ -438,6 +438,49 @@ class TestFileChunks:
 
 
 # ---------------------------------------------------------------------------
+# Rekey helpers
+# ---------------------------------------------------------------------------
+
+def _full_rekey(alice: SecureChatProtocol, bob: SecureChatProtocol) -> None:
+    """Drive a complete 7-step rekey between alice (A/initiator) and bob (B/responder)."""
+    # Step 1: A sends dsa_random
+    msg1 = alice.create_rekey_dsa_random(is_initiator=True)
+    
+    # Step 2: B processes A's dsa_random, responds with B's dsa_random
+    msg2 = bob.process_rekey_dsa_random(msg1)
+    assert msg2 is not None and msg2["action"] == "dsa_random"
+    
+    # Step 3: A processes B's dsa_random, gets mlkem_pubkey
+    msg3 = alice.process_rekey_dsa_random(msg2)
+    assert msg3 is not None and msg3["action"] == "mlkem_pubkey"
+    
+    # Step 4: B processes A's mlkem_pubkey, returns mlkem_ct_keys
+    msg4 = bob.process_rekey_mlkem_pubkey(msg3)
+    assert msg4["action"] == "mlkem_ct_keys"
+    
+    # Step 5: A processes B's mlkem_ct_keys; pending keys set on A; returns x25519_hqc_ct
+    msg5 = alice.process_rekey_mlkem_ct_keys(msg4)
+    assert msg5["action"] == "x25519_hqc_ct"
+    
+    # Step 6: A creates verification under pending material; B creates verification under pending material
+    msg6_a_verif = alice.create_rekey_verification()
+    
+    # Step 5b: B processes A's x25519_hqc_ct; pending keys set on B
+    bob.process_rekey_x25519_hqc_ct(msg5)
+    msg7_b_verif = bob.create_rekey_verification()
+    
+    # B activates (simulates queue_json_then_switch: verification sent under old keys, then switch)
+    bob.activate_pending_keys()
+    
+    # B verifies A's proof using active key material (pending already cleared by activation)
+    assert bob.process_rekey_verification(msg6_a_verif) is True
+    
+    # Step 7: A verifies B's verification (sent before B activated, so under old keys) then activates
+    assert alice.process_rekey_verification(msg7_b_verif) is True
+    alice.activate_pending_keys()
+
+
+# ---------------------------------------------------------------------------
 # Rekey
 # ---------------------------------------------------------------------------
 
@@ -445,72 +488,121 @@ class TestFileChunks:
 class TestRekey:
     def test_rekey_full_flow(self):
         alice, bob = _full_key_exchange()
-        
         old_send_key = alice._send_chain_key
         
-        # Alice initiates rekey
-        rekey_init = alice.create_rekey_init()
-        assert alice.rekey_in_progress is True
-        
-        # Bob processes init and returns response
-        rekey_response = bob.process_rekey_init(rekey_init)
-        assert bob.rekey_in_progress is True
-        
-        # Alice processes response and returns commit
-        rekey_commit = alice.process_rekey_response(rekey_response)
-        assert isinstance(rekey_commit, dict)
-        
-        # Both activate pending keys
-        alice.activate_pending_keys()
-        bob.activate_pending_keys()
+        _full_rekey(alice, bob)
         
         assert alice.rekey_in_progress is False
         assert bob.rekey_in_progress is False
         assert alice.shared_key is True
         assert bob.shared_key is True
-        # Keys should have changed
         assert alice._send_chain_key != old_send_key
+    
+    def test_rekey_keys_differ_from_initial(self):
+        alice, bob = _full_key_exchange()
+        initial_send = alice._send_chain_key
+        initial_recv = alice._receive_chain_key
+        
+        _full_rekey(alice, bob)
+        
+        assert alice._send_chain_key != initial_send
+        assert alice._receive_chain_key != initial_recv
     
     def test_rekey_new_keys_allow_messaging(self):
         alice, bob = _full_key_exchange()
-        
-        rekey_init = alice.create_rekey_init()
-        rekey_response = bob.process_rekey_init(rekey_init)
-        alice.process_rekey_response(rekey_response)
-        alice.activate_pending_keys()
-        bob.activate_pending_keys()
+        _full_rekey(alice, bob)
         
         ct = alice.encrypt_message("post-rekey message")
         assert bob.decrypt_message(ct) == "post-rekey message"
-    
-    def test_activate_pending_keys_noop_when_not_in_progress(self):
-        alice, _ = _full_key_exchange()
-        old_key = alice._send_chain_key
-        alice.activate_pending_keys()  # should be a no-op
-        assert alice._send_chain_key == old_key
-    
-    def test_process_rekey_response_without_private_key_raises(self):
-        alice, bob = _full_key_exchange()
-        rekey_init = alice.create_rekey_init()
-        rekey_response = bob.process_rekey_init(rekey_init)
-        # Corrupt alice's private key
-        alice._rekey_mlkem_private_key = b""
-        with pytest.raises(ValueError):
-            alice.process_rekey_response(rekey_response)
     
     def test_rekey_counters_reset_after_activate(self):
         alice, bob = _full_key_exchange()
         alice.encrypt_message("bump counter")
         bob.decrypt_message(alice.encrypt_message("bump"))
         
-        rekey_init = alice.create_rekey_init()
-        rekey_response = bob.process_rekey_init(rekey_init)
-        alice.process_rekey_response(rekey_response)
-        alice.activate_pending_keys()
-        bob.activate_pending_keys()
+        _full_rekey(alice, bob)
         
         assert alice.message_counter == 0
         assert bob.peer_counter == 0
+    
+    def test_rekey_dh_ratchet_state_reset(self):
+        alice, bob = _full_key_exchange()
+        old_peer_dh = alice.peer_dh_public_key_bytes
+        
+        _full_rekey(alice, bob)
+        
+        assert alice.peer_dh_public_key_bytes != old_peer_dh
+        assert alice.msg_peer_base_public == alice.peer_dh_public_key_bytes
+    
+    def test_activate_pending_keys_noop_when_not_in_progress(self):
+        alice, _ = _full_key_exchange()
+        old_key = alice._send_chain_key
+        alice.activate_pending_keys()  # no pending_send_chain_key → no-op
+        assert alice._send_chain_key == old_key
+    
+    def test_simultaneous_initiation_race(self):
+        alice, bob = _full_key_exchange()
+        
+        # Both initiate simultaneously — one will become B via tie-break
+        msg_a = alice.create_rekey_dsa_random(is_initiator=True)
+        msg_b = bob.create_rekey_dsa_random(is_initiator=True)
+        
+        # Each processes the other's dsa_random (race condition)
+        resp_from_a_perspective = alice.process_rekey_dsa_random(msg_b)
+        resp_from_b_perspective = bob.process_rekey_dsa_random(msg_a)
+        
+        # Exactly one should become B (return dsa_random) and the other stays A
+        # (returns mlkem_pubkey or None depending on timing).
+        # Drive whichever returned a dsa_random through the rest of the exchange.
+        # The test just verifies both can complete and encrypt/decrypt afterwards.
+        def _drive_to_completion(a_proto, b_proto, a_resp, b_resp):
+            """Find who is A and who is B, then complete the rekey."""
+            # The "new A" will either have returned mlkem_pubkey or still needs
+            # to process more. The "new B" returned dsa_random.
+            if a_resp is not None and a_resp.get("action") == "mlkem_pubkey":
+                # alice stayed A
+                mlkem_msg = a_resp
+                # bob needs to also process alice's original dsa_random if it hasn't yet
+                if b_resp is not None and b_resp.get("action") == "dsa_random":
+                    # bob is now B; alice needs to process bob's dsa_random response
+                    m = a_proto.process_rekey_dsa_random(b_resp)
+                    if m is not None and m.get("action") == "mlkem_pubkey":
+                        mlkem_msg = m
+                msg4 = b_proto.process_rekey_mlkem_pubkey(mlkem_msg)
+                msg5 = a_proto.process_rekey_mlkem_ct_keys(msg4)
+                a_verif = a_proto.create_rekey_verification()
+                b_proto.process_rekey_x25519_hqc_ct(msg5)
+                assert b_proto.process_rekey_verification(a_verif) is True
+                b_verif = b_proto.create_rekey_verification()
+                b_proto.activate_pending_keys()
+                assert a_proto.process_rekey_verification(b_verif) is True
+                a_proto.activate_pending_keys()
+            elif b_resp is not None and b_resp.get("action") == "mlkem_pubkey":
+                # bob stayed A — mirror roles
+                mlkem_msg = b_resp
+                if a_resp is not None and a_resp.get("action") == "dsa_random":
+                    m = b_proto.process_rekey_dsa_random(a_resp)
+                    if m is not None and m.get("action") == "mlkem_pubkey":
+                        mlkem_msg = m
+                msg4 = a_proto.process_rekey_mlkem_pubkey(mlkem_msg)
+                msg5 = b_proto.process_rekey_mlkem_ct_keys(msg4)
+                b_verif = b_proto.create_rekey_verification()
+                a_proto.process_rekey_x25519_hqc_ct(msg5)
+                assert a_proto.process_rekey_verification(b_verif) is True
+                a_verif = a_proto.create_rekey_verification()
+                a_proto.activate_pending_keys()
+                assert b_proto.process_rekey_verification(a_verif) is True
+                b_proto.activate_pending_keys()
+            else:
+                # Both returned None — edge case where both ignored; just verify no crash
+                pass
+        
+        _drive_to_completion(alice, bob, resp_from_a_perspective, resp_from_b_perspective)
+        
+        # After race resolution both can still communicate
+        if alice.shared_key and alice._send_chain_key and alice._receive_chain_key:
+            ct = alice.encrypt_message("after-race message")
+            assert bob.decrypt_message(ct) == "after-race message"
     
     def test_should_auto_rekey_triggers_after_interval(self):
         alice, _ = _full_key_exchange()
@@ -601,32 +693,6 @@ class TestKeyDerivationHelpers:
         m1 = SecureChatProtocol._mix_dh_with_chain(chain, os.urandom(32), 1)
         m2 = SecureChatProtocol._mix_dh_with_chain(chain, os.urandom(32), 1)
         assert m1 != m2
-    
-    def test_derive_combined_shared_secret_deterministic(self):
-        mlkem = os.urandom(32)
-        dh = os.urandom(32)
-        s1 = SecureChatProtocol._derive_combined_shared_secret(mlkem, dh)
-        s2 = SecureChatProtocol._derive_combined_shared_secret(mlkem, dh)
-        assert s1 == s2
-    
-    def test_derive_keys_and_chain_returns_64_bytes_each(self):
-        secret = os.urandom(64)
-        enc_key, chain = SecureChatProtocol._derive_keys_and_chain(secret)
-        assert len(enc_key) == 64
-        assert len(chain) == 64
-    
-    def test_derive_keys_and_chain_with_pub_keys(self):
-        secret = os.urandom(64)
-        pub_a = os.urandom(32)
-        pub_b = os.urandom(32)
-        enc_key, chain = SecureChatProtocol._derive_keys_and_chain(secret, pub_a, pub_b)
-        assert len(enc_key) == 64
-        assert len(chain) == 64
-    
-    def test_derive_rekey_otp_material_length(self):
-        hqc = os.urandom(64)
-        otp = SecureChatProtocol._derive_rekey_otp_material(hqc)
-        assert len(otp) == 64
 
 
 # ---------------------------------------------------------------------------

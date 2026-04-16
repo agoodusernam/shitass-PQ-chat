@@ -21,18 +21,29 @@ from typing import Any, BinaryIO
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+from cryptography.hazmat.primitives.constant_time import bytes_eq
 from cryptography.hazmat.primitives.hmac import HMAC
 from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
 from cryptography.hazmat.primitives.kdf.concatkdf import ConcatKDFHash
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from pqcrypto.kem import ml_kem_1024  # type: ignore
 
 from SecureChatABCs.client_base import ClientBase
 from SecureChatABCs.protocol_base import ProtocolBase
 from SecureChatABCs.ui_base import UIBase, UICapability
-from config import ConfigHandler
+from config import ClientConfigHandler
 from protocol import constants, types, utils
-from protocol.constants import MessageType, PROTOCOL_VERSION, SEND_CHUNK_SIZE
+from protocol.constants import (
+    MessageType, PROTOCOL_VERSION, SEND_CHUNK_SIZE,
+    NONCE_SIZE, CTR_NONCE_SIZE, DOUBLE_KEY_SIZE,
+    DEADDROP_KDF_KEY_LENGTH, DEADDROP_PBKDF2_ITERATIONS,
+    DEADDROP_FILE_EXT_HEADER_SIZE, DEADDROP_HKDF_SALT_SIZE,
+    MAX_NICKNAME_LENGTH,
+    MAGIC_SIZE, FILE_CHUNK_CIPHERTEXT_OFFSET,
+    DEADDROP_NONCE_OFFSET, DEADDROP_CIPHERTEXT_OFFSET,
+    DEADDROP_LENGTH_PREFIX_SIZE,
+)
 from protocol.create_messages import create_file_metadata_message
 from protocol.crypto_classes import ChunkIndependentDoubleEncryptor
 from protocol.file_handler import ProtocolFileHandler
@@ -44,7 +55,7 @@ from utils import network_utils
 from utils.checks import allowed_outer_fields, allowed_unverified_inner_fields, first_unexpected_field
 from utils.network_utils import receive_message, send_message
 
-config = ConfigHandler()
+config = ClientConfigHandler()
 
 
 class SecureChatClient(ClientBase):
@@ -140,6 +151,7 @@ class SecureChatClient(ClientBase):
         self._deaddrop_download_key: bytes | None = None
         # Streaming download state (for deaddrop)
         self._deaddrop_dl_encryptor: ChunkIndependentDoubleEncryptor | None = None
+        self._deaddrop_dl_password: str = ""
         self._deaddrop_dl_next_nonce: bytes | None = None
         self._deaddrop_dl_expected_index: int = 0
         self._deaddrop_dl_part_path: str | None = None
@@ -285,6 +297,7 @@ class SecureChatClient(ClientBase):
         self._deaddrop_download_max_index = -1
         self._deaddrop_download_key = None
         self._deaddrop_dl_encryptor = None
+        self._deaddrop_dl_password = ""
         self._deaddrop_dl_next_nonce = None
         self._deaddrop_dl_expected_index = 0
         self._deaddrop_dl_part_path = None
@@ -503,7 +516,11 @@ class SecureChatClient(ClientBase):
         if not self.key_exchange_complete:
             self.ui.display_error_message("Cannot rekey - key exchange not complete")
             return
-        self._protocol.queue_json(self._protocol.create_rekey_init())
+        if self._protocol.rekey_in_progress:
+            self.ui.display_system_message("Rekey already in progress.")
+            return
+        msg = self._protocol.create_rekey_dsa_random(is_initiator=True)
+        self._protocol.queue_json(msg)
         self.ui.display_system_message("Rekey initiated.")
     
     def check_and_initiate_auto_rekey(self) -> None:
@@ -522,7 +539,8 @@ class SecureChatClient(ClientBase):
             return
         if not self.key_exchange_complete:
             return
-        self._protocol.queue_json(self._protocol.create_rekey_init())
+        msg = self._protocol.create_rekey_dsa_random(is_initiator=True)
+        self._protocol.queue_json(msg)
     
     # voice calls
     
@@ -647,7 +665,8 @@ class SecureChatClient(ClientBase):
             self.ui.display_error_message("File exceeds maximum deaddrop size allowed by server")
             return
         
-        key = self._derive_deaddrop_file_key(password)
+        hkdf_salt = os.urandom(DEADDROP_HKDF_SALT_SIZE)
+        key = self._derive_deaddrop_file_key(password, hkdf_salt)
         h = HMAC(key, hashes.SHA3_512())
         with open(file_path, "rb") as f:
             while chunk := f.read(8192):
@@ -665,6 +684,7 @@ class SecureChatClient(ClientBase):
             "file_size":          file_size,
             "file_hash":          file_hash,
             "file_password_hash": password_hash,
+            "file_key_salt":      base64.b64encode(hkdf_salt).decode("utf-8"),
         }
         outer_meta = self._encrypt_deaddrop_inner(json.dumps(inner_meta).encode("utf-8"))
         send_message(self._socket, json.dumps(outer_meta).encode("utf-8"))
@@ -673,29 +693,25 @@ class SecureChatClient(ClientBase):
         self._deaddrop_chunks.clear()
         
         chunk_index = 0
-        file_ext = os.path.splitext(file_path)[1][:12]
-        header = file_ext.encode("utf-8").ljust(12, b"\x00")
-        first_nonce = hashlib.sha3_256(self.server_identifier.encode("utf-8")).digest()[:16]
-        second_nonce = os.urandom(16)
-        header += second_nonce
+        file_ext = os.path.splitext(file_path)[1][:DEADDROP_FILE_EXT_HEADER_SIZE]
+        header = file_ext.encode("utf-8").ljust(DEADDROP_FILE_EXT_HEADER_SIZE, b"\x00")
         with open(file_path, "rb") as f:
             first = True
             while True:
                 if first:
-                    chunk_data = f.read(SEND_CHUNK_SIZE - 28)
+                    chunk_data = f.read(SEND_CHUNK_SIZE - DEADDROP_FILE_EXT_HEADER_SIZE)
                     plaintext_chunk = header + chunk_data
                     first = False
-                    nonce = first_nonce
                 else:
                     chunk_data = f.read(SEND_CHUNK_SIZE)
                     plaintext_chunk = chunk_data
-                    nonce = second_nonce
+                nonce = hashlib.sha3_256(key + chunk_index.to_bytes(4, byteorder='little')).digest()[:CTR_NONCE_SIZE]
                 if not chunk_data:
                     break
                 
                 ct = encryptor.encrypt(nonce, plaintext_chunk)
                 payload = chunk_index.to_bytes(4, byteorder='little') + ct
-                outer_nonce = os.urandom(12)
+                outer_nonce = os.urandom(NONCE_SIZE)
                 frame = self._encrypt_deaddrop_chunk(payload, outer_nonce)
                 
                 result = send_message(self._socket, frame)
@@ -741,6 +757,7 @@ class SecureChatClient(ClientBase):
         
         self._deaddrop_name = name
         self._deaddrop_password_hash = self._hash_deaddrop_password(password)
+        self._deaddrop_dl_password = password
         self._deaddrop_download_in_progress = True
         self._deaddrop_download_chunks.clear()
         self._deaddrop_download_max_index = -1
@@ -898,9 +915,9 @@ class SecureChatClient(ClientBase):
 
         Returns True if the frame was recognised and handled, False otherwise.
         """
-        if not len(message_data) >= 48:
+        if not len(message_data) >= FILE_CHUNK_CIPHERTEXT_OFFSET:
             return False
-        magic: bytes = message_data[0:1]
+        magic: bytes = message_data[:MAGIC_SIZE]
         if magic == constants.MAGIC_NUMBER_FILE_TRANSFER:
             try:
                 result = self._protocol.decrypt_file_chunk(message_data)
@@ -1207,31 +1224,80 @@ class SecureChatClient(ClientBase):
         except KeyError:
             self.ui.display_error_message("Dropped rekey message without action. Invalid JSON.")
             return
-        if action == "init":
-            self.ui.on_rekey_initiated_by_peer()
-            if not self.peer_key_verified:
-                proceed = self.ui.prompt_rekey()
-                if proceed is False:
-                    self.ui.display_system_message("Disconnecting as requested: rekey received from an unverified peer.")
-                    self.disconnect()
+        match action:
+            case "dsa_random":
+                # Peer initiated rekey (or race response). Prompt if peer is unverified and
+                # we didn't initiate ourselves.
+                if not self._protocol.rekey_in_progress:
+                    self.ui.on_rekey_initiated_by_peer()
+                    if not self.peer_key_verified:
+                        proceed = self.ui.prompt_rekey()
+                        if proceed is False:
+                            self.ui.display_system_message(
+                                    "Disconnecting as requested: rekey received from an unverified peer.")
+                            self.disconnect()
+                            return
+                        elif proceed is None:
+                            return
+                    self.ui.display_system_message("Rekey initiated by peer.")
+                try:
+                    response = self._protocol.process_rekey_dsa_random(inner)
+                except ValueError as e:
+                    self._protocol.reset_rekey(str(e))
                     return
-                elif proceed is None:
+                if response is not None:
+                    self._protocol.queue_json(response)
+            
+            case "mlkem_pubkey":
+                # B receives A's signed ML-KEM pubkey
+                try:
+                    response = self._protocol.process_rekey_mlkem_pubkey(inner)
+                except ValueError as e:
+                    self._protocol.reset_rekey(str(e))
                     return
-            self.ui.display_system_message("Rekey initiated by peer.")
-            response = self._protocol.process_rekey_init(inner)
-            self._protocol.queue_json(response)
-        elif action == "response":
-            commit = self._protocol.process_rekey_response(inner)
-            self._protocol.queue_json(commit)
-        elif action == "commit":
-            ack = {"type": MessageType.REKEY, "action": "commit_ack"}
-            self._protocol.queue_json_then_switch(ack)
-            self.ui.on_rekey_complete()
-        elif action == "commit_ack":
-            self._protocol.activate_pending_keys()
-            self.ui.on_rekey_complete()
-        else:
-            self.ui.display_error_message("Received unknown rekey action")
+                self._protocol.queue_json(response)
+            
+            case "mlkem_ct_keys":
+                # A receives B's ML-KEM ciphertext + encrypted pubkeys
+                try:
+                    response = self._protocol.process_rekey_mlkem_ct_keys(inner)
+                except ValueError as e:
+                    self._protocol.reset_rekey(str(e))
+                    return
+                self._protocol.queue_json(response)  # x25519_hqc_ct
+                self._protocol.queue_json(self._protocol.create_rekey_verification())  # A's verification
+            
+            case "x25519_hqc_ct":
+                # B receives A's X25519 pubkey + encrypted HQC ciphertext; pending keys computed
+                try:
+                    self._protocol.process_rekey_x25519_hqc_ct(inner)
+                except ValueError as e:
+                    self._protocol.reset_rekey(str(e))
+                    return
+                # Send verification under old keys, then activate — ensures A can decrypt B's proof.
+                # on_rekey_complete deferred until B also verifies A's proof (in "verification" case).
+                self._protocol.queue_json_then_switch(self._protocol.create_rekey_verification())
+            
+            case "verification":
+                # Both A and B arrive here to verify peer's proof.
+                # A still has pending keys; B has already activated via queue_json_then_switch.
+                # process_rekey_verification falls back to active key material when pending is gone.
+                try:
+                    ok = self._protocol.process_rekey_verification(inner)
+                except ValueError as e:
+                    self._protocol.reset_rekey(str(e))
+                    return
+                if not ok:
+                    self._protocol.reset_rekey("Rekey verification failed — possible MitM.")
+                    self.ui.display_error_message("Rekey verification failed — possible MitM. Rekey aborted.")
+                    return
+                # A activates pending keys here; B already activated, so skip.
+                if self._protocol.rekey_pending_keys_exist:
+                    self._protocol.activate_pending_keys()
+                self.ui.on_rekey_complete()
+            
+            case _:
+                self.ui.display_error_message("Received unknown rekey action")
     
     def handle_voice_call_init(self, init_msg: dict[str, Any]) -> None:
         """Handle incoming voice call request."""
@@ -1274,7 +1340,7 @@ class SecureChatClient(ClientBase):
         if not self.nickname_change_allowed:
             self.ui.display_system_message("Peer attempted to change nickname")
             return
-        self.peer_nickname = str(message.get("nickname", "Other User"))[:32]
+        self.peer_nickname = str(message.get("nickname", "Other User"))[:MAX_NICKNAME_LENGTH]
         self.ui.on_nickname_change(self.peer_nickname)
         self.ui.display_system_message(f"Peer changed nickname to: {self.peer_nickname}")
     
@@ -1358,7 +1424,7 @@ class SecureChatClient(ClientBase):
     
     def handle_server_full(self) -> None:
         self.ui.display_error_message("Server is full. Cannot connect at this time.")
-        self.ui.display_error_message("Please try again later or contact the server administrator.")
+        self.ui.display_error_message("Please try again later.")
         self.disconnect()
     
     def handle_server_version_info(self, message_data: bytes) -> None:
@@ -1366,7 +1432,7 @@ class SecureChatClient(ClientBase):
         message = json.loads(message_data)
         self.server_protocol_version = message.get("protocol_version", "0.0.0")
         if self.server_protocol_version == "0.0.0":
-            self.ui.display_error_message("Server returned invalid protocol version information, communication may "
+            self.ui.display_error_message("Server returned invalid protocol version information, communication may " +
                                           "still work but may be unreliable or have missing features.",
                                           )
         
@@ -1462,10 +1528,12 @@ class SecureChatClient(ClientBase):
         
         mlkem_ciphertext, kem_shared_secret = ml_kem_1024.encrypt(mlkem_public)
         
-        kdf = ConcatKDFHash(algorithm=hashes.SHA3_512(), length=32,
-                            otherinfo=b"deaddrop key exchange",
-                            )
-        self._deaddrop_shared_secret = kdf.derive(kem_shared_secret)
+        self._deaddrop_shared_secret = ConcatKDFHash(
+                algorithm=hashes.SHA3_512(),
+                length=DEADDROP_KDF_KEY_LENGTH,
+                otherinfo=b"deaddrop_key_exchange" + self.server_identifier.encode("utf-8"),
+        ).derive(kem_shared_secret)
+        
         self.deaddrop_supported = True
         self.deaddrop_max_size = int(message.get("max_file_size", 0))
         
@@ -1485,7 +1553,7 @@ class SecureChatClient(ClientBase):
         """
         if not self._deaddrop_shared_secret:
             raise ValueError("Deaddrop shared secret not established")
-        nonce = os.urandom(12)
+        nonce = os.urandom(NONCE_SIZE)
         aad = {
             "type":  MessageType.DEADDROP_MESSAGE,
             "nonce": base64.b64encode(nonce).decode("utf-8"),
@@ -1556,6 +1624,18 @@ class SecureChatClient(ClientBase):
             self._deaddrop_in_progress = True
             if self._deaddrop_download_in_progress:
                 self._deaddrop_download_expected_hash = str(inner.get("file_hash", ""))
+                file_key_salt_b64 = inner.get("file_key_salt")
+                if isinstance(file_key_salt_b64, str):
+                    try:
+                        hkdf_salt = base64.b64decode(file_key_salt_b64, validate=True)
+                    except binascii.Error:
+                        hkdf_salt = None
+                else:
+                    hkdf_salt = None
+                if hkdf_salt and self._deaddrop_download_key is not None:
+                    # Re-derive the key with the salt from the server metadata
+                    self._deaddrop_download_key = self._derive_deaddrop_file_key(
+                            self._deaddrop_dl_password, hkdf_salt)
                 self.ui.display_system_message("Deaddrop download accepted by server; confirming and waiting for data...")
                 confirm_inner = {"type": MessageType.DEADDROP_ACCEPT}
                 confirm_outer = self._encrypt_deaddrop_inner(json.dumps(confirm_inner).encode("utf-8"))
@@ -1586,9 +1666,9 @@ class SecureChatClient(ClientBase):
             
             pbk = PBKDF2HMAC(
                     algorithm=hashes.SHA3_512(),
-                    length=32,
+                    length=DEADDROP_KDF_KEY_LENGTH,
                     salt=download_salt,
-                    iterations=800000,
+                    iterations=DEADDROP_PBKDF2_ITERATIONS,
             )
             og_hash_bytes = self._deaddrop_password_hash.encode("utf-8")
             client_hash = pbk.derive(og_hash_bytes)
@@ -1617,29 +1697,43 @@ class SecureChatClient(ClientBase):
             self._deaddrop_in_progress = False
             self._deaddrop_download_in_progress = False
     
-    def _derive_deaddrop_file_key(self, password: str) -> bytes:
-        """Derive a 64-byte file encryption key from the password and the server identifier using SHA3-512."""
-        digest = hashlib.sha3_512()
-        digest.update(password.encode("utf-8"))
-        if self.server_identifier:
-            digest.update(self.server_identifier.encode("utf-8"))
-        return digest.digest()
-    
-    def _hash_deaddrop_password(self, password: str) -> str:
-        """Derive a slow Argon2id hash of the deaddrop password for server-side authentication.
-
-        Uses the server identifier as the salt. This is intentionally expensive and will
-        briefly block the UI thread.
-        """
-        self.ui.display_system_message("Hashing deaddrop password, program may be unresponsive.")
-        time.sleep(0.2)
-        salt = self.server_identifier.encode("utf-8") if self.server_identifier else b""
-        hasher = Argon2id(
+    def _derive_deaddrop_file_key(self, password: str, hkdf_salt: bytes | None = None) -> bytes:
+        salt = hashlib.sha3_512(
+                b"deaddrop-file-key-v1:" + self.server_identifier.encode("utf-8"),
+        ).digest()
+        
+        argon = Argon2id(
                 salt=salt,
                 memory_cost=1024 * 1024 * 4,
                 iterations=4,
                 lanes=4,
-                length=64,
+                length=DOUBLE_KEY_SIZE,
+        )
+        stretched = argon.derive(password.encode("utf-8"))
+        
+        hkdf = HKDF(
+                algorithm=hashes.SHA3_512(),
+                length=DOUBLE_KEY_SIZE,
+                salt=hkdf_salt,
+                info=b"deaddrop-file-encryption-key-v1",
+        )
+        return hkdf.derive(stretched)
+    
+    def _hash_deaddrop_password(self, password: str) -> str:
+        """Derive a slow Argon2id hash of the deaddrop password for server-side authentication.
+
+        Uses the server identifier as the salt. This is intentionally expensive and may
+        briefly block the UI thread.
+        """
+        self.ui.display_system_message("Hashing deaddrop password, program may be unresponsive.")
+        time.sleep(0.2)
+        salt = self.server_identifier.encode("utf-8") if self.server_identifier else b"deaddrop_pass_default_salt_v1"
+        hasher = Argon2id(
+                salt=salt,
+                memory_cost=1024 * 1024 * 2,  # memory_cost must be given in KiB, so 2 GiB
+                iterations=6,
+                lanes=4,
+                length=DOUBLE_KEY_SIZE,
         )
         return base64.b64encode(hasher.derive(password.encode("utf-8"))).decode("utf-8")
     
@@ -1688,7 +1782,7 @@ class SecureChatClient(ClientBase):
                 h.update(chunk)
         computed_hmac = h.finalize()
         
-        if computed_hmac == expected_hmac:
+        if bytes_eq(computed_hmac, expected_hmac):
             self.ui.display_system_message("Deaddrop file integrity verified (HMAC OK).")
         else:
             self.ui.display_error_message("Deaddrop file HMAC verification failed, file will be kept as-is."
@@ -1708,19 +1802,22 @@ class SecureChatClient(ClientBase):
         if not self._deaddrop_download_in_progress or self._deaddrop_shared_secret is None:
             return
         aead = ChaCha20Poly1305(self._deaddrop_shared_secret)
-        nonce = message_data[1:13]
-        ct = message_data[13:]
+        nonce = message_data[DEADDROP_NONCE_OFFSET:DEADDROP_CIPHERTEXT_OFFSET]
+        ct = message_data[DEADDROP_CIPHERTEXT_OFFSET:]
         try:
             decrypted = aead.decrypt(nonce, ct, nonce)
         except InvalidTag:
             raise ValueError("Deaddrop chunk decryption failed")
-        self._process_deaddrop_data_streaming(int.from_bytes(decrypted[:4], "little"), decrypted[4:])
+        self._process_deaddrop_data_streaming(
+                int.from_bytes(decrypted[:DEADDROP_LENGTH_PREFIX_SIZE], "big"),
+                decrypted[DEADDROP_LENGTH_PREFIX_SIZE:],
+        )
     
     def _process_deaddrop_data_streaming(self, chunk_index: int, chunk_data: bytes) -> None:
         """Decrypt and stream-write a single deaddrop download chunk to the partial output file.
 
-        The first chunk carries a 28-byte header (12-byte file extension + 16-byte nonce);
-        subsequent chunks reuse the nonce extracted from that header.
+        The first chunk carries a 12-byte header (file extension padded to 12 bytes).
+        Each chunk's nonce is derived from the key and chunk index.
         Chunks must arrive in order; out-of-order chunks are dropped with an error.
         """
         if chunk_index != self._deaddrop_dl_expected_index:
@@ -1741,18 +1838,18 @@ class SecureChatClient(ClientBase):
             self._deaddrop_dl_encryptor = ChunkIndependentDoubleEncryptor(self._deaddrop_download_key)
         
         try:
+            nonce = hashlib.sha3_256(self._deaddrop_download_key + chunk_index.to_bytes(4, byteorder='little')).digest()[:CTR_NONCE_SIZE]
             if chunk_index == 0:
-                first_nonce = hashlib.sha3_256(self.server_identifier.encode("utf-8")).digest()[:16]
-                pt = self._deaddrop_dl_encryptor.decrypt(first_nonce, chunk_data)
-                if len(pt) < 28:
+                pt = self._deaddrop_dl_encryptor.decrypt(nonce, chunk_data)
+                if len(pt) < DEADDROP_FILE_EXT_HEADER_SIZE:
                     self.ui.display_error_message("First deaddrop chunk too small to contain header")
                     return
-                ext_header = pt[:12]
-                self._deaddrop_dl_next_nonce = pt[12:28]
-                body = pt[28:]
+                ext_header = pt[:DEADDROP_FILE_EXT_HEADER_SIZE]
+                body = pt[DEADDROP_FILE_EXT_HEADER_SIZE:]
                 self._deaddrop_dl_bytes_downloaded += len(body)
                 
                 file_ext = ext_header.rstrip(b"\x00").decode("utf-8", errors="ignore")
+                file_ext = "".join(c for c in file_ext if c.isalnum() or c in ".-_") or ".bin"
                 safe_name = "".join(c for c in self._deaddrop_name if c.isalnum() or c in ("-", "_")) or "deaddrop"
                 if file_ext:
                     final_name = safe_name + (file_ext if file_ext.startswith(".") else ("." + file_ext))
@@ -1784,13 +1881,10 @@ class SecureChatClient(ClientBase):
                             pass
                         return
             else:
-                if not self._deaddrop_dl_next_nonce:
-                    self.ui.display_error_message("Missing deaddrop streaming nonce")
-                    return
                 if not self._deaddrop_dl_file:
                     self.ui.display_error_message("Deaddrop output file not open")
                     return
-                pt = self._deaddrop_dl_encryptor.decrypt(self._deaddrop_dl_next_nonce, chunk_data)
+                pt = self._deaddrop_dl_encryptor.decrypt(nonce, chunk_data)
                 self._deaddrop_dl_bytes_downloaded += len(pt)
                 try:
                     self._deaddrop_dl_file.write(pt)

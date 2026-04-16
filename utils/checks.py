@@ -14,7 +14,12 @@ def allowed_unverified_inner_fields() -> set[str]:
         # file transfer
         "transfer_id", "filename", "file_size", "file_hash", "total_chunks", "processed_size", "compressed",
         # rekey
-        "action", "public_key", "ciphertext",
+        "action", "is_response",
+        "mldsa_public_key", "client_random", "mldsa_signature",
+        "mlkem_public_key", "mlkem_ciphertext",
+        "encrypted_hqc_pubkey", "encrypted_x25519_pubkey",
+        "nonce1", "nonce2",
+        "encrypted_hqc_ciphertext", "verification_key",
         # dummy
         "data",
         # ephemeral mode / nickname

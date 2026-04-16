@@ -24,3 +24,5 @@
 /.junie/
 /thing.py
 /themes/
+/client_config.json
+/server_config.json

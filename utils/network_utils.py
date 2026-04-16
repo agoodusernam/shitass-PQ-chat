@@ -3,6 +3,8 @@ import socket
 import struct
 from typing import Any
 
+from protocol.constants import MAX_MESSAGE_SIZE
+
 
 def encode_send_message(sock: socket.socket, data: Any) -> str | None:
     encoded: bytes = json.dumps(data).encode('utf-8')
@@ -30,6 +32,8 @@ def receive_message(sock: Any) -> bytes:
         length_data += chunk
     
     length = struct.unpack('!I', length_data)[0]
+    if length > MAX_MESSAGE_SIZE:
+        raise ValueError(f"Message too large (max {MAX_MESSAGE_SIZE} bytes)")
     
     # Then receive the message
     message_data = b''

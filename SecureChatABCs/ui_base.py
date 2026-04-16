@@ -43,6 +43,7 @@ class UICapability(Flag):
             | NICKNAMES
     )
 
+
 class UIBase(ABC):
     """
     Abstract base for all UI front-ends (GUI, TUI, headless, …).

@@ -1,9 +1,9 @@
 import importlib
 from pathlib import Path
 
-from config import ConfigHandler
+from config import ClientConfigHandler
 
-ConfigHandler()
+ClientConfigHandler()
 
 from new_client import SecureChatClient
 

@@ -16,12 +16,20 @@ from typing import Any, TYPE_CHECKING
 
 from SecureChatABCs.protocol_base import ProtocolBase
 from protocol.file_handler import ProtocolFileHandler
-from config import ConfigHandler
+from config import ClientConfigHandler
 from utils.network_utils import send_message
 from protocol.crypto_classes import DoubleEncryptor, KeyExchangeDoubleEncryptor
 from protocol.constants import (
     MessageType,
     MAGIC_NUMBER_FILE_TRANSFER,
+    NONCE_SIZE,
+    CLIENT_RANDOM_SIZE,
+    HKDF_KEY_LENGTH,
+    HEADER_LENGTH_SIZE,
+    FILE_CHUNK_COUNTER_OFFSET,
+    FILE_CHUNK_NONCE_OFFSET,
+    FILE_CHUNK_EPH_PUB_OFFSET,
+    FILE_CHUNK_CIPHERTEXT_OFFSET,
 )
 from protocol.utils import (
     LRUCache,
@@ -34,9 +42,6 @@ from protocol.create_messages import (
     create_ke_mlkem_ct_keys,
     create_ke_x25519_hqc_ct,
     create_ke_verification,
-    create_rekey_init_message,
-    create_rekey_response_message,
-    create_rekey_commit_message,
 )
 from protocol.parse_messages import (
     process_key_verification_message,
@@ -45,8 +50,6 @@ from protocol.parse_messages import (
     parse_ke_mlkem_ct_keys,
     parse_ke_x25519_hqc_ct,
     parse_ke_verification,
-    parse_rekey_init,
-    parse_rekey_response,
 )
 
 try:
@@ -70,6 +73,7 @@ from cryptography.exceptions import InvalidTag
 
 if TYPE_CHECKING:
     from SecureChatABCs.client_base import ClientBase
+
 
 class _QueueKind(enum.Enum):
     """Discriminant for items stored in the protocol send queue."""
@@ -113,7 +117,7 @@ class SecureChatProtocol(ProtocolBase):
                 When ``None``, file-transfer operations are unavailable.
 
         Guaranteed Public Attributes:
-            config (ConfigHandler): The configuration handler instance.
+            config (ClientConfigHandler): The configuration handler instance.
             message_counter (int): Outgoing message counter for the current session.
             peer_counter (int): Last confirmed incoming message counter.
             ke_step (int): Tracks which step of the multi-step key exchange is in progress.
@@ -131,8 +135,6 @@ class SecureChatProtocol(ProtocolBase):
             msg_peer_base_public (bytes): Peer's last known Double Ratchet X25519 public key.
             pending_message_counter (int): Outgoing counter value staged for the next rekey activation.
             pending_peer_counter (int): Incoming counter value staged for the next rekey activation.
-            rekey_dh_public (X25519PublicKey | None): Ephemeral X25519 public key for the active rekey.
-
         Guaranteed Private Attributes:
             _file_handler (ProtocolFileHandler | None): File-transfer delegate; ``None`` when unused.
             _message_queue (deque): Queue of outgoing items pending encryption and dispatch.
@@ -162,21 +164,20 @@ class SecureChatProtocol(ProtocolBase):
             _dh_private_key (X25519PrivateKey | None): Ephemeral X25519 private key for session setup.
             _msg_recv_private (X25519PrivateKey | None): X25519 private key used in the Double Ratchet.
             _rekey_in_progress (bool): Whether a rekey exchange is currently in flight.
-            _pending_shared_key (bytes): Combined shared secret staged for the next rekey activation.
-            _pending_encryption_key (bytes): Verification key staged for the next rekey activation.
             _pending_send_chain_key (bytes): Send chain key staged for the next rekey activation.
             _pending_receive_chain_key (bytes): Receive chain key staged for the next rekey activation.
-            _pending_hqc_secret (bytes): HQC-256 secret staged for the next rekey activation.
             _pending_otp_material (bytes): OTP material staged for the next rekey activation.
-            _rekey_mlkem_private_key (bytes): Ephemeral ML-KEM private key for the active rekey.
-            _rekey_hqc_private_key (bytes): Ephemeral HQC-256 private key for the active rekey.
-            _rekey_dh_private (X25519PrivateKey | None): Ephemeral X25519 private key for the active rekey.
+            _pending_verification_key (bytes): Verification key staged for the next rekey activation.
+            _pending_key_verification_material (bytes): Fingerprint material staged for the next rekey activation.
+            _pending_msg_recv_private (X25519PrivateKey | None): DH private key for post-rekey ratchet.
+            _pending_msg_peer_base_public (bytes): Peer DH public key for post-rekey ratchet.
+            _pending_peer_dh_public_key_bytes (bytes): Peer DH public key bytes staged for activation.
         """
         self.client: "ClientBase | None" = client
         self._file_handler: ProtocolFileHandler | None = file_handler
         
         # Configuration + protocol
-        self.config: ConfigHandler = ConfigHandler()
+        self.config: ClientConfigHandler = ClientConfigHandler()
         
         # Transport + queuing
         self._message_queue: deque[tuple[_QueueKind, str | dict[str, Any]]] = deque()
@@ -233,18 +234,38 @@ class SecureChatProtocol(ProtocolBase):
         
         # Rekey state
         self._rekey_in_progress: bool = False
-        self._pending_shared_key: bytes = b""
-        self._pending_encryption_key: bytes = b""
         self._pending_send_chain_key: bytes = b""
         self._pending_receive_chain_key: bytes = b""
-        self._pending_hqc_secret: bytes = b""
         self._pending_otp_material: bytes = b""
+        self._pending_verification_key: bytes = b""
+        self._pending_key_verification_material: bytes = b""
+        self._pending_msg_recv_private: X25519PrivateKey | None = None
+        self._pending_msg_peer_base_public: bytes = b""
+        self._pending_peer_dh_public_key_bytes: bytes = b""
         self.pending_message_counter: int = 0
         self.pending_peer_counter: int = 0
-        self._rekey_mlkem_private_key: bytes = b""
-        self._rekey_hqc_private_key: bytes = b""
-        self.rekey_dh_public: X25519PublicKey | None = None
-        self._rekey_dh_private: X25519PrivateKey | None = None
+        # Rekey KE protocol state
+        self._rke_step: int = 0  # 0=off, 1=I am A (initiator), 2=I am B (responder)
+        self._rke_client_random: bytes = b""
+        self._rke_peer_client_random: bytes = b""
+        self._rke_combined_random: bytes = b""
+        self._rke_mldsa_pub: bytes = b""
+        self._rke_mldsa_priv: bytes = b""
+        self._rke_peer_mldsa_pub: bytes = b""
+        self._rke_mlkem_shared_secret: bytes = b""  # B stores mlkem secret between steps
+        # A-side KE state
+        self._rke_mlkem_priv: bytes = b""
+        self._rke_dh_priv: X25519PrivateKey | None = None
+        self._rke_dh_pub_bytes: bytes = b""
+        self._rke_peer_hqc_pub: bytes = b""
+        # B-side KE state
+        self._rke_peer_mlkem_pub: bytes = b""
+        self._rke_hqc_pub: bytes = b""
+        self._rke_hqc_priv: bytes = b""
+        self._rke_b_dh_priv: X25519PrivateKey | None = None
+        self._rke_b_dh_pub_bytes: bytes = b""
+        # Shared intermediary state
+        self._rke_intermediary_key_1: bytes = b""
         
         # Automatic rekey tracking
         self.messages_since_last_rekey: int = 0
@@ -501,7 +522,7 @@ class SecureChatProtocol(ProtocolBase):
     def create_ke_dsa_random(self) -> bytes:
         """Create KE_DSA_RANDOM message: send our DSA public key and a client random."""
         self._generate_dsa_keys()
-        self._ke_client_random = os.urandom(32)
+        self._ke_client_random = os.urandom(CLIENT_RANDOM_SIZE)
         # Derive combined random if we already have the peer's random (Client B path)
         if self._ke_client_random and self._peer_client_random:
             self._combined_random = self._derive_combined_random()
@@ -555,8 +576,8 @@ class SecureChatProtocol(ProtocolBase):
         
         # Encrypt HQC and X25519 public keys with intermediary key 1
         encryptor = KeyExchangeDoubleEncryptor(intermediary_key_1)
-        nonce1 = os.urandom(12)
-        nonce2 = os.urandom(12)
+        nonce1 = os.urandom(NONCE_SIZE)
+        nonce2 = os.urandom(NONCE_SIZE)
         encrypted_hqc_pubkey = encryptor.encrypt(nonce1, self.hqc_public_key)
         encrypted_x25519_pubkey = encryptor.encrypt(nonce2, self.dh_public_key_bytes)
         
@@ -604,12 +625,12 @@ class SecureChatProtocol(ProtocolBase):
         
         # Encrypt X25519 pubkey with intermediary key 1
         encryptor_1 = KeyExchangeDoubleEncryptor(self._ke_intermediary_key_1)
-        nonce1 = os.urandom(12)
+        nonce1 = os.urandom(NONCE_SIZE)
         encrypted_x25519_pubkey = encryptor_1.encrypt(nonce1, self.dh_public_key_bytes)
         
         # Encrypt HQC ciphertext with intermediary key 2
         encryptor_2 = KeyExchangeDoubleEncryptor(intermediary_key_2)
-        nonce2 = os.urandom(12)
+        nonce2 = os.urandom(NONCE_SIZE)
         encrypted_hqc_ciphertext = encryptor_2.encrypt(nonce2, hqc_ciphertext)
         
         # Sign before finalizing (finalize discards ML-DSA keys)
@@ -662,7 +683,7 @@ class SecureChatProtocol(ProtocolBase):
         # OTP material = SHA-3-512-HKDF(HQC secret, salt=combined_random, info=server_id + 'otp_material')
         otp_hkdf = HKDF(
                 algorithm=hashes.SHA3_512(),
-                length=64,
+                length=HKDF_KEY_LENGTH,
                 salt=self._combined_random,
                 info=server_id + b'otp_material',
         )
@@ -671,7 +692,7 @@ class SecureChatProtocol(ProtocolBase):
         # Own chain key root = SHA-3-512-HKDF(ML-KEM secret + X25519 secret, salt=own_random, info=server_id + 'chain_key_root')
         own_chain_hkdf = HKDF(
                 algorithm=hashes.SHA3_512(),
-                length=64,
+                length=HKDF_KEY_LENGTH,
                 salt=self._ke_client_random,
                 info=server_id + b'chain_key_root',
         )
@@ -680,7 +701,7 @@ class SecureChatProtocol(ProtocolBase):
         # Peer chain key root = same but with peer's random as salt
         peer_chain_hkdf = HKDF(
                 algorithm=hashes.SHA3_512(),
-                length=64,
+                length=HKDF_KEY_LENGTH,
                 salt=self._peer_client_random,
                 info=server_id + b'chain_key_root',
         )
@@ -724,8 +745,8 @@ class SecureChatProtocol(ProtocolBase):
     def process_ke_verification(self, data: bytes) -> bool:
         """Process peer's KE_VERIFICATION and check it matches our derived key.
         Returns True if verification succeeds."""
-        parsed = parse_ke_verification(data)
-        return bytes_eq(parsed["verification_key"], self._key_verification_material)
+        parsed = parse_ke_verification(data, local_verification_key=self._key_verification_material)
+        return bool(parsed["verification_key"])
     
     def _derive_combined_random(self) -> bytes:
         """Derive combined random from both client randoms using SHA2-512-HKDF.
@@ -736,7 +757,7 @@ class SecureChatProtocol(ProtocolBase):
         server_id = self._server_identifier.encode('utf-8')
         hkdf = HKDF(
                 algorithm=hashes.SHA512(),
-                length=64,
+                length=HKDF_KEY_LENGTH,
                 salt=smaller_random,
                 info=server_id + b'comb_rand',
         )
@@ -748,7 +769,7 @@ class SecureChatProtocol(ProtocolBase):
         server_id = self._server_identifier.encode('utf-8')
         hkdf = HKDF(
                 algorithm=hashes.SHA3_512(),
-                length=64,
+                length=HKDF_KEY_LENGTH,
                 salt=self._combined_random,
                 info=server_id + b'int_key_1',
         )
@@ -760,69 +781,18 @@ class SecureChatProtocol(ProtocolBase):
         server_id = self._server_identifier.encode('utf-8')
         hkdf = HKDF(
                 algorithm=hashes.SHA3_512(),
-                length=64,
+                length=HKDF_KEY_LENGTH,
                 salt=dh_shared_secret,
                 info=server_id + b'int_key_2',
         )
         return hkdf.derive(intermediary_key_1)
     
     @staticmethod
-    def _derive_combined_shared_secret(mlkem_shared_secret: bytes, dh_shared_secret: bytes) -> bytes:
-        """Combine ML-KEM and X25519 shared secrets into a single shared secret (used by rekey)."""
-        hkdf = HKDF(
-                algorithm=hashes.SHA512(),
-                length=64,
-                salt=mlkem_shared_secret,
-                info=b"combined_shared_secret",
-        )
-        return hkdf.derive(dh_shared_secret)
-    
-    @staticmethod
-    def _derive_keys_and_chain(shared_secret: bytes, own_pub: bytes = b"", peer_pub: bytes = b"") -> tuple[bytes, bytes]:
-        """Derive encryption key and root chain key from a shared secret (used by rekey)."""
-        if own_pub and peer_pub:
-            keys = sorted([own_pub, peer_pub])
-            combined_keys = keys[0] + keys[1]
-        else:
-            combined_keys = b""
-        
-        enc_salt = hashlib.sha512(combined_keys + b"enc_key_salt").digest()
-        chain_salt = hashlib.sha512(combined_keys + b"chain_salt").digest()
-        
-        hkdf_keys = HKDF(
-                algorithm=hashes.SHA3_512(),
-                length=64,
-                salt=enc_salt,
-                info=b"key_derivation",
-        )
-        derived = hkdf_keys.derive(shared_secret)
-        
-        hkdf_chain = HKDF(
-                algorithm=hashes.SHA3_512(),
-                length=64,
-                salt=chain_salt,
-                info=b"chain_key_root",
-        )
-        root_chain_key = hkdf_chain.derive(shared_secret)
-        return derived, root_chain_key
-    
-    @staticmethod
-    def _derive_rekey_otp_material(hqc_secret: bytes) -> bytes:
-        """Derive OTP material from HQC secret during rekey."""
-        hkdf = HKDF(
-                algorithm=hashes.SHA3_512(),
-                length=64,
-                salt=None,
-                info=b"rekey_otp_material",
-        )
-        return hkdf.derive(hqc_secret)
-    
-    @staticmethod
     def _derive_message_key(chain_key: bytes, counter: int) -> bytes:
         """Derive a message key from the chain key and counter."""
         hkdf = HKDF(
                 algorithm=hashes.SHA512(),
-                length=64,
+                length=HKDF_KEY_LENGTH,
                 salt=counter.to_bytes(8, byteorder="little"),
                 info=f"message_key_{counter}".encode(),
         )
@@ -833,7 +803,7 @@ class SecureChatProtocol(ProtocolBase):
         """Advance the chain key (ratchet forward)."""
         hkdf = HKDF(
                 algorithm=hashes.SHA3_512(),
-                length=64,
+                length=HKDF_KEY_LENGTH,
                 salt=counter.to_bytes(8, byteorder="little"),
                 info=f"chain_key_{counter}".encode("utf-8"),
         )
@@ -845,7 +815,7 @@ class SecureChatProtocol(ProtocolBase):
         info = b"dr_mix_" + str(counter).encode('utf-8')
         hkdf = HKDF(
                 algorithm=hashes.SHA512(),
-                length=64,
+                length=HKDF_KEY_LENGTH,
                 salt=chain_key,
                 info=info,
         )
@@ -917,7 +887,7 @@ class SecureChatProtocol(ProtocolBase):
         plaintext_bytes = plaintext.encode('utf-8')
         
         # Create AAD from message metadata for authentication
-        nonce = os.urandom(12)
+        nonce = os.urandom(NONCE_SIZE)
         aad_data: dict[str, MessageType | int | str] = {
             "type":          MessageType.ENCRYPTED_MESSAGE,
             "counter":       self.message_counter,
@@ -1064,7 +1034,7 @@ class SecureChatProtocol(ProtocolBase):
         Encrypt a file chunk using the Double Ratchet, identical in structure to encrypt_message
         but operating on raw binary data rather than JSON text.
 
-        Frame layout: [1-byte magic][4-byte counter][12-byte nonce][32-byte eph_pub][ciphertext]
+        Frame layout: [1-byte magic][4-byte counter][NONCE_SIZE-byte nonce][HALF_KEY_SIZE-byte eph_pub][ciphertext]
 
         :return: The encrypted frame as bytes, ready to send.
         :raises ValueError: If encryption state is not ready.
@@ -1101,7 +1071,7 @@ class SecureChatProtocol(ProtocolBase):
         header_json = json.dumps(header).encode('utf-8')
         
         # Encrypt header and chunk data in one operation
-        nonce = os.urandom(12)
+        nonce = os.urandom(NONCE_SIZE)
         
         # Create AAD including eph pub to authenticate ratchet key
         aad_data = {
@@ -1118,33 +1088,33 @@ class SecureChatProtocol(ProtocolBase):
         encryptor = DoubleEncryptor(message_key, self._otp_material, self.message_counter)
         ciphertext = encryptor.encrypt(nonce, plaintext, aad)
         
-        # Pack: magic (1) + counter (4) + nonce (12) + eph_pub (32) + ciphertext
+        # Pack: magic (1) + counter (4) + nonce (NONCE_SIZE) + eph_pub (HALF_KEY_SIZE) + ciphertext
         counter_bytes = struct.pack('!I', self.message_counter)
         return MAGIC_NUMBER_FILE_TRANSFER + counter_bytes + nonce + eph_pub_bytes + ciphertext
     
     def decrypt_file_chunk(self, encrypted_data: bytes) -> dict:
         """
         Decrypt a file chunk frame produced by encrypt_file_chunk.
-        Expects frame: [1-byte magic][4-byte counter][12-byte nonce][32-byte eph_pub][ciphertext].
+        Expects frame: [1-byte magic][4-byte counter][NONCE_SIZE-byte nonce][HALF_KEY_SIZE-byte eph_pub][ciphertext].
 
         :return: dict with keys ``transfer_id``, ``chunk_index``, ``chunk_data``.
         :raises ValueError: If decryption fails or the frame is malformed.
         """
         if not self.shared_key or not self._receive_chain_key:
             raise ValueError("No shared key or receive chain key established")
-        if len(encrypted_data) < 1 + 4 + 12 + 32:
+        if len(encrypted_data) < FILE_CHUNK_CIPHERTEXT_OFFSET:
             raise ValueError("Invalid chunk message format")
         
         try:
-            counter = int(struct.unpack('!I', encrypted_data[1:5])[0])
+            counter = int(struct.unpack('!I', encrypted_data[FILE_CHUNK_COUNTER_OFFSET:FILE_CHUNK_NONCE_OFFSET])[0])
         except struct.error:
             raise ValueError("Invalid chunk message format")
         except ValueError:
             raise ValueError("Invalid counter in chunk message")
         
-        nonce = encrypted_data[5:17]
-        peer_eph_pub = encrypted_data[17:49]
-        ciphertext = encrypted_data[49:]
+        nonce = encrypted_data[FILE_CHUNK_NONCE_OFFSET:FILE_CHUNK_EPH_PUB_OFFSET]
+        peer_eph_pub = encrypted_data[FILE_CHUNK_EPH_PUB_OFFSET:FILE_CHUNK_CIPHERTEXT_OFFSET]
+        ciphertext = encrypted_data[FILE_CHUNK_CIPHERTEXT_OFFSET:]
         
         # Check for replay attacks or very old messages
         if counter <= self.peer_counter:
@@ -1185,19 +1155,19 @@ class SecureChatProtocol(ProtocolBase):
             raise ValueError("File chunk decryption failed: InvalidTag")
         
         # Parse the decrypted header and extract chunk data
-        if len(plaintext) < 2:
+        if len(plaintext) < HEADER_LENGTH_SIZE:
             raise ValueError("Invalid decrypted data: too short")
         
         try:
-            header_len = struct.unpack('!H', plaintext[:2])[0]
+            header_len = struct.unpack('!H', plaintext[:HEADER_LENGTH_SIZE])[0]
         except struct.error:
             raise ValueError("Invalid decrypted data: header length")
         
-        if len(plaintext) < 2 + header_len:
+        if len(plaintext) < HEADER_LENGTH_SIZE + header_len:
             raise ValueError("Invalid decrypted data: header length mismatch")
         
-        header_json = plaintext[2:2 + header_len]
-        chunk_data = plaintext[2 + header_len:]
+        header_json = plaintext[HEADER_LENGTH_SIZE:HEADER_LENGTH_SIZE + header_len]
+        chunk_data = plaintext[HEADER_LENGTH_SIZE + header_len:]
         try:
             header = json.loads(header_json)
         except (json.JSONDecodeError, UnicodeDecodeError):
@@ -1221,117 +1191,421 @@ class SecureChatProtocol(ProtocolBase):
     # Rekey methods
     def activate_pending_keys(self) -> None:
         """Atomically switch active session to the pending keys (if available)."""
-        if not self._rekey_in_progress:
+        if not self._pending_send_chain_key:
             return
-        if not (self._pending_shared_key and self._pending_encryption_key and
-                self._pending_send_chain_key and self._pending_receive_chain_key):
-            # Incomplete pending state, do not switch
-            return
-        # Activate
+        # Activate session keys
         self.shared_key = True
-        self._verification_key = self._pending_encryption_key
+        self._verification_key = self._pending_verification_key
+        self._key_verification_material = self._pending_key_verification_material
         self._send_chain_key = self._pending_send_chain_key
         self._receive_chain_key = self._pending_receive_chain_key
+        self._otp_material = self._pending_otp_material
+        # Reset message counters
         self.message_counter = 0
         self.peer_counter = 0
-        # Reset automatic rekey counter
         self.messages_since_last_rekey = 0
-        # Activate OTP material if present
-        if self._pending_otp_material:
-            self._otp_material = self._pending_otp_material
-        if self._pending_hqc_secret:
-            self._hqc_secret = self._pending_hqc_secret
+        # Reset DH ratchet baseline
+        self._msg_recv_private = self._pending_msg_recv_private
+        self.msg_peer_base_public = self._pending_msg_peer_base_public
+        self.peer_dh_public_key_bytes = self._pending_peer_dh_public_key_bytes
+        self.skipped_counters = LRUCache(1000)
         # Clear pending state
-        self._pending_shared_key = b""
-        self._pending_encryption_key = b""
         self._pending_send_chain_key = b""
         self._pending_receive_chain_key = b""
-        self._pending_hqc_secret = b""
         self._pending_otp_material = b""
+        self._pending_verification_key = b""
+        self._pending_key_verification_material = b""
+        self._pending_msg_recv_private = None
+        self._pending_msg_peer_base_public = b""
+        self._pending_peer_dh_public_key_bytes = b""
         self.pending_message_counter = 0
         self.pending_peer_counter = 0
-        # Clear rekey ephemeral keys
-        self._rekey_mlkem_private_key = b""
-        self._rekey_hqc_private_key = b""
-        self._rekey_dh_private = None
-        self.rekey_dh_public = None
+        # Clear rekey state
+        self._rke_reset()
         self._rekey_in_progress = False
     
-    def create_rekey_init(self) -> dict[str, str | int]:
-        """Create a REKEY init payload to be sent inside an encrypted message using the old key."""
-        # Generate ephemeral KEM keypair for this rekey only
-        mlkem_public_key, mlkem_private_key = ml_kem_1024.generate_keypair()
-        hqc_public_key, hqc_private_key = hqc_256.generate_keypair()
-        dh_private = X25519PrivateKey.generate()
-        dh_public = dh_private.public_key()
-        
-        self._rekey_mlkem_private_key = mlkem_private_key
-        self._rekey_hqc_private_key = hqc_private_key
-        self._rekey_dh_private = dh_private
-        self.rekey_dh_public = dh_public
-        self._rekey_in_progress = True
-        return create_rekey_init_message(mlkem_public_key, hqc_public_key, dh_public.public_bytes_raw())
+    def _rke_reset(self) -> None:
+        """Clear all rekey KE protocol state (does not clear pending keys or _rekey_in_progress)."""
+        self._rke_step = 0
+        self._rke_client_random = b""
+        self._rke_peer_client_random = b""
+        self._rke_combined_random = b""
+        self._rke_mldsa_pub = b""
+        self._rke_mldsa_priv = b""
+        self._rke_peer_mldsa_pub = b""
+        self._rke_mlkem_shared_secret = b""
+        self._rke_mlkem_priv = b""
+        self._rke_dh_priv = None
+        self._rke_dh_pub_bytes = b""
+        self._rke_peer_hqc_pub = b""
+        self._rke_peer_mlkem_pub = b""
+        self._rke_hqc_pub = b""
+        self._rke_hqc_priv = b""
+        self._rke_b_dh_priv = None
+        self._rke_b_dh_pub_bytes = b""
+        self._rke_intermediary_key_1 = b""
     
-    def process_rekey_init(self, message: dict[Any, Any]) -> dict[str, int | str]:
-        """Process a REKEY init payload; derive pending keys and return REKEY response payload.
-        This must be called on the responder, and the response must be sent under the old key.
+    def reset_rekey(self, error_msg: str = "") -> None:
+        """Abort an in-progress rekey and clear all associated state."""
+        self._rke_reset()
+        self._pending_send_chain_key = b""
+        self._pending_receive_chain_key = b""
+        self._pending_otp_material = b""
+        self._pending_verification_key = b""
+        self._pending_key_verification_material = b""
+        self._pending_msg_recv_private = None
+        self._pending_msg_peer_base_public = b""
+        self._pending_peer_dh_public_key_bytes = b""
+        self._rekey_in_progress = False
+        if error_msg:
+            self._report_error(f"Rekey aborted: {error_msg}")
+    
+    def _rke_derive_combined_random(self) -> bytes:
+        """Derive combined random from both rekey client randoms (domain-separated from initial KE)."""
+        randoms = sorted([self._rke_client_random, self._rke_peer_client_random])
+        server_id = self._server_identifier.encode('utf-8')
+        hkdf = HKDF(
+                algorithm=hashes.SHA512(),
+                length=HKDF_KEY_LENGTH,
+                salt=randoms[0],
+                info=server_id + b'rekey_comb_rand',
+        )
+        return hkdf.derive(randoms[1])
+    
+    def _rke_derive_intermediary_key_1(self, mlkem_shared_secret: bytes) -> bytes:
+        """Derive rekey int_key_1 from ML-KEM secret."""
+        server_id = self._server_identifier.encode('utf-8')
+        hkdf = HKDF(
+                algorithm=hashes.SHA3_512(),
+                length=HKDF_KEY_LENGTH,
+                salt=self._rke_combined_random,
+                info=server_id + b'rekey_int_key_1',
+        )
+        return hkdf.derive(mlkem_shared_secret)
+    
+    def _rke_derive_intermediary_key_2(self, intermediary_key_1: bytes, dh_shared_secret: bytes) -> bytes:
+        """Derive rekey int_key_2 from int_key_1 and X25519 secret."""
+        server_id = self._server_identifier.encode('utf-8')
+        hkdf = HKDF(
+                algorithm=hashes.SHA3_512(),
+                length=HKDF_KEY_LENGTH,
+                salt=dh_shared_secret,
+                info=server_id + b'rekey_int_key_2',
+        )
+        return hkdf.derive(intermediary_key_1)
+    
+    def _rke_finalize(self, dh_shared_secret: bytes, hqc_secret: bytes,
+                      mlkem_shared_secret: bytes,
+                      own_dh_priv: X25519PrivateKey, peer_dh_pub_bytes: bytes,
+                      ) -> None:
+        """Derive and store pending session keys (mirrors _finalize_key_exchange but into _pending_*)."""
+        server_id = self._server_identifier.encode('utf-8')
+        
+        otp_hkdf = HKDF(
+                algorithm=hashes.SHA3_512(),
+                length=HKDF_KEY_LENGTH,
+                salt=self._rke_combined_random,
+                info=server_id + b'rekey_otp_material',
+        )
+        pending_otp = otp_hkdf.derive(hqc_secret)
+        
+        own_chain_hkdf = HKDF(
+                algorithm=hashes.SHA3_512(),
+                length=HKDF_KEY_LENGTH,
+                salt=self._rke_client_random,
+                info=server_id + b'rekey_chain_key_root',
+        )
+        own_chain_key = own_chain_hkdf.derive(mlkem_shared_secret + dh_shared_secret)
+        
+        peer_chain_hkdf = HKDF(
+                algorithm=hashes.SHA3_512(),
+                length=HKDF_KEY_LENGTH,
+                salt=self._rke_peer_client_random,
+                info=server_id + b'rekey_chain_key_root',
+        )
+        peer_chain_key = peer_chain_hkdf.derive(mlkem_shared_secret + dh_shared_secret)
+        
+        sorted_materials = sorted([pending_otp, own_chain_key, peer_chain_key])
+        verification_hash = hashlib.sha3_512(b''.join(sorted_materials)).digest()
+        key_verification_material = hashlib.sha3_512(
+                b''.join(sorted_materials) + self._rke_combined_random).digest()[:32]
+        
+        self._pending_otp_material = pending_otp
+        self._pending_send_chain_key = own_chain_key
+        self._pending_receive_chain_key = peer_chain_key
+        self._pending_verification_key = verification_hash
+        self._pending_key_verification_material = key_verification_material
+        self._pending_msg_recv_private = own_dh_priv
+        self._pending_msg_peer_base_public = peer_dh_pub_bytes
+        self._pending_peer_dh_public_key_bytes = peer_dh_pub_bytes
+    
+    def create_rekey_dsa_random(self, is_initiator: bool) -> dict:
+        """Start a rekey: generate ephemeral ML-DSA keys + client random; return dsa_random payload."""
+        self._rke_mldsa_pub, self._rke_mldsa_priv = ml_dsa_87.generate_keypair()
+        self._rke_client_random = os.urandom(CLIENT_RANDOM_SIZE)
+        self._rke_step = 1 if is_initiator else 2
+        self._rekey_in_progress = True
+        return {
+            "type":             MessageType.REKEY,
+            "action":           "dsa_random",
+            "is_response":      False,  # False = initiating, True = responding to peer's dsa_random
+            "mldsa_public_key": base64.b64encode(self._rke_mldsa_pub).decode('utf-8'),
+            "client_random":    base64.b64encode(self._rke_client_random).decode('utf-8'),
+        }
+    
+    def _make_dsa_random_response(self) -> dict:
+        """Return B's dsa_random payload (marked as a response, not an initiation)."""
+        return {
+            "type":             MessageType.REKEY,
+            "action":           "dsa_random",
+            "is_response":      True,
+            "mldsa_public_key": base64.b64encode(self._rke_mldsa_pub).decode('utf-8'),
+            "client_random":    base64.b64encode(self._rke_client_random).decode('utf-8'),
+        }
+    
+    def process_rekey_dsa_random(self, inner: dict) -> dict | None:
+        """Process peer's dsa_random. Returns next outbound rekey message dict or None.
+
+        The `is_response` field distinguishes a peer-initiated message (race condition possible)
+        from a peer response to our own initiation (normal flow — always stay A).
         """
-        parsed = parse_rekey_init(message)
-        peer_dh_public_key = X25519PublicKey.from_public_bytes(parsed["dh_public_key"])
+        try:
+            peer_mldsa_pub = base64.b64decode(inner["mldsa_public_key"], validate=True)
+            peer_random = base64.b64decode(inner["client_random"], validate=True)
+        except (KeyError, binascii.Error) as e:
+            raise ValueError(f"Invalid rekey dsa_random: {e}") from e
         
-        # Produce new shared secret and ciphertext for the initiator
-        mlkem_ciphertext, mlkem_shared_secret = ml_kem_1024.encrypt(parsed["mlkem_public_key"])
-        hqc_ciphertext, hqc_secret = hqc_256.encrypt(parsed["hqc_public_key"])
-        self._rekey_dh_private = X25519PrivateKey.generate()
-        dh_shared_secret = self._rekey_dh_private.exchange(peer_dh_public_key)
-        # Combine ML-KEM and DH secrets (HQC stored separately like in initial key exchange)
-        combined_shared = self._derive_combined_shared_secret(mlkem_shared_secret, dh_shared_secret)
-        # Store pending derived keys without touching active ones
-        enc_key, root_chain = self._derive_keys_and_chain(combined_shared)
-        self._pending_shared_key = combined_shared
-        self._pending_encryption_key = enc_key
-        self._pending_send_chain_key = root_chain
-        self._pending_receive_chain_key = root_chain
-        self._pending_hqc_secret = hqc_secret
-        self._pending_otp_material = self._derive_rekey_otp_material(hqc_secret)
-        self.pending_message_counter = 0
-        self.pending_peer_counter = 0
-        self._rekey_in_progress = True
-        return create_rekey_response_message(
-                mlkem_ciphertext, hqc_ciphertext,
-                self._rekey_dh_private.public_key().public_bytes_raw())
+        peer_is_initiating = not inner.get("is_response", False)
+        
+        if self._rke_step == 0:
+            # Peer initiated and we haven't started. Generate our keys and become B.
+            self._rke_mldsa_pub, self._rke_mldsa_priv = ml_dsa_87.generate_keypair()
+            self._rke_client_random = os.urandom(CLIENT_RANDOM_SIZE)
+            self._rke_step = 2
+            self._rekey_in_progress = True
+        
+        if self._rke_step == 1:
+            # I am A (initiator).
+            if peer_is_initiating and peer_random > self._rke_client_random:
+                # Race AND peer has larger random → peer stays A, I become B
+                self._rke_step = 2
+                # Fall through to B processing below
+            else:
+                # Normal A processing (or race where I win/have equal random)
+                if self._rke_combined_random:
+                    # Already processed a dsa_random (duplicate from race); ignore
+                    return None
+                self._rke_peer_mldsa_pub = peer_mldsa_pub
+                self._rke_peer_client_random = peer_random
+                self._rke_combined_random = self._rke_derive_combined_random()
+                return self._create_rekey_mlkem_pubkey()
+        
+        # I am B (responder). Store peer data and respond with own dsa_random.
+        if self._rke_combined_random:
+            # Already processed a dsa_random; ignore duplicate
+            return None
+        self._rke_peer_mldsa_pub = peer_mldsa_pub
+        self._rke_peer_client_random = peer_random
+        self._rke_combined_random = self._rke_derive_combined_random()
+        return self._make_dsa_random_response()
     
-    def process_rekey_response(self, message: dict) -> dict:
-        """Process a REKEY response payload on the initiator; set pending keys and return commit payload."""
-        if not self._rekey_mlkem_private_key:
-            raise ValueError("No ephemeral ML-KEM private key for REKEY response")
-        if not self._rekey_hqc_private_key:
-            raise ValueError("No ephemeral HQC private key for REKEY response")
-        if not self._rekey_dh_private:
-            raise ValueError("No ephemeral DH private key for REKEY response")
+    def _create_rekey_mlkem_pubkey(self) -> dict:
+        """(A) Generate ML-KEM-1024 and X25519 keypairs; return signed mlkem_pubkey payload."""
+        mlkem_pub, mlkem_priv = ml_kem_1024.generate_keypair()
+        self._rke_mlkem_priv = mlkem_priv
+        dh_priv = X25519PrivateKey.generate()
+        self._rke_dh_priv = dh_priv
+        self._rke_dh_pub_bytes = dh_priv.public_key().public_bytes_raw()
+        signature = ml_dsa_87.sign(self._rke_mldsa_priv, mlkem_pub)
+        return {
+            "type":             MessageType.REKEY,
+            "action":           "mlkem_pubkey",
+            "mlkem_public_key": base64.b64encode(mlkem_pub).decode('utf-8'),
+            "mldsa_signature":  base64.b64encode(signature).decode('utf-8'),
+        }
+    
+    def process_rekey_mlkem_pubkey(self, inner: dict) -> dict:
+        """(B) Process A's mlkem_pubkey; generate B's keys, encapsulate, return mlkem_ct_keys payload."""
+        try:
+            mlkem_pub = base64.b64decode(inner["mlkem_public_key"], validate=True)
+            mldsa_sig = base64.b64decode(inner["mldsa_signature"], validate=True)
+        except (KeyError, binascii.Error) as e:
+            raise ValueError(f"Invalid rekey mlkem_pubkey: {e}") from e
         
-        parsed = parse_rekey_response(message)
+        if not ml_dsa_87.verify(self._rke_peer_mldsa_pub, mlkem_pub, mldsa_sig):
+            raise ValueError("ML-DSA signature verification failed on rekey mlkem_pubkey")
         
-        # Decrypt ML-KEM and HQC ciphertexts
-        mlkem_shared_secret = ml_kem_1024.decrypt(self._rekey_mlkem_private_key, parsed["mlkem_ciphertext"])
-        hqc_secret = hqc_256.decrypt(self._rekey_hqc_private_key, parsed["hqc_ciphertext"])
+        self._rke_peer_mlkem_pub = mlkem_pub
         
-        # Compute DH shared secret
-        peer_dh_public_key = X25519PublicKey.from_public_bytes(parsed["dh_public_key"])
-        dh_shared_secret = self._rekey_dh_private.exchange(peer_dh_public_key)
+        # B generates HQC and X25519 keypairs
+        hqc_pub, hqc_priv = hqc_256.generate_keypair()
+        self._rke_hqc_pub = hqc_pub
+        self._rke_hqc_priv = hqc_priv
+        dh_priv = X25519PrivateKey.generate()
+        self._rke_b_dh_priv = dh_priv
+        self._rke_b_dh_pub_bytes = dh_priv.public_key().public_bytes_raw()
         
-        # Combine ML-KEM and DH secrets (HQC stored separately like in initial key exchange)
-        combined_shared = self._derive_combined_shared_secret(mlkem_shared_secret, dh_shared_secret)
+        # B encapsulates ML-KEM; store shared secret for use in _rke_finalize later
+        mlkem_ciphertext, mlkem_shared_secret = ml_kem_1024.encrypt(mlkem_pub)
+        self._rke_mlkem_shared_secret = mlkem_shared_secret
         
-        # Derive keys and store pending state
-        enc_key, root_chain = self._derive_keys_and_chain(combined_shared)
-        self._pending_shared_key = combined_shared
-        self._pending_encryption_key = enc_key
-        self._pending_send_chain_key = root_chain
-        self._pending_receive_chain_key = root_chain
-        self._pending_hqc_secret = hqc_secret
-        self._pending_otp_material = self._derive_rekey_otp_material(hqc_secret)
-        self.pending_message_counter = 0
-        self.pending_peer_counter = 0
-        self._rekey_in_progress = True
-        return create_rekey_commit_message()
+        # Derive int_key_1; store for use in process_rekey_x25519_hqc_ct
+        int_key_1 = self._rke_derive_intermediary_key_1(mlkem_shared_secret)
+        self._rke_intermediary_key_1 = int_key_1
+        
+        # Encrypt B's HQC pubkey and X25519 pubkey with int_key_1
+        encryptor = KeyExchangeDoubleEncryptor(int_key_1)
+        nonce1 = os.urandom(NONCE_SIZE)
+        nonce2 = os.urandom(NONCE_SIZE)
+        encrypted_hqc_pubkey = encryptor.encrypt(nonce1, hqc_pub)
+        encrypted_x25519_pubkey = encryptor.encrypt(nonce2, self._rke_b_dh_pub_bytes)
+        
+        signed_payload = mlkem_ciphertext + encrypted_hqc_pubkey + encrypted_x25519_pubkey + nonce1 + nonce2
+        signature = ml_dsa_87.sign(self._rke_mldsa_priv, signed_payload)
+        
+        return {
+            "type":                    MessageType.REKEY,
+            "action":                  "mlkem_ct_keys",
+            "mlkem_ciphertext":        base64.b64encode(mlkem_ciphertext).decode('utf-8'),
+            "encrypted_hqc_pubkey":    base64.b64encode(encrypted_hqc_pubkey).decode('utf-8'),
+            "encrypted_x25519_pubkey": base64.b64encode(encrypted_x25519_pubkey).decode('utf-8'),
+            "nonce1":                  base64.b64encode(nonce1).decode('utf-8'),
+            "nonce2":                  base64.b64encode(nonce2).decode('utf-8'),
+            "mldsa_signature":         base64.b64encode(signature).decode('utf-8'),
+        }
+    
+    def process_rekey_mlkem_ct_keys(self, inner: dict) -> dict:
+        """(A) Process B's mlkem_ct_keys; decapsulate, decrypt, finalize pending keys; return x25519_hqc_ct."""
+        try:
+            mlkem_ct = base64.b64decode(inner["mlkem_ciphertext"], validate=True)
+            enc_hqc_pub = base64.b64decode(inner["encrypted_hqc_pubkey"], validate=True)
+            enc_x25519_pub = base64.b64decode(inner["encrypted_x25519_pubkey"], validate=True)
+            nonce1 = base64.b64decode(inner["nonce1"], validate=True)
+            nonce2 = base64.b64decode(inner["nonce2"], validate=True)
+            mldsa_sig = base64.b64decode(inner["mldsa_signature"], validate=True)
+        except (KeyError, binascii.Error) as e:
+            raise ValueError(f"Invalid rekey mlkem_ct_keys: {e}") from e
+        
+        signed_payload = mlkem_ct + enc_hqc_pub + enc_x25519_pub + nonce1 + nonce2
+        if not ml_dsa_87.verify(self._rke_peer_mldsa_pub, signed_payload, mldsa_sig):
+            raise ValueError("ML-DSA signature verification failed on rekey mlkem_ct_keys")
+        
+        # A decapsulates ML-KEM
+        mlkem_shared_secret = ml_kem_1024.decrypt(self._rke_mlkem_priv, mlkem_ct)
+        
+        # Derive int_key_1
+        int_key_1 = self._rke_derive_intermediary_key_1(mlkem_shared_secret)
+        self._rke_intermediary_key_1 = int_key_1
+        
+        # Decrypt B's HQC pubkey and X25519 pubkey
+        decryptor = KeyExchangeDoubleEncryptor(int_key_1)
+        peer_hqc_pub = decryptor.decrypt(nonce1, enc_hqc_pub)
+        peer_x25519_pub_bytes = decryptor.decrypt(nonce2, enc_x25519_pub)
+        self._rke_peer_hqc_pub = peer_hqc_pub
+        
+        # A performs DH with B's X25519 public key
+        dh_shared_secret = self._rke_dh_priv.exchange(
+                X25519PublicKey.from_public_bytes(peer_x25519_pub_bytes))
+        
+        # A encapsulates HQC with B's pubkey
+        hqc_ciphertext, hqc_secret = hqc_256.encrypt(peer_hqc_pub)
+        
+        # Derive int_key_2
+        int_key_2 = self._rke_derive_intermediary_key_2(int_key_1, dh_shared_secret)
+        
+        # Encrypt A's X25519 pubkey with int_key_1, HQC ciphertext with int_key_2
+        enc1 = KeyExchangeDoubleEncryptor(int_key_1)
+        enc2 = KeyExchangeDoubleEncryptor(int_key_2)
+        out_nonce1 = os.urandom(NONCE_SIZE)
+        out_nonce2 = os.urandom(NONCE_SIZE)
+        encrypted_x25519_pubkey = enc1.encrypt(out_nonce1, self._rke_dh_pub_bytes)
+        encrypted_hqc_ciphertext = enc2.encrypt(out_nonce2, hqc_ciphertext)
+        
+        # Sign before finalizing (finalize does not discard mldsa keys; they'll be cleared by _rke_reset)
+        out_signed_payload = encrypted_x25519_pubkey + encrypted_hqc_ciphertext + out_nonce1 + out_nonce2
+        signature = ml_dsa_87.sign(self._rke_mldsa_priv, out_signed_payload)
+        
+        # Finalize A's pending keys
+        self._rke_finalize(dh_shared_secret, hqc_secret, mlkem_shared_secret,
+                           self._rke_dh_priv, peer_x25519_pub_bytes)
+        
+        return {
+            "type":                     MessageType.REKEY,
+            "action":                   "x25519_hqc_ct",
+            "encrypted_x25519_pubkey":  base64.b64encode(encrypted_x25519_pubkey).decode('utf-8'),
+            "encrypted_hqc_ciphertext": base64.b64encode(encrypted_hqc_ciphertext).decode('utf-8'),
+            "nonce1":                   base64.b64encode(out_nonce1).decode('utf-8'),
+            "nonce2":                   base64.b64encode(out_nonce2).decode('utf-8'),
+            "mldsa_signature":          base64.b64encode(signature).decode('utf-8'),
+        }
+    
+    def process_rekey_x25519_hqc_ct(self, inner: dict) -> None:
+        """(B) Process A's x25519_hqc_ct; derive and store pending session keys."""
+        try:
+            enc_x25519_pub = base64.b64decode(inner["encrypted_x25519_pubkey"], validate=True)
+            enc_hqc_ct = base64.b64decode(inner["encrypted_hqc_ciphertext"], validate=True)
+            nonce1 = base64.b64decode(inner["nonce1"], validate=True)
+            nonce2 = base64.b64decode(inner["nonce2"], validate=True)
+            mldsa_sig = base64.b64decode(inner["mldsa_signature"], validate=True)
+        except (KeyError, binascii.Error) as e:
+            raise ValueError(f"Invalid rekey x25519_hqc_ct: {e}") from e
+        
+        signed_payload = enc_x25519_pub + enc_hqc_ct + nonce1 + nonce2
+        if not ml_dsa_87.verify(self._rke_peer_mldsa_pub, signed_payload, mldsa_sig):
+            raise ValueError("ML-DSA signature verification failed on rekey x25519_hqc_ct")
+        
+        # Decrypt A's X25519 pubkey with int_key_1
+        dec1 = KeyExchangeDoubleEncryptor(self._rke_intermediary_key_1)
+        peer_x25519_pub_bytes = dec1.decrypt(nonce1, enc_x25519_pub)
+        
+        # B performs DH with A's X25519 public key
+        dh_shared_secret = self._rke_b_dh_priv.exchange(
+                X25519PublicKey.from_public_bytes(peer_x25519_pub_bytes))
+        
+        # Derive int_key_2
+        int_key_2 = self._rke_derive_intermediary_key_2(self._rke_intermediary_key_1, dh_shared_secret)
+        
+        # Decrypt HQC ciphertext with int_key_2, then decapsulate
+        dec2 = KeyExchangeDoubleEncryptor(int_key_2)
+        hqc_ciphertext = dec2.decrypt(nonce2, enc_hqc_ct)
+        hqc_secret = hqc_256.decrypt(self._rke_hqc_priv, hqc_ciphertext)
+        
+        # Finalize B's pending keys
+        self._rke_finalize(dh_shared_secret, hqc_secret, self._rke_mlkem_shared_secret,
+                           self._rke_b_dh_priv, peer_x25519_pub_bytes)
+    
+    def create_rekey_verification(self) -> dict:
+        """Return a rekey verification payload (HMAC of pending key material)."""
+        h = HMAC(self._pending_key_verification_material, hashes.SHA3_512())
+        h.update(b"key-verification-v1")
+        proof = h.finalize()
+        return {
+            "type":             MessageType.REKEY,
+            "action":           "verification",
+            "verification_key": base64.b64encode(proof).decode('utf-8'),
+        }
+    
+    @property
+    def rekey_pending_keys_exist(self) -> bool:
+        """True when pending rekey keys have been computed but not yet activated."""
+        return bool(self._pending_send_chain_key)
+    
+    def process_rekey_verification(self, inner: dict) -> bool:
+        """Verify peer's rekey verification proof. Returns True on match.
+
+        Uses pending key material when available (A's path, or B before activation).
+        Falls back to active key material when B has already activated via queue_json_then_switch.
+        """
+        try:
+            peer_proof = base64.b64decode(inner["verification_key"], validate=True)
+        except (KeyError, binascii.Error) as e:
+            raise ValueError(f"Invalid rekey verification: {e}") from e
+        
+        key_material = self._pending_key_verification_material or self._key_verification_material
+        if not key_material:
+            raise ValueError("No rekey verification key material available")
+        
+        h = HMAC(key_material, hashes.SHA3_512())
+        h.update(b"key-verification-v1")
+        expected = h.finalize()
+        return bytes_eq(peer_proof, expected)

@@ -4,9 +4,11 @@ import json
 import os
 from pathlib import Path
 
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.hmac import HMAC
 from pqcrypto.sign import ml_dsa_87  # type: ignore[import-untyped]
 
-from protocol.constants import MessageType, PROTOCOL_VERSION, SEND_CHUNK_SIZE
+from protocol.constants import MessageType, PROTOCOL_VERSION, SEND_CHUNK_SIZE, BLAKE2B_DIGEST_SIZE, TRANSFER_ID_LENGTH
 from protocol.types import FileMetadata
 from protocol.utils import chunk_file, decide_compression
 
@@ -98,10 +100,13 @@ def create_ke_x25519_hqc_ct(encrypted_x25519_pubkey: bytes, encrypted_hqc_cipher
 
 
 def create_ke_verification(verification_key: bytes) -> bytes:
-    """Create KE_VERIFICATION message (steps 15/16): verification hash in signed plaintext."""
+    """Create KE_VERIFICATION message (steps 15/16): HMAC proof of shared verification key."""
+    h = HMAC(verification_key, hashes.SHA3_512())
+    h.update(b"key-verification-v1")
+    proof = h.finalize()
     message = {
         "type":             MessageType.KE_VERIFICATION,
-        "verification_key": base64.b64encode(verification_key).decode('utf-8'),
+        "verification_key": base64.b64encode(proof).decode('utf-8'),
     }
     return json.dumps(message).encode('utf-8')
 
@@ -123,40 +128,6 @@ def create_file_reject_message(transfer_id: str, reason: str = "User declined") 
     }
 
 
-def create_rekey_init_message(mlkem_public_key: bytes, hqc_public_key: bytes,
-                              dh_public_key_bytes: bytes,
-                              ) -> dict[str, str | int]:
-    """Create a REKEY init payload to be sent inside an encrypted message using the old key."""
-    return {
-        "type":             MessageType.REKEY,
-        "action":           "init",
-        "mlkem_public_key": base64.b64encode(mlkem_public_key).decode('utf-8'),
-        "hqc_public_key":   base64.b64encode(hqc_public_key).decode('utf-8'),
-        "dh_public_key":    base64.b64encode(dh_public_key_bytes).decode('utf-8'),
-    }
-
-
-def create_rekey_response_message(mlkem_ciphertext: bytes, hqc_ciphertext: bytes,
-                                  dh_public_key_bytes: bytes,
-                                  ) -> dict[str, int | str]:
-    """Create a REKEY response payload."""
-    return {
-        "type":             MessageType.REKEY,
-        "action":           "response",
-        "mlkem_ciphertext": base64.b64encode(mlkem_ciphertext).decode('utf-8'),
-        "hqc_ciphertext":   base64.b64encode(hqc_ciphertext).decode('utf-8'),
-        "dh_public_key":    base64.b64encode(dh_public_key_bytes).decode('utf-8'),
-    }
-
-
-def create_rekey_commit_message() -> dict:
-    """Create a REKEY commit payload."""
-    return {
-        "type":   MessageType.REKEY,
-        "action": "commit",
-    }
-
-
 def create_file_metadata_message(file_path: Path, compress: bool = True) -> FileMetadata:
     """Create a file metadata message for file transfer initiation.
     Automatically disables compression for known incompressible types.
@@ -172,7 +143,7 @@ def create_file_metadata_message(file_path: Path, compress: bool = True) -> File
     file_name: str = file_path.name
     
     # Calculate file hash for integrity verification (of original uncompressed file)
-    file_hash = hashlib.blake2b(digest_size=32)
+    file_hash = hashlib.blake2b(digest_size=BLAKE2B_DIGEST_SIZE)
     with open(file_path, 'rb') as f:
         while chunk := f.read(16384):
             file_hash.update(chunk)
@@ -199,8 +170,10 @@ def create_file_metadata_message(file_path: Path, compress: bool = True) -> File
     
     # Generate unique transfer ID. It should be unique but does not have to be cryptographically secure.
     # SHA256 just happens to be fast, and its outputs are likely unique enough for this purpose.
-    transfer_id: str = hashlib.sha256(f"{file_name}{file_size}{file_hash.hexdigest()}".encode(),
-                                      usedforsecurity=False).hexdigest()[:32]
+    transfer_id: str = hashlib.sha256(
+            f"{file_name}{file_size}{file_hash.hexdigest()}".encode(),
+            usedforsecurity=False,
+    ).hexdigest()[:TRANSFER_ID_LENGTH]
     
     metadata: FileMetadata = {
         "transfer_id":     transfer_id,

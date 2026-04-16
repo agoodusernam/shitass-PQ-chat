@@ -5,6 +5,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, CipherContext, algori
 from cryptography.hazmat.primitives.ciphers.aead import AESGCMSIV, ChaCha20Poly1305
 from cryptography.hazmat.primitives.padding import PKCS7
 
+from protocol.constants import DOUBLE_KEY_SIZE, SINGLE_KEY_SIZE, NONCE_SIZE
 from protocol.utils import xor_bytes
 
 
@@ -22,7 +23,7 @@ class DoubleEncryptor:
           the 64-byte key to reduce nonce misuse risk (even if the provided nonce repeats).
 
     Key material:
-        - Requires a 64-byte key: first 32 bytes for AES-GCM-SIV, last 32 bytes for ChaCha20-Poly1305.
+        - Requires a DOUBLE_KEY_SIZE-byte key: first HALF_KEY_SIZE bytes for AES-GCM-SIV, last HALF_KEY_SIZE bytes for ChaCha20-Poly1305.
         - `OTP_secret` is a separate secret (e.g. from HQC) used solely for keystream derivation.
     
     Padding:
@@ -41,17 +42,17 @@ class DoubleEncryptor:
     def __init__(self, key: bytes, OTP_secret: bytes, message_counter: int):
         """
         Args:
-            key: 64 bytes. First 32 bytes for AES-GCM-SIV, last 32 bytes for ChaCha20-Poly1305.
+            key: DOUBLE_KEY_SIZE bytes. First HALF_KEY_SIZE bytes for AES-GCM-SIV, last HALF_KEY_SIZE bytes for ChaCha20-Poly1305.
             OTP_secret: Secret seed used to derive the OTP-like keystream that pre-masks the padded data.
             message_counter: Monotonically increasing counter mixed into the keystream to ensure per-message
                              uniqueness.
         """
-        if len(key) != 64:
-            raise ValueError("Key must be 64 bytes")
+        if len(key) != DOUBLE_KEY_SIZE:
+            raise ValueError(f"Key must be {DOUBLE_KEY_SIZE} bytes")
         
         self._key: bytes = key
-        self._aes: AESGCMSIV = AESGCMSIV(key[:32])
-        self._chacha: ChaCha20Poly1305 = ChaCha20Poly1305(key[32:])
+        self._aes: AESGCMSIV = AESGCMSIV(key[:SINGLE_KEY_SIZE])
+        self._chacha: ChaCha20Poly1305 = ChaCha20Poly1305(key[SINGLE_KEY_SIZE:])
         self._OTP_secret: bytes = OTP_secret
         self.message_counter: int = message_counter
     
@@ -61,11 +62,11 @@ class DoubleEncryptor:
     
     @key.setter
     def key(self, value: bytes) -> None:
-        if len(value) != 64:
-            raise ValueError("Key must be 64 bytes")
+        if len(value) != DOUBLE_KEY_SIZE:
+            raise ValueError(f"Key must be {DOUBLE_KEY_SIZE} bytes")
         self._key: bytes = value
-        self._aes: AESGCMSIV = AESGCMSIV(value[:32])
-        self._chacha: ChaCha20Poly1305 = ChaCha20Poly1305(value[32:])
+        self._aes: AESGCMSIV = AESGCMSIV(value[:SINGLE_KEY_SIZE])
+        self._chacha: ChaCha20Poly1305 = ChaCha20Poly1305(value[SINGLE_KEY_SIZE:])
     
     def encrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None, pad: bool = True) -> bytes:
         if pad:
@@ -74,8 +75,8 @@ class DoubleEncryptor:
         else:
             new_data = data
         
-        aes_nonce = xor_bytes(nonce, self._key[:12])
-        chacha_nonce = xor_bytes(nonce, self._key[-12:])
+        aes_nonce = xor_bytes(nonce, self._key[:NONCE_SIZE])
+        chacha_nonce = xor_bytes(nonce, self._key[-NONCE_SIZE:])
         
         layer0 = xor_bytes(new_data, self._derive_OTP_keystream(len(new_data), aes_nonce + chacha_nonce))
         layer1 = self._aes.encrypt(aes_nonce, layer0, associated_data)
@@ -83,8 +84,8 @@ class DoubleEncryptor:
         return layer2
     
     def decrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None, pad: bool = True) -> bytes:
-        aes_nonce = xor_bytes(nonce, self._key[:12])
-        chacha_nonce = xor_bytes(nonce, self._key[-12:])
+        aes_nonce = xor_bytes(nonce, self._key[:NONCE_SIZE])
+        chacha_nonce = xor_bytes(nonce, self._key[-NONCE_SIZE:])
         
         layer2 = self._chacha.decrypt(chacha_nonce, data, associated_data)
         layer1 = self._aes.decrypt(aes_nonce, layer2, associated_data)
@@ -114,8 +115,8 @@ class ChunkIndependentDoubleEncryptor:
     """
     
     def __init__(self, key: bytes):
-        if len(key) != 64:
-            raise ValueError("Key must be 64 bytes")
+        if len(key) != DOUBLE_KEY_SIZE:
+            raise ValueError(f"Key must be {DOUBLE_KEY_SIZE} bytes")
         self._key = key
     
     @property
@@ -124,20 +125,20 @@ class ChunkIndependentDoubleEncryptor:
     
     @key.setter
     def key(self, value: bytes) -> None:
-        if len(value) != 64:
-            raise ValueError("Key must be 64 bytes")
+        if len(value) != DOUBLE_KEY_SIZE:
+            raise ValueError(f"Key must be {DOUBLE_KEY_SIZE} bytes")
         self._key = value
     
     def encrypt(self, nonce: bytes, data: bytes) -> bytes:
-        chacha_encryptor: CipherContext = Cipher(algorithms.ChaCha20(self._key[32:], nonce), None).encryptor()
-        aes_encryptor: CipherContext = Cipher(algorithms.AES(self._key[:32]), modes.CTR(nonce)).encryptor()
+        chacha_encryptor: CipherContext = Cipher(algorithms.ChaCha20(self._key[SINGLE_KEY_SIZE:], nonce), None).encryptor()
+        aes_encryptor: CipherContext = Cipher(algorithms.AES(self._key[:SINGLE_KEY_SIZE]), modes.CTR(nonce)).encryptor()
         layer1 = chacha_encryptor.update(data) + chacha_encryptor.finalize()
         layer2 = aes_encryptor.update(layer1) + aes_encryptor.finalize()
         return layer2
     
     def decrypt(self, nonce: bytes, data: bytes) -> bytes:
-        chacha_decryptor: CipherContext = Cipher(algorithms.ChaCha20(self._key[32:], nonce), None).decryptor()
-        aes_decryptor: CipherContext = Cipher(algorithms.AES(self._key[:32]), modes.CTR(nonce)).decryptor()
+        chacha_decryptor: CipherContext = Cipher(algorithms.ChaCha20(self._key[SINGLE_KEY_SIZE:], nonce), None).decryptor()
+        aes_decryptor: CipherContext = Cipher(algorithms.AES(self._key[:SINGLE_KEY_SIZE]), modes.CTR(nonce)).decryptor()
         layer2 = aes_decryptor.update(data) + aes_decryptor.finalize()
         layer1 = chacha_decryptor.update(layer2) + chacha_decryptor.finalize()
         return layer1
@@ -145,23 +146,23 @@ class ChunkIndependentDoubleEncryptor:
 
 class KeyExchangeDoubleEncryptor:
     def __init__(self, key: bytes):
-        if len(key) != 64:
-            raise ValueError("Key must be 64 bytes")
+        if len(key) != DOUBLE_KEY_SIZE:
+            raise ValueError(f"Key must be {DOUBLE_KEY_SIZE} bytes")
         self._key = key
-        self._aes: AESGCMSIV = AESGCMSIV(key[:32])
-        self._chacha: ChaCha20Poly1305 = ChaCha20Poly1305(key[32:])
+        self._aes: AESGCMSIV = AESGCMSIV(key[:SINGLE_KEY_SIZE])
+        self._chacha: ChaCha20Poly1305 = ChaCha20Poly1305(key[SINGLE_KEY_SIZE:])
     
     def encrypt(self, nonce: bytes, data: bytes) -> bytes:
-        aes_nonce = xor_bytes(nonce, self._key[:12])
-        chacha_nonce = xor_bytes(nonce, self._key[-12:])
+        aes_nonce = xor_bytes(nonce, self._key[:NONCE_SIZE])
+        chacha_nonce = xor_bytes(nonce, self._key[-NONCE_SIZE:])
         
         layer1 = self._aes.encrypt(aes_nonce, data, None)
         layer2 = self._chacha.encrypt(chacha_nonce, layer1, None)
         return layer2
     
     def decrypt(self, nonce: bytes, data: bytes) -> bytes:
-        aes_nonce = xor_bytes(nonce, self._key[:12])
-        chacha_nonce = xor_bytes(nonce, self._key[-12:])
+        aes_nonce = xor_bytes(nonce, self._key[:NONCE_SIZE])
+        chacha_nonce = xor_bytes(nonce, self._key[-NONCE_SIZE:])
         
         layer2 = self._chacha.decrypt(chacha_nonce, data, None)
         layer1 = self._aes.decrypt(aes_nonce, layer2, None)

@@ -24,7 +24,6 @@ class ClientBase(ABC):
     """
     Abstract base that every chat-client implementation must satisfy.
     
-    The methods below are the *only* surface a UI layer is allowed to call.
     The client is responsible for calling the appropriate methods on the UI,
     networking, and message handling.
     The client calls the Protocol layer to handle the actual protocol logic,

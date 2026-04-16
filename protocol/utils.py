@@ -1,15 +1,17 @@
 import gzip
 import hashlib
 import io
-import os
 from collections import OrderedDict
 from pathlib import Path
 from typing import Generator
 
 import numpy as np
 
-from protocol.constants import INCOMPRESSIBLE_EXTENSIONS, SEND_CHUNK_SIZE
-from protocol.types import FileMetadata
+from protocol.constants import (
+    INCOMPRESSIBLE_EXTENSIONS, SEND_CHUNK_SIZE,
+    FINGERPRINT_HASH_SIZE, FINGERPRINT_WORD_COUNT, HASH_TO_WORDS_DEFAULT,
+    MAX_SANITIZED_STR_LENGTH,
+)
 
 
 class LRUCache:
@@ -144,10 +146,12 @@ def xor_bytes(a: bytes, b: bytes) -> bytes:
     
     if equal_length:
         pass
-    elif len(a) > len(b):
-        a = a.zfill(length)
+    elif len(a) < len(b):
+        diff = len(b) - len(a)
+        a = b'\x00' * diff + a
     else:
-        b = b.zfill(length)
+        diff = len(a) - len(b)
+        b = b'\x00' * diff + b
     
     return np.bitwise_xor(np.frombuffer(a, dtype=np.uint8), np.frombuffer(b, dtype=np.uint8)).tobytes()
 
@@ -163,7 +167,7 @@ def load_wordlist(wordlist_file: Path) -> list[str]:
                 "shared.py")
 
 
-def hash_to_words(hash_bytes: bytes, wordlist: list[str], num_words: int = 16) -> list[str]:
+def hash_to_words(hash_bytes: bytes, wordlist: list[str], num_words: int = HASH_TO_WORDS_DEFAULT) -> list[str]:
     """Convert hash bytes to a list of words from the wordlist."""
     hash_int = int.from_bytes(hash_bytes, byteorder='big')
     
@@ -177,16 +181,16 @@ def hash_to_words(hash_bytes: bytes, wordlist: list[str], num_words: int = 16) -
 
 def generate_key_fingerprint(key: bytes, wordlist_file: Path) -> str:
     """Generate a human-readable word-based fingerprint for a public key."""
-    key_hash = hashlib.sha3_512(key).digest()[:32]
+    key_hash = hashlib.sha3_512(key).digest()[:FINGERPRINT_HASH_SIZE]
     wordlist = load_wordlist(wordlist_file)
-    words = hash_to_words(key_hash, wordlist, num_words=8)
+    words = hash_to_words(key_hash, wordlist, num_words=FINGERPRINT_WORD_COUNT)
     return " ".join(words)
 
 
 def sanitize_str(s: str) -> str:
-    """Return ASCII-only str truncated to 32 chars; fallback to '?' if empty."""
+    """Return ASCII-only str truncated to MAX_SANITIZED_STR_LENGTH chars; fallback to '?' if empty."""
     s = s.encode('ascii', errors='ignore').decode('ascii', errors='ignore')
-    return s[:32] or "?"
+    return s[:MAX_SANITIZED_STR_LENGTH] or "?"
 
 
 def chunk_file(file_path: Path | str, compress: bool = True) -> Generator[bytes, None, None]:

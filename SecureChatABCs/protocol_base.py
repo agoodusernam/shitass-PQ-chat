@@ -165,16 +165,36 @@ class ProtocolBase(ABC):
         """Atomically switch active session to the pending keys."""
     
     @abstractmethod
-    def create_rekey_init(self) -> dict[str, str | int]:
-        """Create a REKEY init payload."""
+    def create_rekey_dsa_random(self, is_initiator: bool) -> dict:
+        """Start a rekey: generate ephemeral ML-DSA keys + client random; return dsa_random payload."""
     
     @abstractmethod
-    def process_rekey_init(self, message: dict[Any, Any]) -> dict[str, int | str]:
-        """Process a REKEY init payload and return REKEY response payload."""
+    def process_rekey_dsa_random(self, inner: dict) -> dict | None:
+        """Process peer's dsa_random; return next outbound rekey message or None."""
     
     @abstractmethod
-    def process_rekey_response(self, message: dict) -> dict:
-        """Process a REKEY response payload and return commit payload."""
+    def process_rekey_mlkem_pubkey(self, inner: dict) -> dict:
+        """(B) Process A's mlkem_pubkey; return mlkem_ct_keys payload."""
+    
+    @abstractmethod
+    def process_rekey_mlkem_ct_keys(self, inner: dict) -> dict:
+        """(A) Process B's mlkem_ct_keys; finalize pending keys; return x25519_hqc_ct payload."""
+    
+    @abstractmethod
+    def process_rekey_x25519_hqc_ct(self, inner: dict) -> None:
+        """(B) Process A's x25519_hqc_ct; derive and store pending session keys."""
+    
+    @abstractmethod
+    def create_rekey_verification(self) -> dict:
+        """Return a rekey verification payload (HMAC of pending key material)."""
+    
+    @abstractmethod
+    def process_rekey_verification(self, inner: dict) -> bool:
+        """Verify peer's rekey verification proof against pending key material."""
+    
+    @abstractmethod
+    def reset_rekey(self, error_msg: str = "") -> None:
+        """Abort an in-progress rekey and clear all associated state."""
     
     @abstractmethod
     def reset_auto_rekey_counter(self) -> None:

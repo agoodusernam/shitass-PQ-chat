@@ -21,6 +21,7 @@ from typing import Any, Literal
 
 from SecureChatABCs.client_base import ClientBase
 from SecureChatABCs.ui_base import UIBase, UICapability
+from debug_client import DebugClient
 
 
 # ---------------------------------------------------------------------------
@@ -825,6 +826,6 @@ class DebugGUI(UIBase):
 def run(client_class: type[ClientBase]) -> None:
     root = tk.Tk()
     ui = DebugGUI(root)
-    client = client_class(ui)
+    client = DebugClient(ui)
     ui.set_client(client)
     root.mainloop()

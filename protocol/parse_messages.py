@@ -1,7 +1,12 @@
 import base64
 import binascii
 import json
+from pathlib import Path
 from typing import Any
+
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.hmac import HMAC
+from cryptography.hazmat.primitives.constant_time import bytes_eq
 
 from protocol.constants import PROTOCOL_VERSION
 from protocol.types import DecodeError, FileMetadata
@@ -12,7 +17,7 @@ def process_file_metadata(message: dict[Any, Any]) -> FileMetadata:
     try:
         return {
             "transfer_id":     message["transfer_id"],
-            "filename":        message["filename"],
+            "filename":        Path(message["filename"]).name,
             "file_size":       message["file_size"],
             "file_hash":       message["file_hash"],
             "total_chunks":    message["total_chunks"],
@@ -124,68 +129,24 @@ def parse_ke_x25519_hqc_ct(data: bytes) -> dict[str, Any]:
     }
 
 
-def parse_ke_verification(data: bytes) -> dict[str, Any]:
-    """Parse a KE_VERIFICATION message (steps 15/16)."""
+def parse_ke_verification(data: bytes, local_verification_key: bytes | None = None) -> dict[str, Any]:
+    """Parse a KE_VERIFICATION message (steps 15/16).
+
+    The peer sends HMAC(verification_key, "key-verification-v1"). If local_verification_key is
+    provided, compute the expected HMAC locally and compare in constant time; on mismatch return
+    an empty bytes value so the caller's bytes_eq check fails. Otherwise return the raw proof.
+    """
     try:
         message = json.loads(data)
-        verification_key = base64.b64decode(message["verification_key"], validate=True)
+        peer_proof = base64.b64decode(message["verification_key"], validate=True)
     except (UnicodeDecodeError, json.JSONDecodeError, KeyError, binascii.Error) as e:
         raise DecodeError(f"KE_VERIFICATION decode error: {type(e).__name__}") from e
     
-    return {
-        "verification_key": verification_key,
-    }
-
-
-def parse_rekey_init(message: dict[Any, Any]) -> dict[str, bytes]:
-    """Parse a REKEY init payload and return extracted key material.
+    if local_verification_key is not None:
+        h = HMAC(local_verification_key, hashes.SHA3_512())
+        h.update(b"key-verification-v1")
+        expected_proof = h.finalize()
+        # Return the expected proof on match, empty bytes on mismatch — caller uses bytes_eq
+        return {"verification_key": expected_proof if bytes_eq(peer_proof, expected_proof) else b""}
     
-    Returns:
-        dict with keys: mlkem_public_key, hqc_public_key, dh_public_key
-    
-    Raises:
-        DecodeError: If the message cannot be decoded
-    """
-    try:
-        mlkem_public_key = base64.b64decode(message["mlkem_public_key"], validate=True)
-        hqc_public_key = base64.b64decode(message["hqc_public_key"], validate=True)
-        dh_public_key = base64.b64decode(message["dh_public_key"], validate=True)
-    except (binascii.Error, KeyError):
-        raise DecodeError("REKEY init decode error, binascii.Error")
-    
-    return {
-        "mlkem_public_key": mlkem_public_key,
-        "hqc_public_key":   hqc_public_key,
-        "dh_public_key":    dh_public_key,
-    }
-
-
-def parse_rekey_response(message: dict) -> dict[str, bytes]:
-    """Parse a REKEY response payload and return extracted key material.
-    
-    Returns:
-        dict with keys: mlkem_ciphertext, hqc_ciphertext, dh_public_key
-    
-    Raises:
-        DecodeError: If the message cannot be decoded
-        ValueError: If required fields are missing
-    """
-    try:
-        mlkem_ciphertext = base64.b64decode(message.get("mlkem_ciphertext", ""), validate=True)
-        hqc_ciphertext = base64.b64decode(message.get("hqc_ciphertext", ""), validate=True)
-        dh_public_key = base64.b64decode(message.get("dh_public_key", ""), validate=True)
-    except binascii.Error:
-        raise DecodeError("REKEY response decode error, binascii.Error")
-    
-    if not mlkem_ciphertext:
-        raise ValueError("Missing mlkem_ciphertext in REKEY response")
-    if not hqc_ciphertext:
-        raise ValueError("Missing hqc_ciphertext in REKEY response")
-    if not dh_public_key:
-        raise ValueError("Missing dh_public_key in REKEY response")
-    
-    return {
-        "mlkem_ciphertext": mlkem_ciphertext,
-        "hqc_ciphertext":   hqc_ciphertext,
-        "dh_public_key":    dh_public_key,
-    }
+    return {"verification_key": peer_proof}

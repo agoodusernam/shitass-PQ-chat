@@ -29,7 +29,7 @@ class TUI(UIBase):
         return (
                 UICapability.FILE_TRANSFER
                 | UICapability.DEADDROP  # type: ignore
-                | UICapability.NICKNAMES # type: ignore
+                | UICapability.NICKNAMES  # type: ignore
         )
     
     # -- display --------------------------------------------------------------

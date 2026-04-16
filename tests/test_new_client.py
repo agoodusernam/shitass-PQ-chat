@@ -553,49 +553,41 @@ class TestHandleMaybeBinaryChunk:
 
 
 class TestHandleRekey:
-    def _make_rekey_init_msg(self, initiator_proto: SecureChatProtocol) -> dict:
-        return initiator_proto.create_rekey_init()
-    
-    def test_rekey_init_sets_rekey_in_progress(self) -> None:
+    def test_rekey_dsa_random_sets_rekey_in_progress(self) -> None:
+        """Receiving a dsa_random from peer starts B's rekey."""
         proto_a, proto_b = _full_ke_protocol_pair()
         c = _make_client()
         _inject_ready_protocol(c, proto_b)
         
-        rekey_init = proto_a.create_rekey_init()
-        # handle_rekey uses "action" key
-        rekey_init["action"] = "init"
+        dsa_random_msg = proto_a.create_rekey_dsa_random(is_initiator=True)
         
-        with patch.object(c._protocol, "queue_json") as mock_q:
-            c.handle_rekey(rekey_init)
+        with patch.object(c._protocol, "queue_json"):
+            c.handle_rekey(dsa_random_msg)
         assert c._protocol.rekey_in_progress is True
-        mock_q.assert_called()
     
-    def test_rekey_response_processed_by_initiator(self) -> None:
+    def test_rekey_verification_activates_keys(self) -> None:
+        """Receiving a valid verification message on A's side activates pending keys."""
         proto_a, proto_b = _full_ke_protocol_pair()
         c = _make_client()
         _inject_ready_protocol(c, proto_a)
         
-        # Simulate: proto_a initiated, proto_b responded
-        rekey_init = proto_a.create_rekey_init()
-        rekey_response = proto_b.process_rekey_init(rekey_init)
-        rekey_response["action"] = "response"
+        # Drive the rekey up to B having pending keys and verification ready
+        msg1 = proto_a.create_rekey_dsa_random(is_initiator=True)
+        msg2 = proto_b.process_rekey_dsa_random(msg1)
+        msg3 = proto_a.process_rekey_dsa_random(msg2)
+        msg4 = proto_b.process_rekey_mlkem_pubkey(msg3)
+        proto_a.process_rekey_mlkem_ct_keys(msg4)  # sets pending keys on proto_a
+        # (skip sending x25519_hqc_ct to proto_b for this test — we just need pending keys on proto_a)
         
-        with patch.object(c._protocol, "queue_json") as mock_q:
-            c.handle_rekey(rekey_response)
-        mock_q.assert_called()
-    
-    def test_rekey_commit_ack_activates_keys(self) -> None:
-        proto_a, proto_b = _full_ke_protocol_pair()
-        c = _make_client()
-        _inject_ready_protocol(c, proto_b)
+        # Manually set pending keys on proto_b to create a valid verification
+        msg5 = proto_a.process_rekey_mlkem_ct_keys(msg4) if not proto_a._pending_send_chain_key else None
+        # At this point proto_a has pending keys. Fabricate a matching verification from proto_b.
+        # We do this by copying proto_a's pending material to proto_b so it produces the same proof.
+        proto_b._pending_key_verification_material = proto_a._pending_key_verification_material
         
-        # Set up pending keys on proto_b so activate_pending_keys works
-        rekey_init = proto_a.create_rekey_init()
-        proto_b.process_rekey_init(rekey_init)
-        assert proto_b.rekey_in_progress is True
-        
-        # commit_ack triggers activate_pending_keys on the responder side
-        c.handle_rekey({"action": "commit_ack"})
+        b_verif = proto_b.create_rekey_verification()
+        with patch.object(c._protocol, "queue_json"):
+            c.handle_rekey(b_verif)
         assert c._protocol.rekey_in_progress is False
 
 

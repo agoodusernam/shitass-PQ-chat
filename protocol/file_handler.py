@@ -12,7 +12,7 @@ from utils.file_utils import (
     cleanup_paths,
     decompress_gzip_file,
     hash_file_hexdigest,
-    safe_remove
+    safe_remove,
 )
 
 

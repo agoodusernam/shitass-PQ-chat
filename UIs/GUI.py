@@ -18,7 +18,7 @@ from wave import Wave_read
 
 from SecureChatABCs.client_base import ClientBase
 from SecureChatABCs.ui_base import UIBase, UICapability
-from config import ConfigHandler
+from config import ClientConfigHandler
 from protocol.utils import bytes_to_human_readable
 from utils.vc_utils import negotiate_audio_format
 
@@ -652,7 +652,7 @@ def load_theme_colors(theme_name: tk.StringVar | None = None) -> dict[str, str]:
     selected = theme_name
     if selected is None:
         try:
-            _cfg = ConfigHandler()
+            _cfg = ClientConfigHandler()
             _selected_str = _cfg["theme"]
             selected = tk.StringVar(value=_selected_str) if _selected_str else None
         except Exception:
@@ -685,7 +685,7 @@ def load_theme_colors(theme_name: tk.StringVar | None = None) -> dict[str, str]:
 def save_theme_selection(theme_name: tk.StringVar) -> None:
     """Persist the selected theme name to config.json."""
     try:
-        _cfg = ConfigHandler()
+        _cfg = ClientConfigHandler()
         _cfg["theme"] = str(theme_name)
         _cfg.save()
     except Exception:
@@ -734,7 +734,7 @@ class GUI(UIBase):
         
         self.client: ClientBase | None = None
         self.peer_nickname: str = "Other user"
-        self.config = ConfigHandler()
+        self.config = ClientConfigHandler()
         
         self.ephemeral_mode: str = "OFF"
         self.ephemeral_global_owner_id: str | None = None
@@ -782,7 +782,7 @@ class GUI(UIBase):
     def _load_saved_theme_name() -> str:
         """Return the persisted theme name, or empty string if none saved."""
         try:
-            _cfg = ConfigHandler()
+            _cfg = ClientConfigHandler()
             return _cfg["theme"]
         except Exception:
             return ""
