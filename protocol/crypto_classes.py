@@ -130,6 +130,8 @@ class ChunkIndependentDoubleEncryptor:
         self._key = value
     
     def encrypt(self, nonce: bytes, data: bytes) -> bytes:
+        # Technically, ChaCha20 requires 12 bytes of nonce + 4 bytes of counter.
+        # However, we provide a complete 16 byte nonce every time which includes that 'counter' value
         chacha_encryptor: CipherContext = Cipher(algorithms.ChaCha20(self._key[SINGLE_KEY_SIZE:], nonce), None).encryptor()
         aes_encryptor: CipherContext = Cipher(algorithms.AES(self._key[:SINGLE_KEY_SIZE]), modes.CTR(nonce)).encryptor()
         layer1 = chacha_encryptor.update(data) + chacha_encryptor.finalize()

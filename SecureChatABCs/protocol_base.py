@@ -188,6 +188,11 @@ class ProtocolBase(ABC):
     def create_rekey_verification(self) -> dict:
         """Return a rekey verification payload (HMAC of pending key material)."""
     
+    @property
+    @abstractmethod
+    def rekey_pending_keys_exist(self) -> bool:
+        """True when pending rekey keys have been computed but not yet activated."""
+    
     @abstractmethod
     def process_rekey_verification(self, inner: dict) -> bool:
         """Verify peer's rekey verification proof against pending key material."""

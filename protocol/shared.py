@@ -842,11 +842,15 @@ class SecureChatProtocol(ProtocolBase):
         """Process a key verification message from peer."""
         return process_key_verification_message(data)
     
-    def encrypt_message(self, plaintext: str) -> bytes:
+    def encrypt_message(self, plaintext: str | bytes) -> bytes:
         """
         Encrypt a message with authentication and replay protection using perfect forward secrecy.
         Integrates a Double Ratchet step using X25519 by including a fresh sender public key per message
         and mixing the DH shared secret into the chain key derivation.
+        
+        :param plaintext: The plaintext message to encrypt.
+        :return: The encrypted message as bytes, ready to send.
+        :raises: ValueError: If no shared key or send chain key is established.
         
         Additional MAC rationale:
             For authentication with AES or Poly1305, the message must be decrypted.
@@ -855,10 +859,6 @@ class SecureChatProtocol(ProtocolBase):
             making the program essentially DoS itself.
             It also makes it possible to differentiate between forged messages and messages
             that have been corrupted or manipulated in flight
-        
-        :param plaintext: The plaintext message to encrypt.
-        :return: The encrypted message as bytes, ready to send.
-        :raises: ValueError: If no shared key or send chain key is established.
         """
         if not self.shared_key or not self._send_chain_key:
             raise ValueError("No shared key or send chain key established")
@@ -883,8 +883,10 @@ class SecureChatProtocol(ProtocolBase):
         # Ratchet the send chain key forward for the next message (symmetric ratchet only)
         self._send_chain_key = self._ratchet_chain_key(self._send_chain_key, self.message_counter)
         
-        # Convert plaintext to bytes
-        plaintext_bytes = plaintext.encode('utf-8')
+        if isinstance(plaintext, str):
+            plaintext_bytes = plaintext.encode('utf-8')
+        else:
+            plaintext_bytes = plaintext
         
         # Create AAD from message metadata for authentication
         nonce = os.urandom(NONCE_SIZE)

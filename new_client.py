@@ -52,7 +52,7 @@ from protocol.types import FileMetadata, FileTransfer
 from protocol.utils import chunk_file
 from utils import network_utils
 from utils.checks import allowed_outer_fields, allowed_unverified_inner_fields, first_unexpected_field
-from utils.network_utils import receive_message, send_message
+from utils.network_utils import encode_send_message, send_message
 
 config = ClientConfigHandler()
 
@@ -233,12 +233,13 @@ class SecureChatClient(ClientBase):
     
     def connect(self, host: str, port: int) -> bool:
         """Open a TCP connection to the server and start the background receive thread.
-
+        
         Returns True on success, False if the connection could not be established.
         """
         try:
             self._socket.close()
             self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self._socket.settimeout(30)
             self._socket.connect((host, port))
             self._connected = True
             self.host, self.port = host, port
@@ -272,7 +273,7 @@ class SecureChatClient(ClientBase):
         self._protocol.stop_sender_thread()
         
         if self.connected:
-            network_utils.send_message(self._socket, json.dumps({"type": MessageType.CLIENT_DISCONNECT}).encode('utf-8'))
+            network_utils.encode_send_message(self._socket, {"type": MessageType.CLIENT_DISCONNECT})
         
         self._connected = False
         try:
@@ -625,7 +626,7 @@ class SecureChatClient(ClientBase):
         
         self.ui.display_system_message("Starting deaddrop handshake")
         msg = {"type": MessageType.DEADDROP_START}
-        send_message(self._socket, json.dumps(msg).encode("utf-8"))
+        encode_send_message(self._socket, msg)
     
     def wait_for_deaddrop_handshake(self, timeout: float = 3.0) -> bool:
         """Block until the deaddrop handshake completes or *timeout* seconds elapse.
@@ -686,7 +687,7 @@ class SecureChatClient(ClientBase):
             "file_key_salt":      base64.b64encode(hkdf_salt).decode("utf-8"),
         }
         outer_meta = self._encrypt_deaddrop_inner(json.dumps(inner_meta).encode("utf-8"))
-        send_message(self._socket, json.dumps(outer_meta).encode("utf-8"))
+        encode_send_message(self._socket, outer_meta)
         
         encryptor = ChunkIndependentDoubleEncryptor(key)
         self._deaddrop_chunks.clear()
@@ -727,7 +728,7 @@ class SecureChatClient(ClientBase):
         
         complete_inner = {"type": MessageType.DEADDROP_COMPLETE}
         complete_outer = self._encrypt_deaddrop_inner(json.dumps(complete_inner).encode("utf-8"))
-        send_message(self._socket, json.dumps(complete_outer).encode("utf-8"))
+        encode_send_message(self._socket, complete_outer)
         self.ui.display_system_message("Deaddrop upload complete")
     
     def deaddrop_check(self, name: str) -> None:
@@ -741,7 +742,7 @@ class SecureChatClient(ClientBase):
             "name": name,
         }
         outer = self._encrypt_deaddrop_inner(json.dumps(inner).encode("utf-8"))
-        send_message(self._socket, json.dumps(outer).encode("utf-8"))
+        encode_send_message(self._socket, outer)
     
     def deaddrop_download(self, name: str, password: str) -> None:
         """Request a deaddrop file download from the server.
@@ -779,7 +780,7 @@ class SecureChatClient(ClientBase):
             "name": name,
         }
         outer_dl = self._encrypt_deaddrop_inner(json.dumps(inner_dl).encode("utf-8"))
-        send_message(self._socket, json.dumps(outer_dl).encode("utf-8"))
+        encode_send_message(self._socket, outer_dl)
     
     def on_error(self, message: str) -> None:
         """Handle an error reported by the protocol layer."""
@@ -800,7 +801,7 @@ class SecureChatClient(ClientBase):
         """Background thread loop: read raw frames from the socket and dispatch them to handle_message."""
         while self.connected:
             try:
-                message_data = receive_message(self._socket, max_size=config["max_message_size"])
+                message_data = network_utils.receive_message(self._socket, max_size=config["max_message_size"])
                 self.handle_message(message_data)
             except ConnectionError:
                 self.ui.display_system_message("Connection to server lost.")
@@ -935,8 +936,7 @@ class SecureChatClient(ClientBase):
     def handle_keepalive(self) -> None:
         """Respond to a server keepalive ping to prevent the connection from being dropped."""
         response_message = {"type": MessageType.KEEP_ALIVE_RESPONSE}
-        response_data = json.dumps(response_message).encode('utf-8')
-        result = send_message(self._socket, response_data)
+        result = encode_send_message(self._socket, response_message)
         if result is not None:
             self.ui.display_error_message(f"Failed to send keepalive response: {result}")
             self.ui.display_system_message("Server may disconnect after 3 keepalive failures.")
@@ -1541,7 +1541,7 @@ class SecureChatClient(ClientBase):
             "type":     MessageType.DEADDROP_KE_RESPONSE,
             "mlkem_ct": base64.b64encode(mlkem_ciphertext).decode("utf-8"),
         }
-        send_message(self._socket, json.dumps(resp).encode("utf-8"))
+        encode_send_message(self._socket, resp)
         self.ui.display_system_message("Deaddrop handshake complete")
         if self._deaddrop_handshake_event is not None:
             self._deaddrop_handshake_event.set()
@@ -1639,7 +1639,7 @@ class SecureChatClient(ClientBase):
                 self.ui.display_system_message("Deaddrop download accepted by server; confirming and waiting for data...")
                 confirm_inner = {"type": MessageType.DEADDROP_ACCEPT}
                 confirm_outer = self._encrypt_deaddrop_inner(json.dumps(confirm_inner).encode("utf-8"))
-                send_message(self._socket, json.dumps(confirm_outer).encode("utf-8"))
+                encode_send_message(self._socket, confirm_outer)
             else:
                 self.ui.display_system_message("Deaddrop upload accepted by server")
         elif inner_type == MessageType.DEADDROP_DENY:
@@ -1677,7 +1677,7 @@ class SecureChatClient(ClientBase):
                 "hash": base64.b64encode(client_hash).decode("utf-8"),
             }
             outer_msg = self._encrypt_deaddrop_inner(json.dumps(inner_msg).encode("utf-8"))
-            send_message(self._socket, json.dumps(outer_msg).encode("utf-8"))
+            encode_send_message(self._socket, outer_msg)
         elif inner_type == MessageType.DEADDROP_DATA:
             if not self._deaddrop_download_in_progress:
                 return
@@ -1739,6 +1739,9 @@ class SecureChatClient(ClientBase):
     
     def _finalise_deaddrop_download(self) -> None:
         """Close the partial download file, rename it to its final name, and verify its HMAC."""
+        self._deaddrop_dl_expected_index = 0
+        self._deaddrop_dl_encryptor = None
+        self._deaddrop_dl_next_nonce = None
         if self._deaddrop_dl_file:
             try:
                 self._deaddrop_dl_file.close()
@@ -1792,9 +1795,6 @@ class SecureChatClient(ClientBase):
         
         self.ui.on_deaddrop_download_complete(self._deaddrop_name, final_path)
         self.ui.display_system_message(f"Deaddrop download complete, saved to: {final_path}")
-        self._deaddrop_dl_encryptor = None
-        self._deaddrop_dl_next_nonce = None
-        self._deaddrop_dl_expected_index = 0
         self._deaddrop_dl_part_path = None
     
     def _handle_deaddrop_binary_chunk(self, message_data: bytes) -> None:
@@ -1815,7 +1815,7 @@ class SecureChatClient(ClientBase):
     
     def _process_deaddrop_data_streaming(self, chunk_index: int, chunk_data: bytes) -> None:
         """Decrypt and stream-write a single deaddrop download chunk to the partial output file.
-
+        
         The first chunk carries a 12-byte header (file extension padded to 12 bytes).
         Each chunk's nonce is derived from the key and chunk index.
         Chunks must arrive in order; out-of-order chunks are dropped with an error.
