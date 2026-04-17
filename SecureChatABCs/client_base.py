@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import MutableMapping
 
 from SecureChatABCs.ui_base import UIBase
 from protocol.types import FileMetadata
@@ -151,7 +152,7 @@ class ClientBase(ABC):
         raise UnsupportedError("File transfer not supported")
     
     @property
-    def pending_file_requests(self) -> dict[str, FileMetadata]:
+    def pending_file_requests(self) -> MutableMapping[str, FileMetadata]:
         """Mapping of transfer-id → metadata for pending incoming files."""
         raise UnsupportedError("File transfer not supported")
     

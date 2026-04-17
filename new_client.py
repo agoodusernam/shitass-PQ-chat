@@ -53,6 +53,7 @@ from protocol.utils import chunk_file
 from utils import network_utils
 from utils.checks import allowed_outer_fields, allowed_unverified_inner_fields, first_unexpected_field
 from utils.network_utils import encode_send_message, send_message
+from utils.threading_utils import ThreadSafeDict
 
 config = ClientConfigHandler()
 
@@ -123,8 +124,8 @@ class SecureChatClient(ClientBase):
         self.voice_muted: bool = False
         
         # File transfer state
-        self.pending_file_transfers: dict[str, FileTransfer] = {}
-        self.active_file_metadata: dict[str, FileMetadata] = {}
+        self.pending_file_transfers: ThreadSafeDict[str, FileTransfer] = ThreadSafeDict()
+        self.active_file_metadata: ThreadSafeDict[str, FileMetadata] = ThreadSafeDict()
         self._last_progress_shown: dict[str, float | int] = {}
         self.file_transfer_update_interval: int = 10
         
@@ -157,7 +158,8 @@ class SecureChatClient(ClientBase):
         self._deaddrop_dl_file: BinaryIO | None = None
         self._deaddrop_dl_bytes_downloaded: int = 0
         # Event to signal completion of the deaddrop handshake
-        self._deaddrop_handshake_event: threading.Event | None = None
+        self._deaddrop_handshake_event: threading.Event = threading.Event()
+        self._deaddrop_started: bool = False
         
         # Rate limiting
         self._rl_window_start: float = 0.0
@@ -197,7 +199,7 @@ class SecureChatClient(ClientBase):
         return bool(self.pending_file_transfers or self.active_file_metadata or self._deaddrop_download_in_progress)
     
     @property
-    def pending_file_requests(self) -> dict[str, FileMetadata]:
+    def pending_file_requests(self) -> ThreadSafeDict[str, FileMetadata]:
         return self.active_file_metadata
     
     @property
@@ -303,9 +305,8 @@ class SecureChatClient(ClientBase):
         self._deaddrop_dl_part_path = None
         self._deaddrop_dl_file = None
         self._deaddrop_dl_bytes_downloaded = 0
-        if self._deaddrop_handshake_event is not None:
-            self._deaddrop_handshake_event.set()
-        self._deaddrop_handshake_event = None
+        self._deaddrop_handshake_event.set()
+        self._deaddrop_started = False
         
         if self._receive_thread and self._receive_thread.is_alive():
             try:
@@ -541,6 +542,7 @@ class SecureChatClient(ClientBase):
             return
         msg = self._protocol.create_rekey_dsa_random(is_initiator=True)
         self._protocol.queue_json(msg)
+        self.file_handler.clear_orphan_handles()
     
     # voice calls
     
@@ -619,10 +621,8 @@ class SecureChatClient(ClientBase):
         
         self._deaddrop_shared_secret = None
         self.deaddrop_supported = False
-        if self._deaddrop_handshake_event is None:
-            self._deaddrop_handshake_event = threading.Event()
-        else:
-            self._deaddrop_handshake_event.clear()
+        self._deaddrop_handshake_event.clear()
+        self._deaddrop_started = True
         
         self.ui.display_system_message("Starting deaddrop handshake")
         msg = {"type": MessageType.DEADDROP_START}
@@ -636,7 +636,7 @@ class SecureChatClient(ClientBase):
         if not self.connected:
             self.ui.display_error_message("Cannot wait for deaddrop handshake - not connected")
             return False
-        if self._deaddrop_handshake_event is None:
+        if not self._deaddrop_started:
             self.ui.display_error_message("Deaddrop handshake has not been started")
             return False
         completed = self._deaddrop_handshake_event.wait(timeout)
@@ -1096,6 +1096,7 @@ class SecureChatClient(ClientBase):
     
     def handle_emergency_close(self) -> None:
         """Handle an EMERGENCY_CLOSE message from the peer: notify the UI and immediately disconnect."""
+        self._protocol.reset_key_exchange()
         self.ui.on_emergency_close()
         self.ui.display_system_message("EMERGENCY CLOSE RECEIVED")
         self.ui.display_system_message("The other client has activated emergency close.")
@@ -1104,11 +1105,7 @@ class SecureChatClient(ClientBase):
         self.disconnect()
         self._key_exchange_complete = False
         self._verification_complete = False
-        self._protocol.reset_key_exchange()
         self.file_handler.clear()
-        
-        self.pending_file_transfers.clear()
-        self.active_file_metadata.clear()
     
     def handle_ephemeral_mode_change(self, message: dict[str, Any]) -> None:
         """Apply an ephemeral-mode change from the server, but only if the owner ID matches the known server identifier."""
@@ -1176,13 +1173,14 @@ class SecureChatClient(ClientBase):
             self._protocol.send_dummy_messages = True
             return
         
-        if transfer_id not in self.pending_file_transfers:
-            self.ui.display_system_message("Received acceptance for unknown file transfer")
-            self._protocol.send_dummy_messages = True
-            return
-        
-        transfer_info = self.pending_file_transfers[transfer_id]
-        file_path = transfer_info["file_path"]
+        with self.pending_file_transfers.lock:
+            if transfer_id not in self.pending_file_transfers:
+                self.ui.display_system_message("Received acceptance for unknown file transfer")
+                self._protocol.send_dummy_messages = True
+                return
+            
+            transfer_info = self.pending_file_transfers[transfer_id]
+            file_path = transfer_info["file_path"]
         
         self.ui.display_system_message(f"File transfer accepted. Sending {transfer_info['metadata']['filename']}...")
         
@@ -1204,13 +1202,14 @@ class SecureChatClient(ClientBase):
             return
         reason = message.get("reason", "Unknown reason")
         
-        if transfer_id in self.pending_file_transfers:
-            filename = self.pending_file_transfers[transfer_id]["metadata"]["filename"]
-            self.ui.display_system_message(f"File transfer rejected: {filename} - {reason}")
-            self.file_handler.stop_sending_transfer(transfer_id)
-            del self.pending_file_transfers[transfer_id]
-        else:
-            self.ui.display_error_message("Received rejection for unknown file transfer")
+        with self.pending_file_transfers.lock:
+            if transfer_id in self.pending_file_transfers:
+                filename = self.pending_file_transfers[transfer_id]["metadata"]["filename"]
+                self.ui.display_system_message(f"File transfer rejected: {filename} - {reason}")
+                self.file_handler.stop_sending_transfer(transfer_id)
+                del self.pending_file_transfers[transfer_id]
+            else:
+                self.ui.display_error_message("Received rejection for unknown file transfer")
     
     def handle_rekey(self, inner: dict[str, Any]) -> None:
         """Drive the four-step rekey handshake (init → response → commit → commit_ack).
@@ -1347,11 +1346,12 @@ class SecureChatClient(ClientBase):
         """Store a received file chunk and, once all chunks have arrived, reassemble and save the file."""
         transfer_id = chunk_info["transfer_id"]
         
-        if transfer_id not in self.active_file_metadata:
-            self.ui.display_error_message("Received chunk for unknown file transfer")
-            return
-        
-        metadata = self.active_file_metadata[transfer_id]
+        with self.active_file_metadata.lock:
+            if transfer_id not in self.active_file_metadata:
+                self.ui.display_error_message("Received chunk for unknown file transfer")
+                return
+            
+            metadata = self.active_file_metadata[transfer_id]
         
         is_complete = self.file_handler.add_file_chunk(
                 transfer_id,
@@ -1402,7 +1402,9 @@ class SecureChatClient(ClientBase):
             except Exception as e:
                 self.ui.display_error_message(f"File reassembly failed: {e}")
             
-            del self.active_file_metadata[transfer_id]
+            with self.active_file_metadata.lock:
+                if transfer_id in self.active_file_metadata:
+                    del self.active_file_metadata[transfer_id]
             if transfer_id in self._last_progress_shown:
                 del self._last_progress_shown[transfer_id]
     
@@ -1471,7 +1473,12 @@ class SecureChatClient(ClientBase):
                 if transfer_id not in self.pending_file_transfers:
                     break
                 
-                send_message(self._socket, self._protocol.encrypt_file_chunk(transfer_id, i, chunk))
+                result = send_message(self._socket, self._protocol.encrypt_file_chunk(transfer_id, i, chunk))
+                if result is not None:
+                    self.ui.display_error_message(f"File transfer failed while sending chunk {i}: {result}")
+                    self.file_handler.stop_sending_transfer(transfer_id)
+                    return
+                
                 bytes_transferred += len(chunk)
                 
                 # Show progress in UI with frequency based on transfer size
@@ -1508,8 +1515,8 @@ class SecureChatClient(ClientBase):
             self._deaddrop_shared_secret = None
             self.deaddrop_supported = False
             self._deaddrop_in_progress = False
-            if self._deaddrop_handshake_event is not None:
-                self._deaddrop_handshake_event.set()
+            self._deaddrop_handshake_event.set()
+            self._deaddrop_started = False
             return
         
         try:
@@ -1517,13 +1524,13 @@ class SecureChatClient(ClientBase):
             mlkem_public = base64.b64decode(mlkem_public_b64, validate=True)
         except KeyError:
             self.ui.display_error_message("Invalid deaddrop start response: missing mlkem_public")
-            if self._deaddrop_handshake_event is not None:
-                self._deaddrop_handshake_event.set()
+            self._deaddrop_handshake_event.set()
+            self._deaddrop_started = False
             return
         except binascii.Error:
             self.ui.display_error_message("Invalid deaddrop start response: bad mlkem_public encoding")
-            if self._deaddrop_handshake_event is not None:
-                self._deaddrop_handshake_event.set()
+            self._deaddrop_handshake_event.set()
+            self._deaddrop_started = False
             return
         
         mlkem_ciphertext, kem_shared_secret = ml_kem_1024.encrypt(mlkem_public)
@@ -1543,8 +1550,8 @@ class SecureChatClient(ClientBase):
         }
         encode_send_message(self._socket, resp)
         self.ui.display_system_message("Deaddrop handshake complete")
-        if self._deaddrop_handshake_event is not None:
-            self._deaddrop_handshake_event.set()
+        self._deaddrop_handshake_event.set()
+        self._deaddrop_started = False
     
     def _encrypt_deaddrop_inner(self, inner: bytes) -> dict[str, Any]:
         """Encrypt *inner* with ChaCha20-Poly1305 using the deaddrop shared secret.
@@ -1722,11 +1729,11 @@ class SecureChatClient(ClientBase):
     def _hash_deaddrop_password(self, password: str) -> str:
         """Derive a slow Argon2id hash of the deaddrop password for server-side authentication.
 
-        Uses the server identifier as the salt. This is intentionally expensive and may
-        briefly block the UI thread.
+        Uses the server identifier as the salt. This IS blocking, however, it's running
+        in a separate thread than the UI, so it does not stop the UI.
+        Same with _derive_deaddrop_file_key()
         """
         self.ui.display_system_message("Hashing deaddrop password, program may be unresponsive.")
-        time.sleep(0.2)
         salt = self.server_identifier.encode("utf-8") if self.server_identifier else b"deaddrop_pass_default_salt_v1"
         hasher = Argon2id(
                 salt=salt,
@@ -1736,6 +1743,42 @@ class SecureChatClient(ClientBase):
                 length=DOUBLE_KEY_SIZE,
         )
         return base64.b64encode(hasher.derive(password.encode("utf-8"))).decode("utf-8")
+    
+    def rename_invalid_deaddrop(self, path: str | Path) -> None:
+        """
+        Rename an invalid dreaddrop, handling errors if they occur.
+        """
+        path = Path(path)
+        new_path = Path(str(path) + '.corrupt')
+        if not new_path.exists():
+            try:
+                os.replace(path, new_path)
+            except OSError:
+                self.ui.display_error_message(f"Failed to rename corrupt file: {path}")
+            return
+        
+        if new_path.is_dir():
+            new_path = new_path / (path.stem + str(int(time.time())) + "".join(path.suffixes) + ".corrupt")
+            try:
+                os.replace(path, new_path)
+            except OSError:
+                self.ui.display_error_message(f"Failed to rename corrupt file: {path}")
+            return
+        
+        if new_path.is_file():
+            corrupt_folder_path: Path = Path('currupt_deaddrop_files').resolve()
+            corrupt_folder_path.mkdir(parents=True, exist_ok=True)
+            try:
+                os.replace(new_path, corrupt_folder_path / new_path.name)
+            except OSError:
+                self.ui.display_error_message(f"Failed to rename corrupt file: {path}")
+                return
+            new_path = new_path.with_name(path.stem + str(int(time.time())) + "".join(path.suffixes) + ".corrupt")
+            try:
+                os.replace(path, new_path)
+            except OSError:
+                self.ui.display_error_message(f"Failed to rename corrupt file: {path}")
+        return
     
     def _finalise_deaddrop_download(self) -> None:
         """Close the partial download file, rename it to its final name, and verify its HMAC."""
@@ -1766,9 +1809,13 @@ class SecureChatClient(ClientBase):
         key = self._deaddrop_download_key
         if not expected_b64:
             self.ui.display_system_message("Deaddrop: no expected HMAC provided by server; skipped verification.")
+            self.rename_invalid_deaddrop(final_path)
+            self._deaddrop_dl_part_path = None
             return
         elif key is None:
             self.ui.display_error_message("Deaddrop: missing key for HMAC verification; file kept as-is.")
+            self.rename_invalid_deaddrop(final_path)
+            self._deaddrop_dl_part_path = None
             return
         
         if isinstance(expected_b64, str) and expected_b64.startswith("b'") and expected_b64.endswith("'"):
@@ -1776,7 +1823,9 @@ class SecureChatClient(ClientBase):
         try:
             expected_hmac = base64.b64decode(expected_b64, validate=True)
         except binascii.Error:
-            self.ui.display_error_message("Deaddrop: invalid base64 expected HMAC provided by server; file kept as-is.")
+            self.ui.display_error_message("Deaddrop: invalid base64 expected HMAC provided by server.")
+            self.rename_invalid_deaddrop(final_path)
+            self._deaddrop_dl_part_path = None
             return
         
         h = HMAC(key, hashes.SHA3_512())
@@ -1792,6 +1841,9 @@ class SecureChatClient(ClientBase):
                                           f"Computed HMAC: {base64.b64encode(computed_hmac).decode('utf-8')},"
                                           f"Expected HMAC: {base64.b64encode(expected_hmac).decode('utf-8')}",
                                           )
+            self.rename_invalid_deaddrop(final_path)
+            self._deaddrop_dl_part_path = None
+            return
         
         self.ui.on_deaddrop_download_complete(self._deaddrop_name, final_path)
         self.ui.display_system_message(f"Deaddrop download complete, saved to: {final_path}")

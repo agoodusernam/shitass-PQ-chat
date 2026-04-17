@@ -17,6 +17,7 @@ MAGIC_NUMBER_DEADDROPS: Final[bytes] = b"\x45"
 # Cryptographic size constants
 NONCE_SIZE: Final[int] = 12  # bytes, for ChaCha20-Poly1305 and AES-GCM-SIV nonces
 CTR_NONCE_SIZE: Final[int] = 16  # bytes, for AES-CTR / deaddrop chunk nonces
+PAD_SIZE: Final[int] = 512 * 8 # bits, for PKCS7 padding
 CLIENT_RANDOM_SIZE: Final[int] = 32  # bytes, for key exchange client randoms
 DOUBLE_KEY_SIZE: Final[int] = 64  # bytes, for double-encryptor keys (32 AES + 32 ChaCha)
 single_key_size: float = DOUBLE_KEY_SIZE / 2
@@ -42,12 +43,14 @@ DEADDROP_MIN_CHUNK_SIZE: Final[int] = 2048  # bytes, minimum chunk size for dead
 DEADDROP_MAX_CHUNKS: Final[int] = 1024 * 1024 # max amount of chunks that can be in a deaddrop upload (to prevent mem exhaustion)
 
 # Nickname / sanitisation limits
-MAX_NICKNAME_LENGTH: Final[int] = 32
 MAX_SANITIZED_STR_LENGTH: Final[int] = 32
 
 # Struct / frame layout sizes
 MAGIC_SIZE: Final[int] = 1  # bytes, magic number prefix
 COUNTER_SIZE: Final[int] = 4  # bytes, message counter (uint32)
+# Yes, this is TECHNICALLY a vulnerability since it COULD overflow
+# However, that would only occur after 4 billion messages in one session,
+# as such, this is a reasonable tradeoff for simplicity.
 HEADER_LENGTH_SIZE: Final[int] = 2  # bytes, file chunk header length prefix (uint16)
 DEADDROP_LENGTH_PREFIX_SIZE: Final[int] = 4  # bytes, length prefix in deaddrop data
 

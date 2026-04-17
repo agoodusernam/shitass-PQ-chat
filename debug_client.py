@@ -91,7 +91,6 @@ class DebugClient(SecureChatClient):
                 )
             
             case MessageType.REKEY:
-                step = message_json.get("step", "?")
                 self._debug_log("REKEY", f"msg={message_json}")
             
             case MessageType.VOICE_CALL_INIT:
@@ -119,7 +118,7 @@ class DebugClient(SecureChatClient):
             
             case _:
                 # Unknown / unhandled type — log raw JSON for visibility
-                if result is False:
+                if not result:
                     self._debug_log(
                             f"UNKNOWN({message_type})", json.dumps(message_json),
                     )

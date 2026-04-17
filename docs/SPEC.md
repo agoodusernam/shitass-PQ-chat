@@ -380,17 +380,23 @@ Both sides generate ephemeral ML-DSA-87 keypairs and client randoms before the e
 
 1. **dsa_random** — The initiator (A) sends its ML-DSA public key and client random. If B receives this before initiating its own rekey, B becomes the responder. If both sides initiate simultaneously (race), the side with the smaller client random becomes B (responder).
 
-2. **dsa_random** (response) — B responds with its own ML-DSA public key and client random (same message type, `is_response: true`). Both sides derive `combined_random` = HKDF-SHA-512(larger_random, salt=smaller_random, info=server_id + 'comb_rand').
+2. **dsa_random** (response) — B responds with its own ML-DSA public key and client random (same message type, `is_response: true`). Both sides derive `combined_random` = HKDF-SHA-512(larger_random, salt=smaller_random, info=server_id + 'rekey_comb_rand').
 
 3. **mlkem_pubkey** — A sends its ML-KEM-1024 public key, signed with its ephemeral ML-DSA-87 key.
 
-4. **mlkem_ct_keys** — B encapsulates A's ML-KEM key, derives `intermediary_key_1` = HKDF-SHA3-512(ML-KEM secret, salt=combined_random, info=server_id + 'int_key_1'), encrypts its HQC-256 and X25519 public keys under `intermediary_key_1`, and sends the ML-KEM ciphertext plus encrypted keys, signed with ML-DSA-87.
+4. **mlkem_ct_keys** — B encapsulates A's ML-KEM key, derives `intermediary_key_1` = HKDF-SHA3-512(ML-KEM secret, salt=combined_random, info=server_id + 'rekey_int_key_1'), encrypts its HQC-256 and X25519 public keys under `intermediary_key_1`, and sends the ML-KEM ciphertext plus encrypted keys, signed with ML-DSA-87.
 
-5. **x25519_hqc_ct** — A decapsulates, derives `intermediary_key_1`, decrypts B's HQC and X25519 public keys, performs X25519 DH, encapsulates to B's HQC public key, derives `intermediary_key_2` = HKDF-SHA3-512(intermediary_key_1, salt=X25519_secret, info=server_id + 'int_key_2'), encrypts its X25519 public key under `intermediary_key_1` and the HQC ciphertext under `intermediary_key_2`, and sends both encrypted payloads signed with ML-DSA-87. A derives pending session keys using the same final key derivation as section 7.3.
+5. **x25519_hqc_ct** — A decapsulates, derives `intermediary_key_1`, decrypts B's HQC and X25519 public keys, performs X25519 DH, encapsulates to B's HQC public key, derives `intermediary_key_2` = HKDF-SHA3-512(intermediary_key_1, salt=X25519_secret, info=server_id + 'rekey_int_key_2'), encrypts its X25519 public key under `intermediary_key_1` and the HQC ciphertext under `intermediary_key_2`, and sends both encrypted payloads signed with ML-DSA-87. A derives pending session keys using the final key derivation below.
 
 6. **verification** — After B processes step 5 and derives pending keys, B sends its verification proof. A verifies, then sends its own verification and activates pending keys. Both sides MUST verify the peer's proof before activating.
 
-The pending key derivation uses the same HKDF constructions as section 7.3, but domain-separated: `combined_random` uses info string `server_id + 'comb_rand'` (same), and chain key roots use `server_id + 'chain_key_root'` (same). The OTP material derivation is identical to section 7.3.
+The pending key derivation uses the same HKDF constructions as section 7.3 with `rekey_`-prefixed info strings for domain separation:
+
+- **OTP material** (64 bytes): HKDF-SHA3-512(ikm=HQC secret, salt=combined_random, info=server_id + 'rekey_otp_material')
+- **Own chain key root** (64 bytes): HKDF-SHA3-512(ikm=ML-KEM secret + X25519 secret, salt=own client random, info=server_id + 'rekey_chain_key_root')
+- **Peer chain key root** (64 bytes): HKDF-SHA3-512(ikm=ML-KEM secret + X25519 secret, salt=peer's client random, info=server_id + 'rekey_chain_key_root')
+
+The `rekey_` prefix ensures rekey-derived keys are cryptographically distinct from initial handshake keys even when the same secrets are involved.
 
 ### 13.2 REKEY message schemas (inner JSON, sent inside ENCRYPTED_MESSAGE)
 

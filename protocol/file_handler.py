@@ -34,15 +34,14 @@ class ProtocolFileHandler:
             try:
                 file_handle.close()
             except (OSError, ValueError):
-                # Non-critical: file handle might already be closed or invalid
                 pass
         self.open_file_handles = {}
         
         # Clean up any temporary files
         for temp_path in self.temp_file_paths.values():
             try:
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
+                if temp_path.exists():
+                    temp_path.unlink()
             except (OSError, PermissionError):
                 pass
         self.temp_file_paths = {}
@@ -52,6 +51,21 @@ class ProtocolFileHandler:
         """Stop tracking a sending file transfer."""
         if transfer_id in self.sending_transfers:
             del self.sending_transfers[transfer_id]
+    
+    def clear_orphan_handles(self) -> None:
+        """Close any open file handles that are not associated with a transfer."""
+        ids_to_remove: list[str] = []
+        for transfer_id, file_handle in self.open_file_handles.items():
+            if transfer_id in self.sending_transfers:
+                continue
+            try:
+                file_handle.close()
+            except (OSError, ValueError):
+                pass
+            ids_to_remove.append(transfer_id)
+            
+        for transfer_id in ids_to_remove:
+            del self.open_file_handles[transfer_id]
     
     @property
     def has_active_file_transfers(self) -> bool:

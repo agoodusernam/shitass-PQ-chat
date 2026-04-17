@@ -5,7 +5,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, CipherContext, algori
 from cryptography.hazmat.primitives.ciphers.aead import AESGCMSIV, ChaCha20Poly1305
 from cryptography.hazmat.primitives.padding import PKCS7
 
-from protocol.constants import DOUBLE_KEY_SIZE, SINGLE_KEY_SIZE, NONCE_SIZE
+from protocol.constants import DOUBLE_KEY_SIZE, PAD_SIZE, SINGLE_KEY_SIZE, NONCE_SIZE
 from protocol.utils import xor_bytes
 
 
@@ -70,7 +70,7 @@ class DoubleEncryptor:
     
     def encrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None, pad: bool = True) -> bytes:
         if pad:
-            padder = PKCS7(512).padder()
+            padder = PKCS7(PAD_SIZE).padder()
             new_data = padder.update(data) + padder.finalize()
         else:
             new_data = data
@@ -92,7 +92,7 @@ class DoubleEncryptor:
         layer0 = xor_bytes(layer1, self._derive_OTP_keystream(len(layer1), aes_nonce + chacha_nonce))
         
         if pad:
-            unpadder = PKCS7(512).unpadder()
+            unpadder = PKCS7(PAD_SIZE).unpadder()
             return unpadder.update(layer0) + unpadder.finalize()
         return layer0
     

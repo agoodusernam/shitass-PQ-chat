@@ -203,6 +203,7 @@ def chunk_file(file_path: Path | str, compress: bool = True, chunk_size: int = S
     Args:
         file_path: Path to the file to chunk
         compress: Whether to compress the chunks (default: True)
+        chunk_size: Size of each chunk (default: SEND_CHUNK_SIZE)
     """
     
     if not compress:

@@ -307,7 +307,7 @@ class SecureChatProtocol(ProtocolBase):
     
     @send_dummy_messages.setter
     def send_dummy_messages(self, value: bool) -> None:
-        """Set whether dummy messages should be sent."""
+        """Set whether the client wants dummy messages to be sent."""
         self._send_dummy_messages = value
     
     def reset_key_exchange(self) -> None:
@@ -363,7 +363,7 @@ class SecureChatProtocol(ProtocolBase):
         """Stop the background sender thread."""
         self._sender_running = False
         if self._sender_thread is not None and self._sender_thread.is_alive():
-            self._sender_thread.join(timeout=1.0)  # Wait up to 1 second for thread to stop
+            self._sender_thread.join(timeout=1.0)
         self._sender_thread = None
         self._socket = None
     

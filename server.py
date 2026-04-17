@@ -1041,6 +1041,12 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         self._end_deaddrop_session()
     
     def handle_deaddrop_upload(self, message: dict[Any, Any]) -> None:
+        if self.upload_accepted:
+            self.send_deaddrop_message({
+                "type":   MessageType.DEADDROP_DENY,
+                "reason": "Deaddrop upload already in progress",
+            })
+            return
         try:
             name = str(message["name"])
             file_size = int(message["file_size"])
