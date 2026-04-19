@@ -3,10 +3,23 @@ from typing import Never
 
 from cryptography.hazmat.primitives.ciphers import Cipher, CipherContext, algorithms, modes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCMSIV, ChaCha20Poly1305
-from cryptography.hazmat.primitives.padding import PKCS7
 
 from protocol.constants import DOUBLE_KEY_SIZE, PAD_SIZE, SINGLE_KEY_SIZE, NONCE_SIZE
 from protocol.utils import xor_bytes
+
+
+def _iso7816_pad(data: bytes, block_size: int) -> bytes:
+    pad_len = block_size - (len(data) % block_size)
+    return data + b"\x80" + b"\x00" * (pad_len - 1)
+
+
+def _iso7816_unpad(data: bytes) -> bytes:
+    i = len(data) - 1
+    while i >= 0 and data[i] == 0:
+        i -= 1
+    if i < 0 or data[i] != 0x80:
+        raise ValueError("Invalid ISO/IEC 7816-4 padding")
+    return data[:i]
 
 
 class DoubleEncryptor:
@@ -14,7 +27,7 @@ class DoubleEncryptor:
     Provides an authenticated two-AEAD encryption scheme with an additional OTP-like keystream pre-mask.
 
     Components:
-        - OTP-like pre-mask: Before AEAD, the PKCS7-padded plaintext is XORed with a keystream derived
+        - OTP-like pre-mask: Before AEAD, the padded plaintext is XORed with a keystream derived
           from `OTP_secret`, the per-message counter, and the payload length. The keystream is produced
           via KDF/HMAC primitives and is deterministic per message/length. This is not an
           information-theoretic OTP, but a KDF-based stream that adds defence in depth.
@@ -27,7 +40,7 @@ class DoubleEncryptor:
         - `OTP_secret` is a separate secret (e.g. from HQC) used solely for keystream derivation.
     
     Padding:
-        - Payloads are PKCS7-padded to 512 bytes to hinder message size analysis.
+        - Payloads are ISO/IEC 7816-4 padded to a 512-byte multiple to hinder message size analysis.
     
     Associated Data (AAD):
         - The same AAD is authenticated by both AEAD layers to protect metadata.
@@ -70,8 +83,7 @@ class DoubleEncryptor:
     
     def encrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None, pad: bool = True) -> bytes:
         if pad:
-            padder = PKCS7(PAD_SIZE).padder()
-            new_data = padder.update(data) + padder.finalize()
+            new_data = _iso7816_pad(data, PAD_SIZE)
         else:
             new_data = data
         
@@ -92,8 +104,7 @@ class DoubleEncryptor:
         layer0 = xor_bytes(layer1, self._derive_OTP_keystream(len(layer1), aes_nonce + chacha_nonce))
         
         if pad:
-            unpadder = PKCS7(PAD_SIZE).unpadder()
-            return unpadder.update(layer0) + unpadder.finalize()
+            return _iso7816_unpad(layer0)
         return layer0
     
     def _derive_OTP_keystream(self, length: int, additional_salt: bytes) -> bytes:

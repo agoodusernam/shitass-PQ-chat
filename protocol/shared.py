@@ -20,7 +20,7 @@ from config import ClientConfigHandler
 from utils.network_utils import send_message
 from protocol.crypto_classes import DoubleEncryptor, KeyExchangeDoubleEncryptor
 from protocol.constants import (
-    MessageType,
+    DEFAULT_MAX_RATCHET_FORWARD, MessageType,
     MAGIC_NUMBER_FILE_TRANSFER,
     NONCE_SIZE,
     CLIENT_RANDOM_SIZE,
@@ -969,6 +969,9 @@ class SecureChatProtocol(ProtocolBase):
             temp_chain_key = saved
             use_saved = True
         else:
+            if counter - (self.peer_counter + 1) > DEFAULT_MAX_RATCHET_FORWARD:
+                raise ValueError("Message is probably legitimate but we would have to ratchet " +
+                                 "further than the configured maximum to attempt decryption.")
             # We are moving forward; ratchet across gaps and save intermediate steps
             temp_chain_key = self._receive_chain_key
             for i in range(self.peer_counter + 1, counter):
@@ -1036,7 +1039,7 @@ class SecureChatProtocol(ProtocolBase):
         Encrypt a file chunk using the Double Ratchet, identical in structure to encrypt_message
         but operating on raw binary data rather than JSON text.
 
-        Frame layout: [1-byte magic][4-byte counter][NONCE_SIZE-byte nonce][HALF_KEY_SIZE-byte eph_pub][ciphertext]
+        Frame layout: [1-byte magic][COUNTER_SIZE-byte counter][NONCE_SIZE-byte nonce][HALF_KEY_SIZE-byte eph_pub][ciphertext]
 
         :return: The encrypted frame as bytes, ready to send.
         :raises ValueError: If encryption state is not ready.
@@ -1090,14 +1093,14 @@ class SecureChatProtocol(ProtocolBase):
         encryptor = DoubleEncryptor(message_key, self._otp_material, self.message_counter)
         ciphertext = encryptor.encrypt(nonce, plaintext, aad)
         
-        # Pack: magic (1) + counter (4) + nonce (NONCE_SIZE) + eph_pub (HALF_KEY_SIZE) + ciphertext
-        counter_bytes = struct.pack('!I', self.message_counter)
+        # Pack: magic (1) + counter (8) + nonce (NONCE_SIZE) + eph_pub (HALF_KEY_SIZE) + ciphertext
+        counter_bytes = struct.pack('!Q', self.message_counter)
         return MAGIC_NUMBER_FILE_TRANSFER + counter_bytes + nonce + eph_pub_bytes + ciphertext
     
     def decrypt_file_chunk(self, encrypted_data: bytes) -> dict:
         """
         Decrypt a file chunk frame produced by encrypt_file_chunk.
-        Expects frame: [1-byte magic][4-byte counter][NONCE_SIZE-byte nonce][HALF_KEY_SIZE-byte eph_pub][ciphertext].
+        Expects frame: [1-byte magic][COUNTER_SIZE-byte counter][NONCE_SIZE-byte nonce][HALF_KEY_SIZE-byte eph_pub][ciphertext].
 
         :return: dict with keys ``transfer_id``, ``chunk_index``, ``chunk_data``.
         :raises ValueError: If decryption fails or the frame is malformed.
@@ -1108,7 +1111,7 @@ class SecureChatProtocol(ProtocolBase):
             raise ValueError("Invalid chunk message format")
         
         try:
-            counter = int(struct.unpack('!I', encrypted_data[FILE_CHUNK_COUNTER_OFFSET:FILE_CHUNK_NONCE_OFFSET])[0])
+            counter = int(struct.unpack('!Q', encrypted_data[FILE_CHUNK_COUNTER_OFFSET:FILE_CHUNK_NONCE_OFFSET])[0])
         except struct.error:
             raise ValueError("Invalid chunk message format")
         except ValueError:

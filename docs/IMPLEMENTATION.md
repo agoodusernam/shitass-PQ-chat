@@ -17,7 +17,12 @@ This document is a companion to `docs/SPEC.md`. It describes how the Python refe
 | Misc utilities (LRUCache, XOR, fingerprint) | `protocol/utils.py` |
 | Transport (length-prefixed TCP) | `utils/network_utils.py` |
 | Field validation allowlists | `utils/checks.py` |
-| Client core (networking, state, dispatch) | `new_client.py` (`SecureChatClient`) |
+| Client facade (public API, state flags, delegates to managers) | `new_client.py` (`SecureChatClient`) |
+| Socket I/O, receive loop, dispatch, rate limit, keepalive | `clients/connection_manager.py` (`ConnectionManager`) |
+| 16-step hybrid KE, verification, rekey, KE reset | `clients/key_exchange_manager.py` (`KeyExchangeManager`) |
+| File transfer metadata, chunking, progress, send thread | `clients/file_transfer_manager.py` (`FileTransferManager`) |
+| Dead drop PBKDF2 + ML-KEM handshake + chunked upload/download | `clients/deaddrop_manager.py` (`DeaddropManager`) |
+| Voice call signaling + audio frames | `clients/voice_call_manager.py` (`VoiceCallManager`) |
 | Server (relay + dead drop) | `server.py` (`SecureChatRequestHandler`, `DeadDropManager`) |
 | UI abstraction + capability flags | `SecureChatABCs/ui_base.py` |
 | UI implementations | `UIs/GUI.py`, `UIs/TUI.py`, `UIs/debug_GUI.py` |
@@ -68,8 +73,8 @@ create_ke_verification / process_ke_verification  → steps 15–16
 `DoubleEncryptor` (`protocol/crypto_classes.py:12`):
 
 ```
-Encrypt: PKCS7-pad → OTP XOR → AES-256-GCM-SIV → ChaCha20-Poly1305
-Decrypt: ChaCha20-Poly1305 → AES-256-GCM-SIV → OTP XOR → PKCS7-unpad
+Encrypt: ISO/IEC 7816-4 pad → OTP XOR → AES-256-GCM-SIV → ChaCha20-Poly1305
+Decrypt: ChaCha20-Poly1305 → AES-256-GCM-SIV → OTP XOR → ISO/IEC 7816-4 unpad
 ```
 
 **Nonce hiding** (`crypto_classes.py:78`):
@@ -80,7 +85,7 @@ chacha_nonce = public_nonce XOR key[-12:]    # last 12 bytes of 64-byte key
 
 **OTP keystream** (`_derive_OTP_keystream`): `SHAKE-256(otp_material || aes_nonce + chacha_nonce || counter_le_8)`. The nonces fed to SHAKE are the *derived* (secret) nonces, not the public wire nonce. This matches SPEC section 8.1.
 
-**PKCS7 padding**: uses `PKCS7(512 * 8)` from the `cryptography` library. That library takes block size in **bits**, so this pads to 512-byte multiples. This matches SPEC section 8.1.
+**Padding**: ISO/IEC 7816-4 (bit-padding) to 512-byte multiples. Implemented manually in `crypto_classes.py` as `_iso7816_pad` / `_iso7816_unpad`: append `0x80` then `0x00` fill until length is a multiple of `PAD_SIZE = 512` bytes. The `cryptography` library's `PKCS7` cannot represent 512-byte blocks (PKCS7 pad byte = count, max 255; library also caps `block_size` at 2040 bits). The scheme still pads to 512-byte multiples so the intent of SPEC section 8.1 (size-class hiding) is preserved. If SPEC 8.1 still names the scheme "PKCS7", update SPEC to match.
 
 **Per-message HMAC** (`encrypt_message`, `shared.py:913`): HMAC-SHA512 keyed by `_verification_key` over `{counter, nonce, dh_public_key}`. Checked *before* decryption to cheaply reject forged high-counter messages (DoS guard).
 
@@ -109,7 +114,7 @@ Implemented in `encrypt_message()` / `decrypt_message()` in `shared.py`.
 
 - **Main thread**: UI event loop.
 - **Sender thread**: `_sender_loop()` in `SecureChatProtocol` (`shared.py:420`) — 250 ms tick, dequeues one item, encrypts, sends; sends dummy packets when idle and enabled.
-- **Receiver thread**: `_receive_loop()` in `SecureChatClient` — reads TCP socket, dispatches to `protocol.process_*` or client handlers.
+- **Receiver thread**: `ConnectionManager.receive_loop()` (`clients/connection_manager.py`) — spawned by `SecureChatClient.connect()` — reads TCP socket, dispatches through facade methods to protocol handlers and manager handlers.
 - **Keepalive timer thread**: sends `KEEP_ALIVE_RESPONSE`; tracks missed keepalives.
 - **Auto-rekey timer thread**: time-based trigger; message-count trigger checked inline after each message.
 

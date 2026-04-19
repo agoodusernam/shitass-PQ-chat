@@ -3,7 +3,7 @@ Module for managing deaddrop files and implementing a secure chat server.
 
 This module provides functionality for managing deaddrop files, including creating, appending,
 removing, and checking the existence of files. Additionally, it contains a secure chat server
-implementation that facilitates end-to-end encrypted communication between two clients.
+implementation that facilitates end-to-end encrypted communication between two client.
 The server handles client connections, key exchange initiation, message routing, and error handling.
 
 Classes:
@@ -11,7 +11,7 @@ Classes:
     and deletion.
 
     SecureChatServer: A threaded TCP server that supports secure communication between two
-    clients, including key exchange and message routing.
+    client, including key exchange and message routing.
 """
 # pylint: disable=trailing-whitespace, broad-exception-caught, too-many-instance-attributes
 import base64
@@ -74,7 +74,8 @@ class DeadDropManager:
         if location.is_file():
             raise FileExistsError("Deaddrop folder location already exists as a file")
         if not location.exists():
-            location.mkdir(mode=0o600, parents=True)
+            location.mkdir(mode=0o700, parents=True)
+        location.chmod(mode=0o700)
         files = _config["deaddrop_file_location"].iterdir()
         for file in files:
             if file.suffix == ".bin":
@@ -175,7 +176,7 @@ class DeadDropManager:
         del self.deaddrop_files[name]
     
     def check_file(self, name: str) -> bool:
-        time.sleep(secrets.randbelow(2000) / 1000)
+        time.sleep(secrets.randbelow(500) / 1000)
         # We wait for 0-2 seconds to obscure timing attacks
         return name in self.deaddrop_files.keys()
     
@@ -1116,7 +1117,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         if self.pending_deaddrop_chunk_size == 0 and len(chunk_data) > 0:
             self.pending_deaddrop_chunk_size = len(chunk_data)
         
-        if self.pending_deaddrop_chunk_size <= _config["deaddrop_min_chunk_size"]:
+        if len(chunk_data) <= _config["deaddrop_min_chunk_size"]:
             self._fail_current_upload(f"Deaddrop chunk size too small. Min: {_config['deaddrop_min_chunk_size']} bytes")
             return
         

@@ -36,7 +36,12 @@ Post-quantum E2E encrypted chat. Server is a dumb relay — it routes ciphertext
 ```
 UIs/ (GUI.py, TUI.py, debug_GUI.py)
   └─ SecureChatABCs/ui_base.py  (UIBase ABC)
-       └─ SecureChatClient  (new_client.py, ~1900 lines)
+       └─ SecureChatClient  (new_client.py, ~580 lines — facade)
+            ├─ ConnectionManager   (client/connection_manager.py)    — socket I/O, receive loop, dispatch, rate limit, keepalive, server frames
+            ├─ KeyExchangeManager  (client/key_exchange_manager.py)  — 16-step hybrid KE, verification, rekey, reset
+            ├─ FileTransferManager (client/file_transfer_manager.py) — metadata, chunking, progress, send thread
+            ├─ DeaddropManager     (client/deaddrop_manager.py)      — PBKDF2-protected async file sharing via server
+            ├─ VoiceCallManager    (client/voice_call_manager.py)    — voice call signaling + audio frames
             ├─ SecureChatProtocol  (protocol/shared.py, ~2500 lines)
             │    ├─ crypto_classes.py    — DoubleEncryptor, ChunkIndependentDoubleEncryptor
             │    ├─ constants.py         — message types, frame offsets, crypto constants
@@ -56,7 +61,14 @@ utils/
   └─ vc_utils.py      — voice call audio helpers
 ```
 
-`SecureChatClient` (new_client.py) is the core: TCP socket, protocol state machine, file transfers, voice call signaling, dead drops, rekeying, rate limiting, keepalive.
+`SecureChatClient` (new_client.py) is a thin facade: owns `SecureChatProtocol` + socket, composes the five managers above, exposes the public API consumed by UIs and tests. State probed by tests (`_protocol`, `_socket`, `_key_exchange_complete`, etc.) lives on the facade; managers access it via the facade reference.
+
+### Manager dispatch rules
+
+- Managers MUST call their sibling managers directly (`self._client._key_exchange.handle_reset(...)`), never bounce through facade proxies (`self._client.handle_key_exchange_reset(...)`). Facade proxies are for external callers (UIs, tests) only.
+- Inside a single manager, dispatch to own methods via `self.`, not via `self._client.<same_method>`.
+- When adding a new message-type case in `ConnectionManager.handle_message` or `SecureChatClient.handle_message_types`, route straight to the owning manager.
+- Tests patch behaviour on the manager that owns it: `patch.object(c._connection, "handle_keepalive")`, `patch.object(c._key_exchange, "handle_dsa_random")`, `patch.object(c._file_transfer, "handle_chunk_binary")`.
 
 `SecureChatProtocol` (protocol/shared.py) owns crypto: hybrid key exchange, Double Ratchet, message encryption/decryption, replay protection.
 
@@ -91,7 +103,7 @@ Full spec: `docs/SPEC.md`.
 
 ## Per-Message Encryption
 
-1. PKCS7 pad plaintext to 512-byte multiple.
+1. ISO/IEC 7816-4 bit-pad plaintext to 512-byte multiple (append `0x80` then `0x00` fill). PKCS7 cannot represent a 512-byte block (pad-byte count ≤ 255), and the `cryptography` library caps `PKCS7(block_size)` at 2040 bits. Padding helpers are `_iso7816_pad` / `_iso7816_unpad` in `protocol/crypto_classes.py`.
 2. XOR with SHAKE-256 keystream (OTP layer, keyed on HQC secret + secret nonces + counter).
 3. Double AEAD: AES-256-GCM-SIV → ChaCha20-Poly1305 (sequential).
 4. HMAC-SHA-512 over AAD (type, counter, nonce, per-message DH public key).
@@ -109,7 +121,8 @@ Wire format (`ENCRYPTED_MESSAGE`, type 10):
 
 - **Main thread**: UI event loop
 - **Sender thread** (protocol): dequeues `_message_queue`, encrypts, sends every ~250 ms tick
-- **Receiver thread** (client): reads TCP socket, dispatches to `protocol.process_*`, calls `ui.display_*`
+- **Receiver thread** (client): `ConnectionManager.receive_loop()`, reads TCP socket, dispatches via `handle_message` → owning manager
+- **Voice audio thread** (UI-owned): writes `VOICE_CALL_DATA` frames directly to the socket via `network_utils.send_message`, bypassing the 250 ms sender queue. Consequence: audio frames can arrive at the peer *before* a queued `VOICE_CALL_ACCEPT`. `VoiceCallManager.request()` flips `_active = True` at request time (not on accept) so inbound `VOICE_CALL_DATA` bypasses the rate limiter on the requester side.
 - **Timer threads**: keepalive + auto-rekey (count threshold or time threshold)
 
 ## Rekeying
@@ -122,11 +135,15 @@ Auto-rekey triggers: message count threshold or time threshold, both with ±10% 
 
 ## Dead Drops
 
-Anonymous async file sharing. PBKDF2-protected (800k iterations, 32-byte salt). Uses `ChunkIndependentDoubleEncryptor` — no chained authentication, so chunks decrypt in any order.
+Anonymous async file sharing. Per-file key derivation uses Argon2id (memory_cost=4 GiB, iterations=4, lanes=4) then HKDF-SHA3-512 with a per-upload random salt. Password hash sent to server for download auth is a separate Argon2id derivation (memory_cost=2 GiB, iterations=6). Download-time challenge uses PBKDF2-HMAC-SHA3-512 over the stored password hash with a server-provided salt. Uses `ChunkIndependentDoubleEncryptor` — no chained authentication, so chunks decrypt in any order.
 
 Server stores encrypted chunks in `deaddrop_files/` (configurable). Neither peer's session identity is exposed. Chunk limit: `DEADDROP_MAX_CHUNKS = 1,048,576` (memory exhaustion guard).
 
 Dead drop KE uses a separate ML-KEM exchange with the server (independent of the peer session).
+
+### Upload flow
+
+`DeaddropManager.upload()` MUST wait on `_upload_accept_event` after sending encrypted metadata, before streaming any chunks. `_on_accept` sets the event on `DEADDROP_ACCEPT`; `DEADDROP_DENY` also sets it (with `_upload_accepted=False`) so the uploader unblocks and aborts. Streaming chunks before the server accepts the metadata cascades into spurious `"No active deaddrop upload"` errors for each chunk + the trailing `DEADDROP_COMPLETE` frame. Server error responses for metadata are intentionally generic (no leaking of name collision, quota, etc.) — the client cannot distinguish reasons.
 
 ## Field Validation
 
@@ -159,6 +176,13 @@ Server identifier stored in `identifier.txt` (auto-created; mixed into all HKDF 
 ## UI Abstraction
 
 All UIs implement `UIBase` (`SecureChatABCs/ui_base.py`). Capability flags (`FILE_TRANSFER`, `VOICE_CALLS`, `DEADDROP`, etc.) let the client adapt. When adding protocol features, check capability flags before calling UI methods.
+
+## Testing Notes
+
+- `tests/test_new_client.py` uses helper `_make_client()` to build a client with a MagicMock UI and a stub socket — safe to instantiate without network.
+- `_full_ke_protocol_pair()` / `_inject_ready_protocol()` give tests a real post-KE protocol state for round-trip encrypt/decrypt.
+- `patch("new_client.send_message")` intercepts raw sends for keepalive / KE tests.
+- When adding new dispatched cases, add tests that patch the owning manager method (not the facade).
 
 ## Known Limitations
 

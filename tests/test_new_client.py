@@ -202,7 +202,7 @@ class TestHandleMessageRouting:
     
     def test_routes_keepalive(self) -> None:
         c = _make_client()
-        with patch.object(c, "handle_keepalive") as mock_ka:
+        with patch.object(c._connection, "handle_keepalive") as mock_ka:
             with patch("new_client.send_message"):
                 c.handle_message(self._make_json_msg(MessageType.KEEP_ALIVE))
         mock_ka.assert_called_once()
@@ -214,7 +214,7 @@ class TestHandleMessageRouting:
     
     def test_routes_server_full(self) -> None:
         c = _make_client()
-        with patch.object(c, "handle_server_full") as mock_sf:
+        with patch.object(c._connection, "handle_server_full") as mock_sf:
             c.handle_message(self._make_json_msg(MessageType.SERVER_FULL))
         mock_sf.assert_called_once()
     
@@ -225,13 +225,13 @@ class TestHandleMessageRouting:
     
     def test_invalid_json_tries_binary_chunk(self) -> None:
         c = _make_client()
-        with patch.object(c, "handle_maybe_binary_chunk", return_value=True) as mock_bin:
+        with patch.object(c._connection, "handle_maybe_binary_chunk", return_value=True) as mock_bin:
             c.handle_message(b"\xff\xfe not json at all")
         mock_bin.assert_called_once()
     
     def test_invalid_json_not_binary_shows_error(self) -> None:
         c = _make_client()
-        with patch.object(c, "handle_maybe_binary_chunk", return_value=False):
+        with patch.object(c._connection, "handle_maybe_binary_chunk", return_value=False):
             c.handle_message(b"not json")
         c.ui.display_error_message.assert_called()
     
@@ -242,20 +242,20 @@ class TestHandleMessageRouting:
             "type":       int(MessageType.KE_DSA_RANDOM),
             "evil_field": "bad",
         }).encode()
-        with patch.object(c, "handle_ke_dsa_random") as mock_ke:
+        with patch.object(c._key_exchange, "handle_dsa_random") as mock_ke:
             c.handle_message(msg)
         mock_ke.assert_not_called()
         c.ui.display_error_message.assert_called()
     
     def test_routes_ke_verification(self) -> None:
         c = _make_client()
-        with patch.object(c, "handle_ke_verification") as mock_kv:
+        with patch.object(c._key_exchange, "handle_verification") as mock_kv:
             c.handle_message(self._make_json_msg(MessageType.KE_VERIFICATION))
         mock_kv.assert_called_once()
-    
+
     def test_routes_key_exchange_reset(self) -> None:
         c = _make_client()
-        with patch.object(c, "handle_key_exchange_reset") as mock_ker:
+        with patch.object(c._key_exchange, "handle_reset") as mock_ker:
             c.handle_message(self._make_json_msg(MessageType.KEY_EXCHANGE_RESET,
                                                  {"message": "reset"}))
         mock_ker.assert_called_once()
@@ -274,7 +274,7 @@ class TestRateLimiting:
         c = _make_client()
         assert c.bypass_rate_limits is False
         # Send 6 keepalives (allowed)
-        with patch.object(c, "handle_keepalive"):
+        with patch.object(c._connection, "handle_keepalive"):
             with patch("new_client.send_message"):
                 for _ in range(6):
                     c.handle_message(self._make_json_msg(MessageType.KEEP_ALIVE))
@@ -286,7 +286,7 @@ class TestRateLimiting:
         c = _make_client()
         # bypass_rate_limits is True when file_transfer_active is True (pending_file_transfers non-empty)
         c.pending_file_transfers["dummy"] = object()
-        with patch.object(c, "handle_keepalive") as mock_ka:
+        with patch.object(c._connection, "handle_keepalive") as mock_ka:
             with patch("new_client.send_message"):
                 for _ in range(10):
                     c.handle_message(self._make_json_msg(MessageType.KEEP_ALIVE))
@@ -530,7 +530,7 @@ class TestHandleMaybeBinaryChunk:
         chunk_data = os.urandom(128)
         frame = proto_a.encrypt_file_chunk("tid-1", 0, chunk_data)
         
-        with patch.object(c, "handle_file_chunk_binary") as mock_fch:
+        with patch.object(c._file_transfer, "handle_chunk_binary") as mock_fch:
             result = c.handle_maybe_binary_chunk(frame)
         assert result is True
         mock_fch.assert_called_once()

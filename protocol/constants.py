@@ -17,7 +17,7 @@ MAGIC_NUMBER_DEADDROPS: Final[bytes] = b"\x45"
 # Cryptographic size constants
 NONCE_SIZE: Final[int] = 12  # bytes, for ChaCha20-Poly1305 and AES-GCM-SIV nonces
 CTR_NONCE_SIZE: Final[int] = 16  # bytes, for AES-CTR / deaddrop chunk nonces
-PAD_SIZE: Final[int] = 512 * 8 # bits, for PKCS7 padding
+PAD_SIZE: Final[int] = 512  # bytes, block size for ISO/IEC 7816-4 padding
 CLIENT_RANDOM_SIZE: Final[int] = 32  # bytes, for key exchange client randoms
 DOUBLE_KEY_SIZE: Final[int] = 64  # bytes, for double-encryptor keys (32 AES + 32 ChaCha)
 single_key_size: float = DOUBLE_KEY_SIZE / 2
@@ -32,6 +32,7 @@ TRANSFER_ID_LENGTH: Final[int] = 32  # characters, hex transfer ID truncation le
 FINGERPRINT_HASH_SIZE: Final[int] = 32  # bytes, truncated hash for key fingerprint generation
 FINGERPRINT_WORD_COUNT: Final[int] = 8  # number of words in a key fingerprint
 HASH_TO_WORDS_DEFAULT: Final[int] = 16  # default number of words for hash_to_words
+DEFAULT_MAX_RATCHET_FORWARD: Final[int] = 100000
 
 # Deaddrop constants
 DEADDROP_SALT_SIZE: Final[int] = 32  # bytes, salt for deaddrop download PBKDF2
@@ -47,10 +48,7 @@ MAX_SANITIZED_STR_LENGTH: Final[int] = 32
 
 # Struct / frame layout sizes
 MAGIC_SIZE: Final[int] = 1  # bytes, magic number prefix
-COUNTER_SIZE: Final[int] = 4  # bytes, message counter (uint32)
-# Yes, this is TECHNICALLY a vulnerability since it COULD overflow
-# However, that would only occur after 4 billion messages in one session,
-# as such, this is a reasonable tradeoff for simplicity.
+COUNTER_SIZE: Final[int] = 8  # bytes, message counter (uint64)
 HEADER_LENGTH_SIZE: Final[int] = 2  # bytes, file chunk header length prefix (uint16)
 DEADDROP_LENGTH_PREFIX_SIZE: Final[int] = 4  # bytes, length prefix in deaddrop data
 

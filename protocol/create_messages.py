@@ -171,7 +171,7 @@ def create_file_metadata_message(file_path: Path, compress: bool = True, chunk_s
     # Generate unique transfer ID. It should be unique but does not have to be cryptographically secure.
     # SHA256 just happens to be fast, and its outputs are likely unique enough for this purpose.
     transfer_id: str = hashlib.sha256(
-            f"{file_name}{file_size}{file_hash.hexdigest()}".encode(),
+            os.urandom(256),
             usedforsecurity=False,
     ).hexdigest()[:TRANSFER_ID_LENGTH]
     
