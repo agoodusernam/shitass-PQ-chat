@@ -28,6 +28,7 @@ import os
 from unittest.mock import MagicMock, patch
 
 from new_client import SecureChatClient
+from protocol import create_messages
 from protocol.constants import MAGIC_NUMBER_FILE_TRANSFER, MessageType
 from protocol.shared import SecureChatProtocol
 
@@ -580,10 +581,10 @@ class TestHandleRekey:
         # (skip sending x25519_hqc_ct to proto_b for this test — we just need pending keys on proto_a)
         
         # Manually set pending keys on proto_b to create a valid verification
-        msg5 = proto_a.process_rekey_mlkem_ct_keys(msg4) if not proto_a._pending_send_chain_key else None
+        msg5 = proto_a.process_rekey_mlkem_ct_keys(msg4) if not proto_a._rekey._pending_send_chain_key else None
         # At this point proto_a has pending keys. Fabricate a matching verification from proto_b.
         # We do this by copying proto_a's pending material to proto_b so it produces the same proof.
-        proto_b._pending_key_verification_material = proto_a._pending_key_verification_material
+        proto_b._rekey._pending_key_verification_material = proto_a._rekey._pending_key_verification_material
         
         b_verif = proto_b.create_rekey_verification()
         with patch.object(c._protocol, "queue_json"):
@@ -639,13 +640,13 @@ class TestHandleKeDsaRandom:
 class TestHandleKeyVerificationMessage:
     def test_peer_verified_true_updates_flag(self) -> None:
         c = _make_client()
-        msg = SecureChatProtocol.create_key_verification_message(True)
+        msg = create_messages.create_key_verification_message(True)
         c.handle_key_verification_message(msg)
         assert c._peer_verified_own_key is True
     
     def test_peer_verified_false_updates_flag(self) -> None:
         c = _make_client()
-        msg = SecureChatProtocol.create_key_verification_message(False)
+        msg = create_messages.create_key_verification_message(False)
         c.handle_key_verification_message(msg)
         assert c._peer_verified_own_key is False
 
@@ -671,7 +672,7 @@ class TestRejectFileTransfer:
     
     def test_removes_from_active_metadata(self) -> None:
         c = _make_client()
-        c.active_file_metadata["tid"] = {}
+        c.active_file_metadata["tid"] = {}  # type: ignore[typeddict-item]
         c.reject_file_transfer("tid")
         assert "tid" not in c.active_file_metadata
 

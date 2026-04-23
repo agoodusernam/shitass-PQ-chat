@@ -10,7 +10,6 @@ python server.py
 
 # Client (prompts UI selection: GUI, TUI, debug_GUI)
 python run_client.py
-./new_gui_client.sh          # activates .venv and runs run_client.py
 
 # Debug client (CLI, no UI)
 python debug_client.py
@@ -31,34 +30,34 @@ No build step. No pre-commit hooks configured.
 
 ## Architecture
 
-Post-quantum E2E encrypted chat. Server is a dumb relay — it routes ciphertext and manages dead drops but has zero key material knowledge.
+Post-quantum E2E encrypted chat. Server is a dumb relay - it routes ciphertext and manages dead drops but has zero key material knowledge.
 
 ```
 UIs/ (GUI.py, TUI.py, debug_GUI.py)
   └─ SecureChatABCs/ui_base.py  (UIBase ABC)
-       └─ SecureChatClient  (new_client.py, ~580 lines — facade)
-            ├─ ConnectionManager   (client/connection_manager.py)    — socket I/O, receive loop, dispatch, rate limit, keepalive, server frames
-            ├─ KeyExchangeManager  (client/key_exchange_manager.py)  — 16-step hybrid KE, verification, rekey, reset
-            ├─ FileTransferManager (client/file_transfer_manager.py) — metadata, chunking, progress, send thread
-            ├─ DeaddropManager     (client/deaddrop_manager.py)      — PBKDF2-protected async file sharing via server
-            ├─ VoiceCallManager    (client/voice_call_manager.py)    — voice call signaling + audio frames
-            ├─ SecureChatProtocol  (protocol/shared.py, ~2500 lines)
-            │    ├─ crypto_classes.py    — DoubleEncryptor, ChunkIndependentDoubleEncryptor
-            │    ├─ constants.py         — message types, frame offsets, crypto constants
-            │    ├─ create_messages.py   — serialize protocol frames
-            │    └─ parse_messages.py    — deserialize protocol frames
+       └─ SecureChatClient  (new_client.py, ~580 lines - facade)
+            ├─ ConnectionManager   (client/connection_manager.py)    - socket I/O, receive loop, dispatch, rate limit, keepalive, server frames
+            ├─ KeyExchangeManager  (client/key_exchange_manager.py)  - 16-step hybrid KE, verification, rekey, reset
+            ├─ FileTransferManager (client/file_transfer_manager.py) - metadata, chunking, progress, send thread
+            ├─ DeaddropManager     (client/deaddrop_manager.py)      - PBKDF2-protected async file sharing via server
+            ├─ VoiceCallManager    (client/voice_call_manager.py)    - voice call signaling + audio frames
+            ├─ SecureChatProtocol  (protocol/shared.py, ~1700 lines; composes _KeyDerivation + _RekeyState)
+            │    ├─ crypto_classes.py    - DoubleEncryptor, ChunkIndependentDoubleEncryptor
+            │    ├─ constants.py         - message types, frame offsets, crypto constants
+            │    ├─ create_messages.py   - serialize protocol frames
+            │    └─ parse_messages.py    - deserialize protocol frames
             └─ ProtocolFileHandler  (protocol/file_handler.py)
 
 SecureChatABCs/
-  ├─ client_base.py   — SecureChatClient ABC
-  ├─ protocol_base.py — SecureChatProtocol ABC
-  └─ ui_base.py       — UIBase ABC with capability flags
+  ├─ client_base.py   - SecureChatClient ABC
+  ├─ protocol_base.py - SecureChatProtocol ABC
+  └─ ui_base.py       - UIBase ABC with capability flags
 
 utils/
-  ├─ checks.py        — field validation allowlists (outer + inner JSON)
-  ├─ file_utils.py    — file helpers
-  ├─ network_utils.py — length-prefixed TCP send/receive
-  └─ vc_utils.py      — voice call audio helpers
+  ├─ checks.py        - field validation allowlists (outer + inner JSON)
+  ├─ file_utils.py    - file helpers
+  ├─ network_utils.py - length-prefixed TCP send/receive
+  └─ vc_utils.py      - voice call audio helpers
 ```
 
 `SecureChatClient` (new_client.py) is a thin facade: owns `SecureChatProtocol` + socket, composes the five managers above, exposes the public API consumed by UIs and tests. State probed by tests (`_protocol`, `_socket`, `_key_exchange_complete`, etc.) lives on the facade; managers access it via the facade reference.
@@ -70,14 +69,19 @@ utils/
 - When adding a new message-type case in `ConnectionManager.handle_message` or `SecureChatClient.handle_message_types`, route straight to the owning manager.
 - Tests patch behaviour on the manager that owns it: `patch.object(c._connection, "handle_keepalive")`, `patch.object(c._key_exchange, "handle_dsa_random")`, `patch.object(c._file_transfer, "handle_chunk_binary")`.
 
-`SecureChatProtocol` (protocol/shared.py) owns crypto: hybrid key exchange, Double Ratchet, message encryption/decryption, replay protection.
+`SecureChatProtocol` (protocol/shared.py) owns crypto: hybrid key exchange, Double Ratchet, message encryption/decryption, replay protection. It composes two internal helper classes that live in the same file:
+
+- `_KeyDerivation` - stateless namespace class (all `@staticmethod`) holding every HKDF / hash-based derivation. A `rekey=False` kwarg picks the domain-separated `info` string so the same helper covers the initial KE and the rekey KE paths.
+- `_RekeyState` - owns all `_rke_*` in-flight rekey KE attributes, all `_pending_*` activation attributes, the auto-rekey counters (`messages_since_last_rekey`, `rekey_interval`), and every `create_rekey_*` / `process_rekey_*` / `activate_pending_keys` / `reset_rekey` method. Holds a `self._protocol` back-reference to mutate session keys on activation and to report errors. Instance lives at `SecureChatProtocol._rekey`.
+
+`SecureChatProtocol` exposes rekey operations via explicit thin delegate methods (no `__getattr__`/`__setattr__`). External callers (tests, UIs, managers) use the original names - those are preserved as public methods or `@property` passthroughs on the protocol.
 
 `server.py` has two top-level classes: `DeadDropManager` (file storage) and `SecureChatRequestHandler` (TCP handler per client).
 
 ## Versions
 
-- `PROTOCOL_VERSION = "8.1.0"` — versioning is `Breaking.Minor.Patch`; only major version mismatches block sessions.
-- `SERVER_VERSION = 9` — internal server implementation version, separate from protocol.
+- `PROTOCOL_VERSION = "8.1.0"` - versioning is `Breaking.Minor.Patch`; only major version mismatches block sessions.
+- `SERVER_VERSION = 9` - internal server implementation version, separate from protocol.
 - Server reads/writes `identifier.txt` for its identifier string, which is mixed into all HKDF derivations.
 
 ## Key Exchange (16-step hybrid PQC)
@@ -135,7 +139,7 @@ Auto-rekey triggers: message count threshold or time threshold, both with ±10% 
 
 ## Dead Drops
 
-Anonymous async file sharing. Per-file key derivation uses Argon2id (memory_cost=4 GiB, iterations=4, lanes=4) then HKDF-SHA3-512 with a per-upload random salt. Password hash sent to server for download auth is a separate Argon2id derivation (memory_cost=2 GiB, iterations=6). Download-time challenge uses PBKDF2-HMAC-SHA3-512 over the stored password hash with a server-provided salt. Uses `ChunkIndependentDoubleEncryptor` — no chained authentication, so chunks decrypt in any order.
+Anonymous async file sharing. Per-file key derivation uses Argon2id (memory_cost=4 GiB, iterations=4, lanes=4) then HKDF-SHA3-512 with a per-upload random salt. Password hash sent to server for download auth is a separate Argon2id derivation (memory_cost=2 GiB, iterations=6). Download-time challenge uses PBKDF2-HMAC-SHA3-512 over the stored password hash with a server-provided salt. Uses `ChunkIndependentDoubleEncryptor` - no chained authentication, so chunks decrypt in any order.
 
 Server stores encrypted chunks in `deaddrop_files/` (configurable). Neither peer's session identity is exposed. Chunk limit: `DEADDROP_MAX_CHUNKS = 1,048,576` (memory exhaustion guard).
 
@@ -143,13 +147,13 @@ Dead drop KE uses a separate ML-KEM exchange with the server (independent of the
 
 ### Upload flow
 
-`DeaddropManager.upload()` MUST wait on `_upload_accept_event` after sending encrypted metadata, before streaming any chunks. `_on_accept` sets the event on `DEADDROP_ACCEPT`; `DEADDROP_DENY` also sets it (with `_upload_accepted=False`) so the uploader unblocks and aborts. Streaming chunks before the server accepts the metadata cascades into spurious `"No active deaddrop upload"` errors for each chunk + the trailing `DEADDROP_COMPLETE` frame. Server error responses for metadata are intentionally generic (no leaking of name collision, quota, etc.) — the client cannot distinguish reasons.
+`DeaddropManager.upload()` MUST wait on `_upload_accept_event` after sending encrypted metadata, before streaming any chunks. `_on_accept` sets the event on `DEADDROP_ACCEPT`; `DEADDROP_DENY` also sets it (with `_upload_accepted=False`) so the uploader unblocks and aborts. Streaming chunks before the server accepts the metadata cascades into spurious `"No active deaddrop upload"` errors for each chunk + the trailing `DEADDROP_COMPLETE` frame. Server error responses for metadata are intentionally generic (no leaking of name collision, quota, etc.) - the client cannot distinguish reasons.
 
 ## Field Validation
 
 `utils/checks.py` enforces strict allowlists on all JSON messages:
-- `allowed_outer_fields(msg_type)` — per-type allowlist for pre-verification (plaintext) frames.
-- `allowed_unverified_inner_fields()` — superset allowlist for decrypted inner JSON before session verification completes.
+- `allowed_outer_fields(msg_type)` - per-type allowlist for pre-verification (plaintext) frames.
+- `allowed_unverified_inner_fields()` - superset allowlist for decrypted inner JSON before session verification completes.
 
 Unknown fields → message dropped. This limits attack surface during the most vulnerable pre-verification phase.
 
@@ -179,11 +183,45 @@ All UIs implement `UIBase` (`SecureChatABCs/ui_base.py`). Capability flags (`FIL
 
 ## Testing Notes
 
-- `tests/test_new_client.py` uses helper `_make_client()` to build a client with a MagicMock UI and a stub socket — safe to instantiate without network.
+- `tests/test_new_client.py` uses helper `_make_client()` to build a client with a MagicMock UI and a stub socket - safe to instantiate without network.
 - `_full_ke_protocol_pair()` / `_inject_ready_protocol()` give tests a real post-KE protocol state for round-trip encrypt/decrypt.
 - `patch("new_client.send_message")` intercepts raw sends for keepalive / KE tests.
 - When adding new dispatched cases, add tests that patch the owning manager method (not the facade).
 
+### Key Derivation Test Vectors
+
+`tests/key_derivation_vectors.json` - 256 vectors per method (512 for rekey-aware methods: 256 `rekey=False` + 256 `rekey=True`).
+
+Top-level structure: `{ "<method_name>": [ { "inputs": {...}, "output": ... }, ... ] }`
+
+All `bytes` values are base64-encoded strings. `int`/`bool` inputs are stored as-is.
+
+| Method | Input fields                                                       | Output |
+|---|--------------------------------------------------------------------|---|
+| `derive_combined_random` | `own_random`, `peer_random`, `server_id`, `rekey`                  | base64 bytes |
+| `derive_intermediary_key_1` | `mlkem_secret`, `combined_random`, `server_id`, `rekey`            | base64 bytes |
+| `derive_intermediary_key_2` | `int_key_1`, `dh_secret`, `server_id`, `rekey`                     | base64 bytes |
+| `derive_otp_material` | `hqc_secret`, `combined_random`, `server_id`, `rekey`              | base64 bytes |
+| `derive_chain_key_root` | `mlkem_secret`, `dh_secret`, `client_random`, `server_id`, `rekey` | base64 bytes |
+| `compute_verification_pair` | `otp`, `own_chain_root`, `peer_chain_root`, `combined_random`      | `{"verification_key": ..., "key_verification_material": ...}` |
+| `derive_message_key` | `chain_key`, `counter` (int)                                       | base64 bytes |
+| `ratchet_chain_key` | `chain_key`, `counter` (int)                                       | base64 bytes |
+| `mix_dh_with_chain` | `chain_key`, `dh_shared`, `counter` (int)                          | base64 bytes |
+
+### Encryption Class Test Vectors
+
+`tests/encryption_vectors.json` — 256 vectors per class.
+
+Top-level structure: `{ "<class_name>": [ { "inputs": {...}, "output": ... }, ... ] }`
+
+All `bytes` values are base64-encoded strings. `int`/`bool` inputs are stored as-is. `associated_data` is `null` when not provided.
+
+| Class | Input fields | Notes | Output |
+|---|---|---|---|
+| `DoubleEncryptor` | `key` (64B), `OTP_secret` (64B), `message_counter` (int), `nonce` (12B), `plaintext`, `associated_data` (base64 or null), `pad` (bool) | `pad=True` applies ISO 7816-4 padding | base64 ciphertext |
+| `ChunkIndependentDoubleEncryptor` | `key` (64B), `nonce` (16B), `plaintext` | AES-CTR + ChaCha20, no AEAD, no padding | base64 ciphertext |
+| `KeyExchangeDoubleEncryptor` | `key` (64B), `nonce` (12B), `plaintext` | AES-GCM-SIV + ChaCha20-Poly1305, no AAD | base64 ciphertext |
+
 ## Known Limitations
 
-Python implementation — no constant-time guarantees. Not production-ready; timing attacks possible. Server sees metadata (IPs, padded sizes, timing). Endpoint compromise leaks keys and plaintext. Educational/research use only.
+Python implementation - no constant-time guarantees. Not production-ready; timing attacks possible. Server sees metadata (IPs, padded sizes, timing). Endpoint compromise leaks keys and plaintext. Educational/research use only.

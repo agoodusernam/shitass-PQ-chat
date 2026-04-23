@@ -2,7 +2,7 @@ Secure Chat Protocol (SCP)
 
 
 ## 1. Scope
-This document specifies the Secure Chat Protocol (SCP) as implemented by this repository's reference components: server.py, new_client.py, and shared.py. SCP provides end-to-end encrypted, low-latency messaging with optional file transfer, and optional extensions for ephemeral messaging, voice calls, and dead drops. The protocol targets two-party sessions routed by a minimal relay server.
+This document specifies the Secure Chat Protocol (SCP) as implemented by this repository. SCP provides end-to-end encrypted, low-ish latency messaging with optional file transfer, and optional extensions for ephemeral messaging, voice calls, and dead drops. The protocol targets two-party sessions routed by a minimal relay server.
 
       The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL
       NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED",  "MAY", and
@@ -53,7 +53,7 @@ This document specifies the Secure Chat Protocol (SCP) as implemented by this re
 - Patch version (x.y.Z) differences MAY be silently ignored
 
 ### 4.3 Transport and framing
-- Transport SHOULD be reliable and connection-oriented. TCP is RECOMMENDED.
+- Transport SHOULD be reliable, TCP is RECOMMENDED.
 - All messages relayed by the Server are length-prefixed: a 4-byte big-endian unsigned integer indicating payload length, followed by that many bytes.
 - Control messages (key exchange, server control, keepalive) are UTF-8 JSON objects.
 - ENCRYPTED_MESSAGE messages are UTF-8 JSON objects with base64-encoded ciphertext and metadata.
@@ -178,7 +178,7 @@ From this point onward, every key exchange message is signed with ML-DSA-87.
 
 Both clients MUST verify that the received verification hash matches their locally derived value before transitioning to the encrypted state.
 
-Note: The client randoms are combined with SHA-2 (HKDF-SHA-512), rather than SHA-3 like the other derivations; this is to provide algorithm diversity.
+Note: The client randoms are combined with SHA-2 (HKDF-SHA-512), rather than SHA-3 like the other derivations, as this value is not secret, and SHA-2 is faster than SHA-3.
 
 ### 7.3 Final key derivation
 After both the ML-KEM, X25519, and HQC shared secrets are established, each client derives:
@@ -202,7 +202,7 @@ The verification proof is computed as follows:
 The proof is sent in plaintext (not encrypted) in the KE_VERIFICATION message. Both sides MUST recompute the expected proof locally and verify that the received value matches before transitioning to the encrypted state.
 
 ### 7.5 User verification (out-of-band)
-- After both KE_VERIFICATION messages are exchanged successfully, Clients SHOULD display a human-readable session fingerprint derived from the verification key and provide a mechanism to exchange KEY_VERIFICATION {verified: bool}.
+- After both KE_VERIFICATION messages are exchanged successfully, Clients MUST display a human-readable session fingerprint derived from the verification key and provide a mechanism to exchange KEY_VERIFICATION {verified: bool}.
 - The fingerprint is order-independent because the verification key is derived from lexicographically sorted materials.
 
 ### 7.6 Wire formats
@@ -263,7 +263,7 @@ Rationale: The multi-step handshake progressively establishes trust: ML-DSA sign
     - ChaCha20-Poly1305 nonce (12 bytes): `chacha_nonce = public_nonce XOR encryption_key[-12:]` (last 12 bytes of the 64-byte encryption key)
   - The public nonce (12 random bytes) is transmitted in the message (section 8.3). However, the actual nonces provided to the AEAD primitives remain secret because the encryption key is never transmitted and is derived independently by both parties from the shared secret.
 - OTP layer from HQC secret: In addition to the double AEAD, an OTP-style XOR layer is applied using a per-message keystream derived from the OTP material (itself derived from the HQC shared secret via HKDF; see section 7.3) and the message-specific nonces and counter. The keystream is generated as SHAKE-256(otp_material || aes_nonce || chacha_nonce || counter_le_8) and truncated to the padded plaintext length, where `aes_nonce` and `chacha_nonce` are the 12-byte nonces derived by XORing the public nonce with the first and last 12 bytes of the encryption key respectively, and `counter_le_8` is the 8-byte little-endian message counter. Encryption applies XOR before the AEAD layers; decryption removes the XOR after AEAD decryption. This layer adds confidentiality even if an AEAD layer is weakened. Implementations MUST use the exact same nonces and counter value as used in the AEAD operations to derive the keystream.
-- Padding: Plaintext is padded to a multiple of 512 bytes (ISO/IEC 7816-4 bit-padding: append `0x80` then `0x00` fill) prior to encryption to hinder traffic analysis. PKCS7 cannot represent 512-byte blocks (pad-byte count ≤ 255), so ISO/IEC 7816-4 is used instead.
+- Padding: Plaintext is padded to a multiple of 512 bytes (ISO/IEC 7816-4 bit-padding: append `0x80` then `0x00` fill) prior to encryption to hinder traffic analysis.
 - Additional MAC: A separate HMAC-SHA-512 over selected metadata further authenticates fields (e.g. counters and per-message DH keys) to mitigate CPU-exhaustion attacks on high counters.
 
 ### 8.2 Counters and AAD
@@ -309,7 +309,7 @@ Implementations MAY support file transfer as specified here. Compression is OPTI
 }
 
 - The sender MUST generate a transfer_id that is unique within the session and contains only alphanumeric characters (maximum 64 characters).
-- The sender SHOULD derive transfer_id deterministically from file metadata to enable idempotent retries.
+- The sender MAY derive transfer_id deterministically from file metadata to enable idempotent retries.
 - The receiver MUST validate required fields, that transfer_id is hex and exactly 32 characters, and that file_size and total_chunks are reasonable values.
 
 ### 9.2 Acceptance / rejection (encrypted JSON)
@@ -602,7 +602,7 @@ The protocol's defence-in-depth approach applies at both the key exchange layer 
   - If ML-KEM-1024 and X25519 are both broken, content stays secure (HQC-256 protects the OTP layer).
   - If ML-KEM-1024, X25519, AES-GCM-SIV, and ChaCha20-Poly1305 are all broken, content stays secure (HQC-256 still protects via the OTP layer).
   - An adversary must break at least three algorithms: AES-GCM-SIV + ChaCha20-Poly1305 + HQC-256, OR ML-KEM-1024 + X25519 + HQC-256.
-- **HQC-256 requirement**: HQC-256 MUST always be broken to compromise content security, regardless of which other algorithms are broken. This is because:
+- **HQC-256 requirement**: HQC-256 must always be broken to compromise content security, regardless of which other algorithms are broken. This is because:
   - The HQC shared secret drives a per-message OTP-style XOR layer (section 8.1) applied to all ciphertexts.
   - Even if both AEAD layers (AES-GCM-SIV and ChaCha20-Poly1305) are broken, the OTP layer derived from HQC provides confidentiality.
   - Even if key exchange is compromised (ML-KEM-1024 and X25519 both broken), the OTP keystream derived from the HQC secret remains secure and protects message content.

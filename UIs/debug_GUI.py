@@ -634,10 +634,10 @@ class DebugGUI(UIBase):
                                         relief=ltk.FLAT)
         txt.pack(fill=ltk.BOTH, expand=True, padx=8, pady=8)
         
-        def _write_section(title: str, attrs: list[str]) -> None:
+        def _write_section(title: str, attrs: list[str], obj: object = proto) -> None:
             txt.insert(tk.END, f"\n{'─' * 50}\n{title}\n{'─' * 50}\n")
             for attr in attrs:
-                val = getattr(proto, attr, "<not found>")
+                val = getattr(obj, attr, "<not found>")
                 if isinstance(val, bytes):
                     display = val.hex() if val else "<empty>"
                 elif isinstance(val, bool):
@@ -645,11 +645,10 @@ class DebugGUI(UIBase):
                 else:
                     display = str(val)
                 txt.insert(tk.END, f"  {attr:<35} {display}\n")
-        
+
         _write_section("Chain Keys & Counters", [
             "send_chain_key", "receive_chain_key",
             "message_counter", "peer_counter",
-            "messages_since_last_rekey", "rekey_interval",
         ])
         _write_section("Public Keys", [
             "mlkem_public_key", "peer_mlkem_public_key",
@@ -660,10 +659,11 @@ class DebugGUI(UIBase):
             "verification_key", "shared_key",
         ])
         _write_section("Rekey State", [
-            "rekey_in_progress",
+            "_rekey_in_progress",
+            "messages_since_last_rekey", "rekey_interval",
             "pending_message_counter", "pending_peer_counter",
-            "rekey_dh_public_bytes",
-        ])
+            "_rke_dh_pub_bytes",
+        ], obj=proto._rekey)
         
         txt.config(state=ltk.DISABLED)
     
@@ -767,20 +767,19 @@ class DebugGUI(UIBase):
             if proto is None:
                 lines.append("  Client has no _protocol attribute")
             else:
-                def _section(title: str, attrs: list[str]) -> None:
+                def _section(title: str, attrs: list[str], obj: object = proto) -> None:
                     lines.append(f"\n  [{title}]")
                     for attr in attrs:
-                        val = getattr(proto, attr, "<not found>")
+                        val = getattr(obj, attr, "<not found>")
                         if isinstance(val, bytes):
                             display = val.hex() if val else "<empty>"
                         else:
                             display = str(val)
                         lines.append(f"    {attr:<35} {display}")
-                
+
                 _section("Chain Keys & Counters", [
                     "send_chain_key", "receive_chain_key",
                     "message_counter", "peer_counter",
-                    "messages_since_last_rekey", "rekey_interval",
                 ])
                 _section("Public Keys", [
                     "mlkem_public_key", "peer_mlkem_public_key",
@@ -791,10 +790,11 @@ class DebugGUI(UIBase):
                     "verification_key", "shared_key",
                 ])
                 _section("Rekey State", [
-                    "rekey_in_progress",
+                    "_rekey_in_progress",
+                    "messages_since_last_rekey", "rekey_interval",
                     "pending_message_counter", "pending_peer_counter",
-                    "rekey_dh_public_bytes",
-                ])
+                    "_rke_dh_pub_bytes",
+                ], obj=proto._rekey)
         lines.append("")
         lines.append(f"{'=' * 70}")
         lines.append("END OF EXPORT")

@@ -10,12 +10,15 @@ import os
 import threading
 from copy import deepcopy
 from pathlib import Path
+from socket import socket
 from typing import TYPE_CHECKING, Any
 
+from SecureChatABCs.protocol_base import ProtocolBase
 from SecureChatABCs.ui_base import UIBase
 from config import ClientConfigHandler
 from protocol.constants import MessageType
 from protocol.create_messages import create_file_metadata_message
+from protocol.file_handler import ProtocolFileHandler
 from protocol.parse_messages import process_file_metadata
 from protocol.types import FileMetadata, FileTransfer
 from protocol.utils import chunk_file
@@ -44,15 +47,15 @@ class FileTransferManager:
         return self._client.ui
 
     @property
-    def _protocol(self):
+    def _protocol(self) -> ProtocolBase:
         return self._client._protocol
 
     @property
-    def _socket(self):
+    def _socket(self) -> socket:
         return self._client._socket
 
     @property
-    def _file_handler(self):
+    def _file_handler(self) -> ProtocolFileHandler:
         return self._client.file_handler
 
     @property

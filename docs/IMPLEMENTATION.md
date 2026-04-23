@@ -8,7 +8,7 @@ This document is a companion to `docs/SPEC.md`. It describes how the Python refe
 
 | Concern | File(s) |
 |---|---|
-| Protocol state machine & crypto | `protocol/shared.py` (`SecureChatProtocol`) |
+| Protocol state machine & crypto | `protocol/shared.py` (`SecureChatProtocol`, plus helpers `_KeyDerivation` static HKDF namespace + `_RekeyState` rekey-state container) |
 | Double-AEAD + OTP encryption | `protocol/crypto_classes.py` |
 | Message framing constants | `protocol/constants.py` |
 | Message serialisation | `protocol/create_messages.py` |
@@ -127,16 +127,17 @@ Implemented in `encrypt_message()` / `decrypt_message()` in `shared.py`.
 
 ## Rekeying (section 13)
 
-Rekey state lives in `SecureChatProtocol` under `_rke_*` prefixed attributes. Methods:
-`create_rekey_dsa_random`, `process_rekey_dsa_random`, `process_rekey_mlkem_pubkey`, `process_rekey_mlkem_ct_keys`, `process_rekey_x25519_hqc_ct`, `create_rekey_verification`, `process_rekey_verification`.
+Rekey state owned by `_RekeyState` (composed on `SecureChatProtocol._rekey`, same file `protocol/shared.py`). All `_rke_*` in-flight KE attributes, `_pending_*` activation attributes, and auto-rekey counters (`messages_since_last_rekey`, `rekey_interval`, `_rekey_in_progress`) live on the `_RekeyState` instance. The class owns every `create_rekey_*` / `process_rekey_*` / `activate_pending_keys` / `reset_rekey` method; `SecureChatProtocol` exposes each as a thin delegate for external callers.
+
+`_KeyDerivation` (also in `protocol/shared.py`) is a stateless namespace class (`@staticmethod` only) covering every HKDF derivation. A single `rekey: bool` kwarg selects the domain-separated `info` string, so initial-KE and rekey-KE paths share one implementation.
 
 **Domain separation from initial KE**: rekey HKDF `info` strings carry a `"rekey_"` prefix:
 - `rekey_comb_rand`, `rekey_int_key_1`, `rekey_int_key_2`
 - `rekey_otp_material`, `rekey_chain_key_root`
 
-Confirmed at `shared.py:1265` (`_rke_derive_combined_random`) through `_rke_derive_final_keys`.
+Implemented via `_KeyDerivation.derive_combined_random(..., rekey=True)` etc. — the `rekey=True` branch prepends `b"rekey_"` to the `info` tag.
 
-**Key activation** (`activate_pending_keys`, `shared.py:1194`): atomically copies `_pending_*` into active state, resets send and receive counters to 0, and resets `skipped_counters` to a fresh `LRUCache(1000)`.
+**Key activation** (`_RekeyState.activate`, invoked via `SecureChatProtocol.activate_pending_keys`): atomically copies `_pending_*` into the protocol's active session state, resets send and receive counters to 0, and resets `skipped_counters` to a fresh `LRUCache(1000)`.
 
 **Side A activation**: uses `ENCRYPT_JSON_THEN_SWITCH` — sends verification under old keys, then calls `activate_pending_keys()` immediately after the send returns.
 
@@ -214,7 +215,7 @@ Fingerprint display: `generate_key_fingerprint()` (`protocol/utils.py:182`) — 
 
 ### No secure memory zeroisation
 
-Python's `bytes` are immutable; setting a variable to `b""` drops the reference but does not zero the underlying buffer. CPython's allocator provides no timing guarantees for memory reclamation. Key material — including ML-DSA keys, intermediary keys, and chain keys — may persist in RAM after the reference is dropped. `_discard_mldsa_keys()` and `_rke_reset()` make a best-effort attempt, but this cannot be fully fixed in pure Python without `ctypes`/`mmap` and manual zeroing.
+Python's `bytes` are immutable; setting a variable to `b""` drops the reference but does not zero the underlying buffer. CPython's allocator provides no timing guarantees for memory reclamation. Key material — including ML-DSA keys, intermediary keys, and chain keys — may persist in RAM after the reference is dropped. `_discard_mldsa_keys()` and `_RekeyState.reset_ke_state()` make a best-effort attempt, but this cannot be fully fixed in pure Python without `ctypes`/`mmap` and manual zeroing.
 
 ### Not constant-time
 

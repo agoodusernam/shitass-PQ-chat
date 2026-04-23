@@ -32,7 +32,9 @@ def process_key_verification_message(data: bytes) -> bool:
     """Process a key verification message from peer."""
     try:
         message = json.loads(data)
-        return message.get("verified", False)
+        if not isinstance(message, dict):
+            raise DecodeError("Received invalid key verification message")
+        return bool(message.get("verified", False))
     except (UnicodeDecodeError, json.JSONDecodeError):
         raise DecodeError("Received invalid key verification message")
 
@@ -45,11 +47,13 @@ def parse_ke_dsa_random(data: bytes) -> dict[str, Any]:
     """
     try:
         message = json.loads(data)
+        if not isinstance(message, dict):
+            raise DecodeError("KE_DSA_RANDOM decode error: not a JSON object")
         mldsa_public_key = base64.b64decode(message["mldsa_public_key"], validate=True)
         client_random = base64.b64decode(message["client_random"], validate=True)
-    except (UnicodeDecodeError, json.JSONDecodeError, KeyError, binascii.Error) as e:
+    except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError, binascii.Error) as e:
         raise DecodeError(f"KE_DSA_RANDOM decode error: {type(e).__name__}") from e
-    
+
     peer_version = message.get("version", "")
     version_warning = ""
     if peer_version and peer_version != PROTOCOL_VERSION:
@@ -68,9 +72,11 @@ def parse_ke_mlkem_pubkey(data: bytes) -> dict[str, Any]:
     """Parse a KE_MLKEM_PUBKEY message (step 8)."""
     try:
         message = json.loads(data)
+        if not isinstance(message, dict):
+            raise DecodeError("KE_MLKEM_PUBKEY decode error: not a JSON object")
         mlkem_public_key = base64.b64decode(message["mlkem_public_key"], validate=True)
         mldsa_signature = base64.b64decode(message["mldsa_signature"], validate=True)
-    except (UnicodeDecodeError, json.JSONDecodeError, KeyError, binascii.Error) as e:
+    except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError, binascii.Error) as e:
         raise DecodeError(f"KE_MLKEM_PUBKEY decode error: {type(e).__name__}") from e
     
     return {
@@ -83,13 +89,15 @@ def parse_ke_mlkem_ct_keys(data: bytes) -> dict[str, Any]:
     """Parse a KE_MLKEM_CT_KEYS message (step 10)."""
     try:
         message = json.loads(data)
+        if not isinstance(message, dict):
+            raise DecodeError("KE_MLKEM_CT_KEYS decode error: not a JSON object")
         mlkem_ciphertext = base64.b64decode(message["mlkem_ciphertext"], validate=True)
         encrypted_hqc_pubkey = base64.b64decode(message["encrypted_hqc_pubkey"], validate=True)
         encrypted_x25519_pubkey = base64.b64decode(message["encrypted_x25519_pubkey"], validate=True)
         nonce1 = base64.b64decode(message["nonce1"], validate=True)
         nonce2 = base64.b64decode(message["nonce2"], validate=True)
         mldsa_signature = base64.b64decode(message["mldsa_signature"], validate=True)
-    except (UnicodeDecodeError, json.JSONDecodeError, KeyError, binascii.Error) as e:
+    except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError, binascii.Error) as e:
         raise DecodeError(f"KE_MLKEM_CT_KEYS decode error: {type(e).__name__}") from e
     
     signed_payload = mlkem_ciphertext + encrypted_hqc_pubkey + encrypted_x25519_pubkey + nonce1 + nonce2
@@ -109,12 +117,14 @@ def parse_ke_x25519_hqc_ct(data: bytes) -> dict[str, Any]:
     """Parse a KE_X25519_HQC_CT message (step 13)."""
     try:
         message = json.loads(data)
+        if not isinstance(message, dict):
+            raise DecodeError("KE_X25519_HQC_CT decode error: not a JSON object")
         encrypted_x25519_pubkey = base64.b64decode(message["encrypted_x25519_pubkey"], validate=True)
         encrypted_hqc_ciphertext = base64.b64decode(message["encrypted_hqc_ciphertext"], validate=True)
         nonce1 = base64.b64decode(message["nonce1"], validate=True)
         nonce2 = base64.b64decode(message["nonce2"], validate=True)
         mldsa_signature = base64.b64decode(message["mldsa_signature"], validate=True)
-    except (UnicodeDecodeError, json.JSONDecodeError, KeyError, binascii.Error) as e:
+    except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError, binascii.Error) as e:
         raise DecodeError(f"KE_X25519_HQC_CT decode error: {type(e).__name__}") from e
     
     signed_payload = encrypted_x25519_pubkey + encrypted_hqc_ciphertext + nonce1 + nonce2
@@ -138,8 +148,10 @@ def parse_ke_verification(data: bytes, local_verification_key: bytes | None = No
     """
     try:
         message = json.loads(data)
+        if not isinstance(message, dict):
+            raise DecodeError("KE_VERIFICATION decode error: not a JSON object")
         peer_proof = base64.b64decode(message["verification_key"], validate=True)
-    except (UnicodeDecodeError, json.JSONDecodeError, KeyError, binascii.Error) as e:
+    except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError, binascii.Error) as e:
         raise DecodeError(f"KE_VERIFICATION decode error: {type(e).__name__}") from e
     
     if local_verification_key is not None:

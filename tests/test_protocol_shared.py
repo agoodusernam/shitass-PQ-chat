@@ -22,8 +22,9 @@ import os
 
 import pytest
 
+from protocol import create_messages, parse_messages
 from protocol.constants import MAGIC_NUMBER_FILE_TRANSFER
-from protocol.crypto_classes import DoubleEncryptor, KeyExchangeDoubleEncryptor
+from protocol.crypto_classes import DoubleEncryptor, KeyExchangeDoubleEncryptor, _KeyDerivation
 from protocol.shared import SecureChatProtocol
 from protocol.utils import LRUCache
 
@@ -612,7 +613,7 @@ class TestRekey:
     def test_should_not_auto_rekey_when_rekey_in_progress(self):
         alice, _ = _full_key_exchange()
         alice.messages_since_last_rekey = alice.rekey_interval + 1
-        alice._rekey_in_progress = True
+        alice._rekey.rekey_in_progress = True
         assert alice.should_auto_rekey is False
 
 
@@ -623,12 +624,12 @@ class TestRekey:
 # noinspection PyMissingTypeHints
 class TestKeyVerification:
     def test_create_and_process_key_verification_true(self):
-        msg = SecureChatProtocol.create_key_verification_message(True)
-        assert SecureChatProtocol.process_key_verification_message(msg) is True
+        msg = create_messages.create_key_verification_message(True)
+        assert parse_messages.process_key_verification_message(msg) is True
     
     def test_create_and_process_key_verification_false(self):
-        msg = SecureChatProtocol.create_key_verification_message(False)
-        assert SecureChatProtocol.process_key_verification_message(msg) is False
+        msg = create_messages.create_key_verification_message(False)
+        assert parse_messages.process_key_verification_message(msg) is False
     
     def test_get_own_key_fingerprint_after_ke(self):
         alice, bob = _full_key_exchange()
@@ -659,39 +660,39 @@ class TestKeyVerification:
 class TestKeyDerivationHelpers:
     def test_derive_message_key_deterministic(self):
         chain = os.urandom(64)
-        k1 = SecureChatProtocol._derive_message_key(chain, 1)
-        k2 = SecureChatProtocol._derive_message_key(chain, 1)
+        k1 = _KeyDerivation.derive_message_key(chain, 1)
+        k2 = _KeyDerivation.derive_message_key(chain, 1)
         assert k1 == k2
     
     def test_derive_message_key_different_counters(self):
         chain = os.urandom(64)
-        k1 = SecureChatProtocol._derive_message_key(chain, 1)
-        k2 = SecureChatProtocol._derive_message_key(chain, 2)
+        k1 = _KeyDerivation.derive_message_key(chain, 1)
+        k2 = _KeyDerivation.derive_message_key(chain, 2)
         assert k1 != k2
     
     def test_ratchet_chain_key_advances(self):
         chain = os.urandom(64)
-        new_chain = SecureChatProtocol._ratchet_chain_key(chain, 1)
+        new_chain = _KeyDerivation.ratchet_chain_key(chain, 1)
         assert new_chain != chain
         assert len(new_chain) == 64
     
     def test_ratchet_chain_key_deterministic(self):
         chain = os.urandom(64)
-        c1 = SecureChatProtocol._ratchet_chain_key(chain, 5)
-        c2 = SecureChatProtocol._ratchet_chain_key(chain, 5)
+        c1 = _KeyDerivation.ratchet_chain_key(chain, 5)
+        c2 = _KeyDerivation.ratchet_chain_key(chain, 5)
         assert c1 == c2
     
     def test_mix_dh_with_chain_deterministic(self):
         chain = os.urandom(64)
         dh = os.urandom(32)
-        m1 = SecureChatProtocol._mix_dh_with_chain(chain, dh, 3)
-        m2 = SecureChatProtocol._mix_dh_with_chain(chain, dh, 3)
+        m1 = _KeyDerivation.mix_dh_with_chain(chain, dh, 3)
+        m2 = _KeyDerivation.mix_dh_with_chain(chain, dh, 3)
         assert m1 == m2
     
     def test_mix_dh_with_chain_different_dh(self):
         chain = os.urandom(64)
-        m1 = SecureChatProtocol._mix_dh_with_chain(chain, os.urandom(32), 1)
-        m2 = SecureChatProtocol._mix_dh_with_chain(chain, os.urandom(32), 1)
+        m1 = _KeyDerivation.mix_dh_with_chain(chain, os.urandom(32), 1)
+        m2 = _KeyDerivation.mix_dh_with_chain(chain, os.urandom(32), 1)
         assert m1 != m2
 
 

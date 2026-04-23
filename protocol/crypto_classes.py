@@ -1,10 +1,12 @@
 import hashlib
 from typing import Never
 
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers import Cipher, CipherContext, algorithms, modes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCMSIV, ChaCha20Poly1305
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-from protocol.constants import DOUBLE_KEY_SIZE, PAD_SIZE, SINGLE_KEY_SIZE, NONCE_SIZE
+from protocol.constants import DOUBLE_KEY_SIZE, HKDF_KEY_LENGTH, PAD_SIZE, SINGLE_KEY_SIZE, NONCE_SIZE
 from protocol.utils import xor_bytes
 
 
@@ -20,6 +22,12 @@ def _iso7816_unpad(data: bytes) -> bytes:
     if i < 0 or data[i] != 0x80:
         raise ValueError("Invalid ISO/IEC 7816-4 padding")
     return data[:i]
+
+def _derive_nonces(nonce: bytes, key: bytes) -> tuple[bytes, bytes]:
+    """
+    Derive AES nonce, and ChaCha nonce from the caller-provided 12-byte nonce and the 64-byte key.
+    """
+    return xor_bytes(nonce, key[:NONCE_SIZE]), xor_bytes(nonce, key[-NONCE_SIZE:])
 
 
 class DoubleEncryptor:
@@ -70,7 +78,7 @@ class DoubleEncryptor:
         self.message_counter: int = message_counter
     
     @property
-    def key(self) -> None:
+    def key(self) -> Never:
         raise AttributeError('You cannot get the key once it has been set')
     
     @key.setter
@@ -87,8 +95,7 @@ class DoubleEncryptor:
         else:
             new_data = data
         
-        aes_nonce = xor_bytes(nonce, self._key[:NONCE_SIZE])
-        chacha_nonce = xor_bytes(nonce, self._key[-NONCE_SIZE:])
+        aes_nonce, chacha_nonce = _derive_nonces(nonce, self._key)
         
         layer0 = xor_bytes(new_data, self._derive_OTP_keystream(len(new_data), aes_nonce + chacha_nonce))
         layer1 = self._aes.encrypt(aes_nonce, layer0, associated_data)
@@ -96,8 +103,7 @@ class DoubleEncryptor:
         return layer2
     
     def decrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None, pad: bool = True) -> bytes:
-        aes_nonce = xor_bytes(nonce, self._key[:NONCE_SIZE])
-        chacha_nonce = xor_bytes(nonce, self._key[-NONCE_SIZE:])
+        aes_nonce, chacha_nonce = _derive_nonces(nonce, self._key)
         
         layer2 = self._chacha.decrypt(chacha_nonce, data, associated_data)
         layer1 = self._aes.decrypt(aes_nonce, layer2, associated_data)
@@ -166,17 +172,145 @@ class KeyExchangeDoubleEncryptor:
         self._chacha: ChaCha20Poly1305 = ChaCha20Poly1305(key[SINGLE_KEY_SIZE:])
     
     def encrypt(self, nonce: bytes, data: bytes) -> bytes:
-        aes_nonce = xor_bytes(nonce, self._key[:NONCE_SIZE])
-        chacha_nonce = xor_bytes(nonce, self._key[-NONCE_SIZE:])
+        aes_nonce, chacha_nonce = _derive_nonces(nonce, self._key)
         
         layer1 = self._aes.encrypt(aes_nonce, data, None)
         layer2 = self._chacha.encrypt(chacha_nonce, layer1, None)
         return layer2
     
     def decrypt(self, nonce: bytes, data: bytes) -> bytes:
-        aes_nonce = xor_bytes(nonce, self._key[:NONCE_SIZE])
-        chacha_nonce = xor_bytes(nonce, self._key[-NONCE_SIZE:])
+        aes_nonce, chacha_nonce = _derive_nonces(nonce, self._key)
         
         layer2 = self._chacha.decrypt(chacha_nonce, data, None)
         layer1 = self._aes.decrypt(aes_nonce, layer2, None)
         return layer1
+
+
+class _KeyDerivation:
+    """
+    Stateless namespace of HKDF / hash-based key-derivation helpers.
+    
+    Every method is a pure function of its arguments: no instance state, no class
+    attributes, no hidden globals. Used by :class:`SecureChatProtocol` for both the
+    initial hybrid key exchange and the rekey exchange. The ``rekey`` keyword flag on
+    the session-level helpers selects the domain-separated ``info`` string so the same
+    code path serves both flows.
+    """
+    
+    @staticmethod
+    def _info(tag: bytes, server_id: bytes, rekey: bool) -> bytes:
+        return server_id + (b"rekey_" + tag if rekey else tag)
+    
+    @staticmethod
+    def derive_combined_random(own_random: bytes, peer_random: bytes, server_id: bytes,
+                               *, rekey: bool = False,
+                               ) -> bytes:
+        """HKDF-SHA-512 over the larger random, salted with the smaller, yielding the
+        session-scoped combined random used in subsequent derivations."""
+        smaller, larger = sorted([own_random, peer_random])
+        hkdf = HKDF(
+                algorithm=hashes.SHA512(),
+                length=HKDF_KEY_LENGTH,
+                salt=smaller,
+                info=_KeyDerivation._info(b"comb_rand", server_id, rekey),
+        )
+        return hkdf.derive(larger)
+    
+    @staticmethod
+    def derive_intermediary_key_1(mlkem_secret: bytes, combined_random: bytes,
+                                  server_id: bytes, *, rekey: bool = False,
+                                  ) -> bytes:
+        """HKDF-SHA3-512(ML-KEM secret, salt=combined_random)."""
+        hkdf = HKDF(
+                algorithm=hashes.SHA3_512(),
+                length=HKDF_KEY_LENGTH,
+                salt=combined_random,
+                info=_KeyDerivation._info(b"int_key_1", server_id, rekey),
+        )
+        return hkdf.derive(mlkem_secret)
+    
+    @staticmethod
+    def derive_intermediary_key_2(int_key_1: bytes, dh_secret: bytes, server_id: bytes,
+                                  *, rekey: bool = False,
+                                  ) -> bytes:
+        """HKDF-SHA3-512(int_key_1, salt=X25519_secret)."""
+        hkdf = HKDF(
+                algorithm=hashes.SHA3_512(),
+                length=HKDF_KEY_LENGTH,
+                salt=dh_secret,
+                info=_KeyDerivation._info(b"int_key_2", server_id, rekey),
+        )
+        return hkdf.derive(int_key_1)
+    
+    @staticmethod
+    def derive_otp_material(hqc_secret: bytes, combined_random: bytes, server_id: bytes,
+                            *, rekey: bool = False,
+                            ) -> bytes:
+        """HKDF-SHA3-512(HQC secret, salt=combined_random) → OTP keystream seed."""
+        hkdf = HKDF(
+                algorithm=hashes.SHA3_512(),
+                length=HKDF_KEY_LENGTH,
+                salt=combined_random,
+                info=_KeyDerivation._info(b"otp_material", server_id, rekey),
+        )
+        return hkdf.derive(hqc_secret)
+    
+    @staticmethod
+    def derive_chain_key_root(mlkem_secret: bytes, dh_secret: bytes,
+                              client_random: bytes, server_id: bytes,
+                              *, rekey: bool = False,
+                              ) -> bytes:
+        """HKDF-SHA3-512(ML-KEM||X25519, salt=client_random) → chain key root."""
+        hkdf = HKDF(
+                algorithm=hashes.SHA3_512(),
+                length=HKDF_KEY_LENGTH,
+                salt=client_random,
+                info=_KeyDerivation._info(b"chain_key_root", server_id, rekey),
+        )
+        return hkdf.derive(mlkem_secret + dh_secret)
+    
+    @staticmethod
+    def compute_verification_pair(otp: bytes, own_chain_root: bytes, peer_chain_root: bytes,
+                                  combined_random: bytes,
+                                  ) -> tuple[bytes, bytes]:
+        """Derive `(verification_key, key_verification_material)` from the three session
+        roots, order-independent via sorting. Matches the logic shared by the initial
+        KE finalizer and the rekey finalizer."""
+        sorted_materials = sorted([otp, own_chain_root, peer_chain_root])
+        joined = b"".join(sorted_materials)
+        verification_key = hashlib.sha3_512(joined).digest()
+        key_verification_material = hashlib.sha3_512(joined + combined_random).digest()[:32]
+        return verification_key, key_verification_material
+    
+    @staticmethod
+    def derive_message_key(chain_key: bytes, counter: int) -> bytes:
+        """Per-message key from the current chain key and counter."""
+        hkdf = HKDF(
+                algorithm=hashes.SHA512(),
+                length=HKDF_KEY_LENGTH,
+                salt=counter.to_bytes(8, byteorder="little"),
+                info=f"message_key_{counter}".encode(),
+        )
+        return hkdf.derive(chain_key)
+    
+    @staticmethod
+    def ratchet_chain_key(chain_key: bytes, counter: int) -> bytes:
+        """Advance the symmetric chain key one step."""
+        hkdf = HKDF(
+                algorithm=hashes.SHA3_512(),
+                length=HKDF_KEY_LENGTH,
+                salt=counter.to_bytes(8, byteorder="little"),
+                info=f"chain_key_{counter}".encode("utf-8"),
+        )
+        return hkdf.derive(chain_key)
+    
+    @staticmethod
+    def mix_dh_with_chain(chain_key: bytes, dh_shared: bytes, counter: int) -> bytes:
+        """Mix per-message DH shared secret into the chain key (Double Ratchet step)."""
+        hkdf = HKDF(
+                algorithm=hashes.SHA512(),
+                length=HKDF_KEY_LENGTH,
+                salt=chain_key,
+                info=b"dr_mix_" + str(counter).encode("utf-8"),
+        )
+        return hkdf.derive(dh_shared)

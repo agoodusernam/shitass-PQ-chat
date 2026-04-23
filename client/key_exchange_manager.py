@@ -7,9 +7,14 @@ handles server-issued KEY_EXCHANGE_RESET frames.
 from __future__ import annotations
 
 import json
+from socket import socket
 from typing import TYPE_CHECKING, Any
 
-from protocol import types
+from protocol import parse_messages, types
+from protocol import create_messages
+from protocol.file_handler import ProtocolFileHandler
+from SecureChatABCs.protocol_base import ProtocolBase
+from SecureChatABCs.ui_base import UIBase
 
 if TYPE_CHECKING:
     from new_client import SecureChatClient
@@ -22,19 +27,19 @@ class KeyExchangeManager:
         self._client = client
 
     @property
-    def _ui(self):
+    def _ui(self) -> UIBase:
         return self._client.ui
 
     @property
-    def _protocol(self):
+    def _protocol(self) -> ProtocolBase:
         return self._client._protocol
 
     @property
-    def _socket(self):
+    def _socket(self) -> socket:
         return self._client._socket
 
     @property
-    def _file_handler(self):
+    def _file_handler(self) -> ProtocolFileHandler:
         return self._client.file_handler
 
     # initial KE
@@ -114,7 +119,7 @@ class KeyExchangeManager:
     def confirm_verification(self, verified: bool) -> None:
         """Record local verification decision, send to peer, start sender thread."""
         self._client._peer_key_verified = verified
-        verification_message = self._protocol.create_key_verification_message(verified)
+        verification_message = create_messages.create_key_verification_message(verified)
         self._client._send_raw(verification_message)
 
         self._client._verification_complete = True
@@ -126,7 +131,7 @@ class KeyExchangeManager:
     def handle_verification_message(self, message_data: bytes) -> None:
         """Process peer's key verification result and notify UI."""
         try:
-            peer_verified = self._protocol.process_key_verification_message(message_data)
+            peer_verified = parse_messages.process_key_verification_message(message_data)
         except types.DecodeError as e:
             self._ui.display_error_message(str(e))
             return

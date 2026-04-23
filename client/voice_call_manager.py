@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import base64
 import json
+from socket import socket
 from typing import TYPE_CHECKING, Any
 
-from SecureChatABCs.ui_base import UICapability
+from SecureChatABCs.ui_base import UIBase, UICapability
+from SecureChatABCs.protocol_base import ProtocolBase
 from protocol.constants import MessageType
 from utils import network_utils
 
@@ -26,15 +28,15 @@ class VoiceCallManager:
         self.muted: bool = False
 
     @property
-    def _ui(self):
+    def _ui(self) -> UIBase:
         return self._client.ui
 
     @property
-    def _protocol(self):
+    def _protocol(self) -> ProtocolBase:
         return self._client._protocol
 
     @property
-    def _socket(self):
+    def _socket(self) -> socket:
         return self._client._socket
 
     @property
