@@ -1,5 +1,7 @@
 # Post-Quantum E2E Encrypted Chat
 
+> **Mirrors**: [Primary](https://git.nerds-inc.com/HardlineMouse16/shitass-PQ-chat) · [GitHub (read-only)](https://github.com/agoodusernam/shitass-PQ-chat)
+
 > [!CAUTION]
 > **This should NOT be used for anything important.**
 >
@@ -45,7 +47,7 @@ double AEAD encryption (AES-256-GCM-SIV + ChaCha20-Poly1305) for message protect
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/agoodusernam/shitass-PQ-chat.git
+   git clone https://git.nerds-inc.com/HardlineMouse16/shitass-PQ-chat
    cd shitass-PQ-chat
    ```
 
