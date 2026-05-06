@@ -36,7 +36,7 @@ from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives.constant_time import bytes_eq
 from cryptography.hazmat.primitives.kdf.concatkdf import ConcatKDFHash
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from pqcrypto.kem import ml_kem_1024  # type: ignore
+from cryptography.hazmat.primitives.asymmetric.mlkem import MLKEM1024PrivateKey
 
 from config import ServerConfigHandler
 from protocol.constants import (
@@ -435,7 +435,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         self.correct_download_hash: bytes = b"\x00" * DEADDROP_KDF_KEY_LENGTH
         self.pending_deaddrop_download: str = ""
         self.pending_download_accepted: bool = False
-        self.ml_kem_sk: bytes = b""
+        self.ml_kem_sk: MLKEM1024PrivateKey | None = None
         self.shared_secret: bytes = b""
         
         # Deaddrop rate limiting
@@ -821,7 +821,8 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             self.server.deaddrop_busy = True
             self.server.deaddrop_owner = self.client_id
         
-        public_key, self.ml_kem_sk = ml_kem_1024.generate_keypair()
+        self.ml_kem_sk = MLKEM1024PrivateKey.generate()
+        public_key = self.ml_kem_sk.public_key().public_bytes_raw()
         msg = {
             "type":          MessageType.DEADDROP_START,
             "supported":     True,
@@ -851,8 +852,9 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                     "reason": "Invalid mlkem_ct in deaddrop ke response message",
                 })
             return
-        
-        shared_secret = ml_kem_1024.decrypt(self.ml_kem_sk, client_mlkem_ct)
+        if self.ml_kem_sk is None:
+            return
+        shared_secret = self.ml_kem_sk.decapsulate(client_mlkem_ct)
         self.shared_secret = ConcatKDFHash(
                 algorithm=hashes.SHA3_512(),
                 length=DEADDROP_KDF_KEY_LENGTH,
@@ -1204,7 +1206,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
     def _end_deaddrop_session(self) -> None:
         # Reset handler state
         self.upload_accepted = False
-        self.ml_kem_sk = b""
+        self.ml_kem_sk = None
         self.shared_secret = b""
         self.pending_deaddrop_upload_name = ""
         self.pending_deaddrop_expected_size = 0

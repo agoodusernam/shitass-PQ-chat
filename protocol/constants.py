@@ -33,6 +33,7 @@ FINGERPRINT_HASH_SIZE: Final[int] = 32  # bytes, truncated hash for key fingerpr
 FINGERPRINT_WORD_COUNT: Final[int] = 8  # number of words in a key fingerprint
 HASH_TO_WORDS_DEFAULT: Final[int] = 16  # default number of words for hash_to_words
 DEFAULT_MAX_RATCHET_FORWARD: Final[int] = 100000
+ML_DSA_CONTEXT: Final[bytes] = b"Secure_Chat_Protocol_V9_mldsa"
 
 # Deaddrop constants
 DEADDROP_SALT_SIZE: Final[int] = 32  # bytes, salt for deaddrop download PBKDF2

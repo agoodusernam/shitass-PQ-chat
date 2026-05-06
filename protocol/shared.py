@@ -28,6 +28,7 @@ from protocol.constants import (
     FILE_CHUNK_NONCE_OFFSET,
     FILE_CHUNK_EPH_PUB_OFFSET,
     FILE_CHUNK_CIPHERTEXT_OFFSET,
+    ML_DSA_CONTEXT,
 )
 from protocol.utils import (
     LRUCache,
@@ -57,9 +58,11 @@ except ImportError as _exc:
     print("Required cryptographic libraries not found.")
     raise ImportError("Please install the required libraries with pip install -r requirements.txt")
 
-from pqcrypto.kem import ml_kem_1024, hqc_256  # type: ignore # Still not production ready, but better than before
-from pqcrypto.sign import ml_dsa_87  # type: ignore[import-untyped]
+from pqcrypto.kem import hqc_256  # type: ignore # Still not production ready, but better than before
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
+from cryptography.hazmat.primitives.asymmetric.mlkem import MLKEM1024PrivateKey, MLKEM1024PublicKey
+from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA87PrivateKey, MLDSA87PublicKey
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.hmac import HMAC
@@ -199,17 +202,17 @@ class SecureChatProtocol(ProtocolBase):
         self._send_dummy_messages: bool = self.config["send_dummy_packets"]
         
         # Cryptographic identity + peer info
-        self.mlkem_public_key: bytes = b""
-        self._mlkem_private_key: bytes = b""
+        self.mlkem_public_key: MLKEM1024PublicKey | None = None
+        self._mlkem_private_key: MLKEM1024PrivateKey | None = None
         self.hqc_public_key: bytes = b""
         self._hqc_private_key: bytes = b""
         
-        self.peer_mlkem_public_key: bytes = b""
+        self.peer_mlkem_public_key: MLKEM1024PublicKey | None = None
         self.peer_hqc_public_key: bytes = b""
         
         # ML-DSA signing keys (ephemeral, discarded after key exchange)
         self._mldsa_public_key: bytes = b""
-        self._mldsa_private_key: bytes = b""
+        self._mldsa_private_key: MLDSA87PrivateKey | None = None
         
         # Key exchange intermediate state
         self._ke_client_random: bytes = b""
@@ -295,8 +298,8 @@ class SecureChatProtocol(ProtocolBase):
         self.shared_key = False
         self.message_counter = 0
         self.peer_counter = 0
-        self.peer_mlkem_public_key = b""
-        self.mlkem_public_key = b""
+        self.peer_mlkem_public_key = None
+        self.mlkem_public_key = None
         self._hqc_secret = b""
         self._send_chain_key = b""
         self._receive_chain_key = b""
@@ -488,7 +491,9 @@ class SecureChatProtocol(ProtocolBase):
     
     def _generate_dsa_keys(self) -> None:
         """Generate ML-DSA keypair for key exchange signing."""
-        self._mldsa_public_key, self._mldsa_private_key = ml_dsa_87.generate_keypair()
+        priv = MLDSA87PrivateKey.generate()
+        self._mldsa_private_key = priv
+        self._mldsa_public_key = priv.public_key().public_bytes_raw()
     
     def set_server_identifier(self, identifier: str) -> None:
         """Set the server identifier for use in key derivations."""
@@ -517,10 +522,11 @@ class SecureChatProtocol(ProtocolBase):
     def create_ke_mlkem_pubkey(self) -> bytes:
         """Create KE_MLKEM_PUBKEY message (step 8): generate ML-KEM and X25519 keypairs, send signed ML-KEM pubkey.
         X25519 keypair is generated here (step 2) for use in step 12."""
-        self.mlkem_public_key, self._mlkem_private_key = ml_kem_1024.generate_keypair()
+        self._mlkem_private_key = MLKEM1024PrivateKey.generate()
+        self.mlkem_public_key = self._mlkem_private_key.public_key()
         self._dh_private_key = X25519PrivateKey.generate()
         self.dh_public_key_bytes = self._dh_private_key.public_key().public_bytes_raw()
-        return create_ke_mlkem_pubkey(self.mlkem_public_key, self._mldsa_private_key)
+        return create_ke_mlkem_pubkey(self.mlkem_public_key.public_bytes_raw(), self._mldsa_private_key)
     
     def process_ke_mlkem_pubkey(self, data: bytes) -> None:
         """Process peer's KE_MLKEM_PUBKEY: verify signature and store peer ML-KEM pubkey."""
@@ -528,10 +534,14 @@ class SecureChatProtocol(ProtocolBase):
         mlkem_public_key = parsed["mlkem_public_key"]
         mldsa_signature = parsed["mldsa_signature"]
         
-        if not ml_dsa_87.verify(self._peer_mldsa_public_key, mlkem_public_key, mldsa_signature):
-            raise ValueError("ML-DSA signature verification failed on KE_MLKEM_PUBKEY")
+        try:
+            MLDSA87PublicKey.from_public_bytes(self._peer_mldsa_public_key).verify(
+                mldsa_signature, mlkem_public_key, context=ML_DSA_CONTEXT,
+            )
+        except InvalidSignature as exc:
+            raise ValueError("ML-DSA signature verification failed on KE_MLKEM_PUBKEY") from exc
         
-        self.peer_mlkem_public_key = mlkem_public_key
+        self.peer_mlkem_public_key = MLKEM1024PublicKey.from_public_bytes(mlkem_public_key)
     
     def create_ke_mlkem_ct_keys(self) -> bytes:
         """Create KE_MLKEM_CT_KEYS (step 10): encapsulate ML-KEM, derive intermediary key 1,
@@ -541,8 +551,10 @@ class SecureChatProtocol(ProtocolBase):
         self._dh_private_key = X25519PrivateKey.generate()
         self.dh_public_key_bytes = self._dh_private_key.public_key().public_bytes_raw()
         
+        if self.peer_mlkem_public_key is None:
+            raise ValueError("Peer ML-KEM public key not set")
         # Encapsulate ML-KEM to get ciphertext and shared secret
-        mlkem_ciphertext, mlkem_shared_secret = ml_kem_1024.encrypt(self.peer_mlkem_public_key)
+        mlkem_shared_secret, mlkem_ciphertext = self.peer_mlkem_public_key.encapsulate()
         self._ke_mlkem_shared_secret = mlkem_shared_secret
         
         # Derive intermediary key 1
@@ -568,11 +580,18 @@ class SecureChatProtocol(ProtocolBase):
         parsed = parse_ke_mlkem_ct_keys(data)
         
         # Verify signature
-        if not ml_dsa_87.verify(self._peer_mldsa_public_key, parsed["signed_payload"], parsed["mldsa_signature"]):
-            raise ValueError("ML-DSA signature verification failed on KE_MLKEM_CT_KEYS")
+        try:
+            MLDSA87PublicKey.from_public_bytes(self._peer_mldsa_public_key).verify(
+                parsed["mldsa_signature"], parsed["signed_payload"], context=ML_DSA_CONTEXT,
+            )
+        except InvalidSignature as exc:
+            raise ValueError("ML-DSA signature verification failed on KE_MLKEM_CT_KEYS") from exc
+        
+        if self._mlkem_private_key is None:
+            raise ValueError("No ML-KEM private key available for decapsulation")
         
         # Decapsulate ML-KEM
-        mlkem_shared_secret = ml_kem_1024.decrypt(self._mlkem_private_key, parsed["mlkem_ciphertext"])
+        mlkem_shared_secret = self._mlkem_private_key.decapsulate(parsed["mlkem_ciphertext"])
         self._ke_mlkem_shared_secret = mlkem_shared_secret
         
         # Derive intermediary key 1
@@ -626,8 +645,12 @@ class SecureChatProtocol(ProtocolBase):
         parsed = parse_ke_x25519_hqc_ct(data)
         
         # Verify signature
-        if not ml_dsa_87.verify(self._peer_mldsa_public_key, parsed["signed_payload"], parsed["mldsa_signature"]):
-            raise ValueError("ML-DSA signature verification failed on KE_X25519_HQC_CT")
+        try:
+            MLDSA87PublicKey.from_public_bytes(self._peer_mldsa_public_key).verify(
+                parsed["mldsa_signature"], parsed["signed_payload"], context=ML_DSA_CONTEXT,
+            )
+        except InvalidSignature as exc:
+            raise ValueError("ML-DSA signature verification failed on KE_X25519_HQC_CT") from exc
         
         # Decrypt peer's X25519 pubkey with intermediary key 1
         decryptor_1 = KeyExchangeDoubleEncryptor(self._ke_intermediary_key_1)
@@ -696,7 +719,7 @@ class SecureChatProtocol(ProtocolBase):
     def _discard_mldsa_keys(self) -> None:
         """Discard ephemeral ML-DSA signing keys after key exchange."""
         self._mldsa_public_key = b""
-        self._mldsa_private_key = b""
+        self._mldsa_private_key = None
         self._peer_mldsa_public_key = b""
     
     def create_ke_verification(self) -> bytes:

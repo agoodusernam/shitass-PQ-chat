@@ -5,10 +5,17 @@ import os
 from pathlib import Path
 
 from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA87PrivateKey
 from cryptography.hazmat.primitives.hmac import HMAC
-from pqcrypto.sign import ml_dsa_87  # type: ignore[import-untyped]
 
-from protocol.constants import MessageType, PROTOCOL_VERSION, SEND_CHUNK_SIZE, BLAKE2B_DIGEST_SIZE, TRANSFER_ID_LENGTH
+from protocol.constants import (
+    BLAKE2B_DIGEST_SIZE,
+    ML_DSA_CONTEXT,
+    MessageType,
+    PROTOCOL_VERSION,
+    SEND_CHUNK_SIZE,
+    TRANSFER_ID_LENGTH,
+)
 from protocol.types import FileMetadata
 from protocol.utils import chunk_file, decide_compression
 
@@ -51,9 +58,9 @@ def create_ke_dsa_random(mldsa_public_key: bytes, client_random: bytes) -> bytes
     return json.dumps(message).encode('utf-8')
 
 
-def create_ke_mlkem_pubkey(mlkem_public_key: bytes, mldsa_private_key: bytes) -> bytes:
+def create_ke_mlkem_pubkey(mlkem_public_key: bytes, mldsa_private_key: MLDSA87PrivateKey) -> bytes:
     """Create KE_MLKEM_PUBKEY message (step 8): signed ML-KEM public key."""
-    signature = ml_dsa_87.sign(mldsa_private_key, mlkem_public_key)
+    signature = mldsa_private_key.sign(mlkem_public_key, context=ML_DSA_CONTEXT)
     message = {
         "type":             MessageType.KE_MLKEM_PUBKEY,
         "mlkem_public_key": base64.b64encode(mlkem_public_key).decode('utf-8'),
@@ -64,11 +71,11 @@ def create_ke_mlkem_pubkey(mlkem_public_key: bytes, mldsa_private_key: bytes) ->
 
 def create_ke_mlkem_ct_keys(mlkem_ciphertext: bytes, encrypted_hqc_pubkey: bytes,
                             encrypted_x25519_pubkey: bytes, nonce1: bytes, nonce2: bytes,
-                            mldsa_private_key: bytes,
+                            mldsa_private_key: MLDSA87PrivateKey,
                             ) -> bytes:
     """Create KE_MLKEM_CT_KEYS message (step 10): ML-KEM ciphertext + encrypted HQC/X25519 pubkeys."""
     signed_payload = mlkem_ciphertext + encrypted_hqc_pubkey + encrypted_x25519_pubkey + nonce1 + nonce2
-    signature = ml_dsa_87.sign(mldsa_private_key, signed_payload)
+    signature = mldsa_private_key.sign(signed_payload, context=ML_DSA_CONTEXT)
     message = {
         "type":                    MessageType.KE_MLKEM_CT_KEYS,
         "mlkem_ciphertext":        base64.b64encode(mlkem_ciphertext).decode('utf-8'),
@@ -83,11 +90,11 @@ def create_ke_mlkem_ct_keys(mlkem_ciphertext: bytes, encrypted_hqc_pubkey: bytes
 
 def create_ke_x25519_hqc_ct(encrypted_x25519_pubkey: bytes, encrypted_hqc_ciphertext: bytes,
                             nonce1: bytes, nonce2: bytes,
-                            mldsa_private_key: bytes,
+                            mldsa_private_key: MLDSA87PrivateKey,
                             ) -> bytes:
     """Create KE_X25519_HQC_CT message (step 13): encrypted X25519 pubkey + encrypted HQC ciphertext."""
     signed_payload = encrypted_x25519_pubkey + encrypted_hqc_ciphertext + nonce1 + nonce2
-    signature = ml_dsa_87.sign(mldsa_private_key, signed_payload)
+    signature = mldsa_private_key.sign(signed_payload, context=ML_DSA_CONTEXT)
     message = {
         "type":                     MessageType.KE_X25519_HQC_CT,
         "encrypted_x25519_pubkey":  base64.b64encode(encrypted_x25519_pubkey).decode('utf-8'),

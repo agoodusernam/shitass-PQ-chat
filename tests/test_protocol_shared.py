@@ -165,9 +165,9 @@ class TestKeyExchange:
     
     def test_mldsa_keys_discarded_after_ke(self):
         alice, bob = _full_key_exchange()
-        assert alice._mldsa_private_key == b""
+        assert alice._mldsa_private_key is None
         assert alice._mldsa_public_key == b""
-        assert bob._mldsa_private_key == b""
+        assert bob._mldsa_private_key is None
     
     def test_ke_intermediate_state_cleared_after_ke(self):
         alice, bob = _full_key_exchange()

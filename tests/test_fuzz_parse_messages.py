@@ -13,18 +13,31 @@ import os
 
 import pytest
 from hypothesis import given, strategies as st
-from pqcrypto.sign import ml_dsa_87  # type: ignore[import-untyped]
+from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA87PrivateKey, MLDSA87PublicKey
 
 from protocol import create_messages as cm
 from protocol import parse_messages as pm
-from protocol.constants import PROTOCOL_VERSION
+from protocol.constants import ML_DSA_CONTEXT, PROTOCOL_VERSION
 from protocol.types import DecodeError
 
 
 # ---------------------------------------------------------------------------
 # Shared fixtures — expensive crypto material generated once per session.
 # ---------------------------------------------------------------------------
-_MLDSA_PUB, _MLDSA_PRIV = ml_dsa_87.generate_keypair()
+_MLDSA_PRIV = MLDSA87PrivateKey.generate()
+_MLDSA_PUB_OBJ = _MLDSA_PRIV.public_key()
+_MLDSA_PUB = _MLDSA_PUB_OBJ.public_bytes_raw()
+
+
+def _verify_mldsa(message: bytes, signature: bytes) -> bool:
+    from cryptography.exceptions import InvalidSignature
+    try:
+        MLDSA87PublicKey.from_public_bytes(_MLDSA_PUB).verify(
+            signature, message, context=ML_DSA_CONTEXT,
+        )
+    except InvalidSignature:
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +89,7 @@ def test_roundtrip_ke_mlkem_pubkey(pub: bytes) -> None:
     out = pm.parse_ke_mlkem_pubkey(wire)
     assert out["mlkem_public_key"] == pub
     # Signature must verify against the signed payload.
-    assert ml_dsa_87.verify(_MLDSA_PUB, pub, out["mldsa_signature"])
+    assert _verify_mldsa(pub, out["mldsa_signature"])
 
 
 @given(ct=small_blob, hqc=small_blob, x=small_blob, n1=nonce12, n2=nonce12)
@@ -89,7 +102,7 @@ def test_roundtrip_ke_mlkem_ct_keys(ct: bytes, hqc: bytes, x: bytes, n1: bytes, 
     assert out["nonce1"] == n1
     assert out["nonce2"] == n2
     assert out["signed_payload"] == ct + hqc + x + n1 + n2
-    assert ml_dsa_87.verify(_MLDSA_PUB, out["signed_payload"], out["mldsa_signature"])
+    assert _verify_mldsa(out["signed_payload"], out["mldsa_signature"])
 
 
 @given(x=small_blob, hqc_ct=small_blob, n1=nonce12, n2=nonce12)
@@ -101,7 +114,7 @@ def test_roundtrip_ke_x25519_hqc_ct(x: bytes, hqc_ct: bytes, n1: bytes, n2: byte
     assert out["nonce1"] == n1
     assert out["nonce2"] == n2
     assert out["signed_payload"] == x + hqc_ct + n1 + n2
-    assert ml_dsa_87.verify(_MLDSA_PUB, out["signed_payload"], out["mldsa_signature"])
+    assert _verify_mldsa(out["signed_payload"], out["mldsa_signature"])
 
 
 @given(verification_key=st.binary(min_size=16, max_size=128))

@@ -152,7 +152,7 @@ All text added to HKDF `info` arguments is encoded in UTF-8. A '+' indicates con
 6. Client B sends KE_DSA_RANDOM containing its ML-DSA public key and client random.
 7. Client A saves Client B's ML-DSA public key and client random, and derives the same combined_random.
 
-From this point onward, every key exchange message is signed with ML-DSA-87.
+From this point onward, every key exchange message is signed with ML-DSA-87. All ML-DSA-87 signatures (initial KE and rekey) MUST be produced and verified with the fixed context string `ML_DSA_CONTEXT = b"Secure_Chat_Protocol_V9_mldsa"` (29 bytes, ASCII). A signature produced without this context, or with a mismatching context, MUST be rejected.
 
 8. Client A sends KE_MLKEM_PUBKEY containing its ML-KEM public key (signed).
 9. Client B encapsulates to Client A's ML-KEM public key, obtaining the ML-KEM ciphertext and shared secret, then derives:
@@ -251,6 +251,7 @@ KE_VERIFICATION (JSON, steps 15 and 16):
 
 - Version mismatch: If the peer version in KE_DSA_RANDOM differs, Clients SHOULD warn the user, but MAY continue.
 - ML-DSA keys MUST be discarded after the key exchange is complete.
+- ML-DSA-87 signing and verification MUST pass `context = ML_DSA_CONTEXT` (the literal bytes `Secure_Chat_Protocol_V9_mldsa`). The context is part of the signed message under FIPS 204; verifiers using a different context (or none) will reject otherwise-valid signatures, providing domain separation between this protocol and any other ML-DSA-87 deployment that reuses the same keypair.
 
 Rationale: The multi-step handshake progressively establishes trust: ML-DSA signatures authenticate each step, intermediary keys protect later key material from passive observers who might compromise a single layer, and the combined_random binds both parties' contributions to the derivation. The hybrid construction (ML-KEM + HQC + X25519) provides post-quantum security and mitigates single-algorithm failure. Retaining an independent HQC secret to drive an OTP-style XOR layer adds defence-in-depth. Separate SHA-512 and SHA3-512 derivations provide algorithm diversity. Per-client chain key roots (using each client's own random as salt) ensure asymmetric initial state between sender and receiver chains.
 
@@ -376,7 +377,7 @@ Rationale: Regular intervals and dummy traffic hinder traffic analysis by flatte
 
 ### 13.1 Rekey flow (5-step protocol)
 
-Both sides generate ephemeral ML-DSA-87 keypairs and client randoms before the exchange starts.
+Both sides generate ephemeral ML-DSA-87 keypairs and client randoms before the exchange starts. Rekey signatures use the same `ML_DSA_CONTEXT = b"Secure_Chat_Protocol_V9_mldsa"` context as the initial key exchange (see section 7); domain separation between initial KE and rekey signatures is provided by the `rekey_`-prefixed HKDF info strings, not by the ML-DSA context.
 
 1. **dsa_random** — The initiator (A) sends its ML-DSA public key and client random. If B receives this before initiating its own rekey, B becomes the responder. If both sides initiate simultaneously (race), the side with the smaller client random becomes B (responder).
 

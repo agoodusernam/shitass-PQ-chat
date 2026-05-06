@@ -4,14 +4,16 @@ import os
 import secrets
 from typing import TYPE_CHECKING
 
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
+from cryptography.hazmat.primitives.asymmetric.mlkem import MLKEM1024PrivateKey, MLKEM1024PublicKey
+from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA87PrivateKey, MLDSA87PublicKey
 from cryptography.hazmat.primitives.constant_time import bytes_eq
 from cryptography.hazmat.primitives.hmac import HMAC
-from pqcrypto.kem import hqc_256, ml_kem_1024
-from pqcrypto.sign import ml_dsa_87
+from pqcrypto.kem import hqc_256
 
-from protocol.constants import CLIENT_RANDOM_SIZE, MessageType, NONCE_SIZE
+from protocol.constants import CLIENT_RANDOM_SIZE, ML_DSA_CONTEXT, MessageType, NONCE_SIZE
 from protocol.crypto_classes import KeyExchangeDoubleEncryptor, _KeyDerivation
 from protocol.utils import LRUCache
 
@@ -39,16 +41,16 @@ class _RekeyState:
         self._rke_peer_client_random: bytes = b""
         self._rke_combined_random: bytes = b""
         self._rke_mldsa_pub: bytes = b""
-        self._rke_mldsa_priv: bytes = b""
+        self._rke_mldsa_priv: MLDSA87PrivateKey | None = None
         self._rke_peer_mldsa_pub: bytes = b""
         self._rke_mlkem_shared_secret: bytes = b""
         # A-side KE state
-        self._rke_mlkem_priv: bytes = b""
+        self._rke_mlkem_priv: MLKEM1024PrivateKey | None = None
         self._rke_dh_priv: X25519PrivateKey | None = None
         self._rke_dh_pub_bytes: bytes = b""
         self._rke_peer_hqc_pub: bytes = b""
         # B-side KE state
-        self._rke_peer_mlkem_pub: bytes = b""
+        self._rke_peer_mlkem_pub: MLKEM1024PublicKey | None = None
         self._rke_hqc_pub: bytes = b""
         self._rke_hqc_priv: bytes = b""
         self._rke_b_dh_priv: X25519PrivateKey | None = None
@@ -85,14 +87,14 @@ class _RekeyState:
         self._rke_peer_client_random = b""
         self._rke_combined_random = b""
         self._rke_mldsa_pub = b""
-        self._rke_mldsa_priv = b""
+        self._rke_mldsa_priv = None
         self._rke_peer_mldsa_pub = b""
         self._rke_mlkem_shared_secret = b""
-        self._rke_mlkem_priv = b""
+        self._rke_mlkem_priv = None
         self._rke_dh_priv = None
         self._rke_dh_pub_bytes = b""
         self._rke_peer_hqc_pub = b""
-        self._rke_peer_mlkem_pub = b""
+        self._rke_peer_mlkem_pub = None
         self._rke_hqc_pub = b""
         self._rke_hqc_priv = b""
         self._rke_b_dh_priv = None
@@ -210,9 +212,14 @@ class _RekeyState:
     
     # protocol messages
     
+    def _generate_mldsa_keypair(self) -> None:
+        priv = MLDSA87PrivateKey.generate()
+        self._rke_mldsa_priv = priv
+        self._rke_mldsa_pub = priv.public_key().public_bytes_raw()
+
     def create_dsa_random(self, is_initiator: bool) -> dict:
         """Start a rekey: generate ephemeral ML-DSA keys + client random; return dsa_random payload."""
-        self._rke_mldsa_pub, self._rke_mldsa_priv = ml_dsa_87.generate_keypair()
+        self._generate_mldsa_keypair()
         self._rke_client_random = os.urandom(CLIENT_RANDOM_SIZE)
         self._rke_step = 1 if is_initiator else 2
         self.rekey_in_progress = True
@@ -244,7 +251,7 @@ class _RekeyState:
         peer_is_initiating = not inner.get("is_response", False)
         
         if self._rke_step == 0:
-            self._rke_mldsa_pub, self._rke_mldsa_priv = ml_dsa_87.generate_keypair()
+            self._generate_mldsa_keypair()
             self._rke_client_random = os.urandom(CLIENT_RANDOM_SIZE)
             self._rke_step = 2
             self.rekey_in_progress = True
@@ -269,12 +276,13 @@ class _RekeyState:
     
     def _create_mlkem_pubkey(self) -> dict:
         """(A) Generate ML-KEM-1024 and X25519 keypairs; return signed mlkem_pubkey payload."""
-        mlkem_pub, mlkem_priv = ml_kem_1024.generate_keypair()
+        mlkem_priv = MLKEM1024PrivateKey.generate()
+        mlkem_pub = mlkem_priv.public_key().public_bytes_raw()
         self._rke_mlkem_priv = mlkem_priv
         dh_priv = X25519PrivateKey.generate()
         self._rke_dh_priv = dh_priv
         self._rke_dh_pub_bytes = dh_priv.public_key().public_bytes_raw()
-        signature = ml_dsa_87.sign(self._rke_mldsa_priv, mlkem_pub)
+        signature = self._rke_mldsa_priv.sign(mlkem_pub, context=ML_DSA_CONTEXT)
         return {
             "type":             MessageType.REKEY,
             "action":           "mlkem_pubkey",
@@ -290,10 +298,14 @@ class _RekeyState:
         except (KeyError, binascii.Error) as e:
             raise ValueError(f"Invalid rekey mlkem_pubkey: {e}") from e
         
-        if not ml_dsa_87.verify(self._rke_peer_mldsa_pub, mlkem_pub, mldsa_sig):
-            raise ValueError("ML-DSA signature verification failed on rekey mlkem_pubkey")
+        try:
+            MLDSA87PublicKey.from_public_bytes(self._rke_peer_mldsa_pub).verify(
+                mldsa_sig, mlkem_pub, context=ML_DSA_CONTEXT,
+            )
+        except InvalidSignature as exc:
+            raise ValueError("ML-DSA signature verification failed on rekey mlkem_pubkey") from exc
         
-        self._rke_peer_mlkem_pub = mlkem_pub
+        self._rke_peer_mlkem_pub = MLKEM1024PublicKey.from_public_bytes(mlkem_pub)
         
         hqc_pub, hqc_priv = hqc_256.generate_keypair()
         self._rke_hqc_pub = hqc_pub
@@ -302,7 +314,7 @@ class _RekeyState:
         self._rke_b_dh_priv = dh_priv
         self._rke_b_dh_pub_bytes = dh_priv.public_key().public_bytes_raw()
         
-        mlkem_ciphertext, mlkem_shared_secret = ml_kem_1024.encrypt(mlkem_pub)
+        mlkem_shared_secret, mlkem_ciphertext = self._rke_peer_mlkem_pub.encapsulate()
         self._rke_mlkem_shared_secret = mlkem_shared_secret
         
         int_key_1 = self._derive_intermediary_key_1(mlkem_shared_secret)
@@ -315,7 +327,7 @@ class _RekeyState:
         encrypted_x25519_pubkey = encryptor.encrypt(nonce2, self._rke_b_dh_pub_bytes)
         
         signed_payload = mlkem_ciphertext + encrypted_hqc_pubkey + encrypted_x25519_pubkey + nonce1 + nonce2
-        signature = ml_dsa_87.sign(self._rke_mldsa_priv, signed_payload)
+        signature = self._rke_mldsa_priv.sign(signed_payload, context=ML_DSA_CONTEXT)
         
         return {
             "type":                    MessageType.REKEY,
@@ -341,10 +353,17 @@ class _RekeyState:
             raise ValueError(f"Invalid rekey mlkem_ct_keys: {e}") from e
         
         signed_payload = mlkem_ct + enc_hqc_pub + enc_x25519_pub + nonce1 + nonce2
-        if not ml_dsa_87.verify(self._rke_peer_mldsa_pub, signed_payload, mldsa_sig):
-            raise ValueError("ML-DSA signature verification failed on rekey mlkem_ct_keys")
+        try:
+            MLDSA87PublicKey.from_public_bytes(self._rke_peer_mldsa_pub).verify(
+                mldsa_sig, signed_payload, context=ML_DSA_CONTEXT,
+            )
+        except InvalidSignature as exc:
+            raise ValueError("ML-DSA signature verification failed on rekey mlkem_ct_keys") from exc
         
-        mlkem_shared_secret = ml_kem_1024.decrypt(self._rke_mlkem_priv, mlkem_ct)
+        if self._rke_mlkem_priv is None:
+            raise ValueError("ML-KEM private key not available")
+        
+        mlkem_shared_secret = self._rke_mlkem_priv.decapsulate(mlkem_ct)
         
         int_key_1 = self._derive_intermediary_key_1(mlkem_shared_secret)
         self._rke_intermediary_key_1 = int_key_1
@@ -369,7 +388,7 @@ class _RekeyState:
         encrypted_hqc_ciphertext = enc2.encrypt(out_nonce2, hqc_ciphertext)
         
         out_signed_payload = encrypted_x25519_pubkey + encrypted_hqc_ciphertext + out_nonce1 + out_nonce2
-        signature = ml_dsa_87.sign(self._rke_mldsa_priv, out_signed_payload)
+        signature = self._rke_mldsa_priv.sign(out_signed_payload, context=ML_DSA_CONTEXT)
         
         self._finalize(dh_shared_secret, hqc_secret, mlkem_shared_secret,
                        self._rke_dh_priv, peer_x25519_pub_bytes)
@@ -396,8 +415,12 @@ class _RekeyState:
             raise ValueError(f"Invalid rekey x25519_hqc_ct: {e}") from e
         
         signed_payload = enc_x25519_pub + enc_hqc_ct + nonce1 + nonce2
-        if not ml_dsa_87.verify(self._rke_peer_mldsa_pub, signed_payload, mldsa_sig):
-            raise ValueError("ML-DSA signature verification failed on rekey x25519_hqc_ct")
+        try:
+            MLDSA87PublicKey.from_public_bytes(self._rke_peer_mldsa_pub).verify(
+                mldsa_sig, signed_payload, context=ML_DSA_CONTEXT,
+            )
+        except InvalidSignature as exc:
+            raise ValueError("ML-DSA signature verification failed on rekey x25519_hqc_ct") from exc
         
         dec1 = KeyExchangeDoubleEncryptor(self._rke_intermediary_key_1)
         peer_x25519_pub_bytes = dec1.decrypt(nonce1, enc_x25519_pub)

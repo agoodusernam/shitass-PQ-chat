@@ -27,7 +27,7 @@ from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
 from cryptography.hazmat.primitives.kdf.concatkdf import ConcatKDFHash
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from pqcrypto.kem import ml_kem_1024  # type: ignore
+from cryptography.hazmat.primitives.asymmetric.mlkem import MLKEM1024PublicKey
 
 from SecureChatABCs.ui_base import UIBase
 from config import ClientConfigHandler
@@ -327,7 +327,7 @@ class DeaddropManager:
             self._started = False
             return
 
-        mlkem_ciphertext, kem_shared_secret = ml_kem_1024.encrypt(mlkem_public)
+        kem_shared_secret, mlkem_ciphertext = MLKEM1024PublicKey.from_public_bytes(mlkem_public).encapsulate()
 
         self.shared_secret = ConcatKDFHash(
                 algorithm=hashes.SHA3_512(),
@@ -402,6 +402,8 @@ class DeaddropManager:
                     self._ui.display_system_message("Deaddrop upload completed successfully")
                 self._in_progress = False
                 self.download_in_progress = False
+            case _:
+                self._ui.display_error_message(f"Received unknown deaddrop message type {inner_type}")
 
     def handle_binary_chunk(self, message_data: bytes) -> None:
         """Decrypt a raw binary deaddrop chunk frame and forward it to the streaming processor.
