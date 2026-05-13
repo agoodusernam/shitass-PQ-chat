@@ -2,7 +2,7 @@ from enum import IntEnum, unique
 from typing import Final
 
 # Protocol constants
-PROTOCOL_VERSION: Final[str] = "8.1.0"
+PROTOCOL_VERSION: Final[str] = "9.0.0"
 # Protocol compatibility is denoted by version number
 # Breaking.Minor.Patch - only Breaking versions are checked for compatibility.
 # Breaking version changes introduce breaking changes that are not compatible with the previous major version.
@@ -33,7 +33,7 @@ FINGERPRINT_HASH_SIZE: Final[int] = 32  # bytes, truncated hash for key fingerpr
 FINGERPRINT_WORD_COUNT: Final[int] = 8  # number of words in a key fingerprint
 HASH_TO_WORDS_DEFAULT: Final[int] = 16  # default number of words for hash_to_words
 DEFAULT_MAX_RATCHET_FORWARD: Final[int] = 100000
-ML_DSA_CONTEXT: Final[bytes] = b"Secure_Chat_Protocol_V9_mldsa"
+ML_DSA_CONTEXT: Final[bytes] = b"Secure_Chat_Protocol_ml-dsa_KE"
 
 # Deaddrop constants
 DEADDROP_SALT_SIZE: Final[int] = 32  # bytes, salt for deaddrop download PBKDF2
