@@ -21,14 +21,13 @@ from protocol.crypto_classes import (
     _iso7816_unpad,
 )
 
-
 key64 = st.binary(min_size=DOUBLE_KEY_SIZE, max_size=DOUBLE_KEY_SIZE)
 nonce_aead = st.binary(min_size=NONCE_SIZE, max_size=NONCE_SIZE)
 nonce_ctr = st.binary(min_size=CTR_NONCE_SIZE, max_size=CTR_NONCE_SIZE)
 otp = st.binary(min_size=32, max_size=128)
 plaintext = st.binary(min_size=32, max_size=4096)
 aad = st.one_of(st.none(), st.binary(min_size=0, max_size=256))
-counter = st.integers(min_value=0, max_value=2**63 - 1)
+counter = st.integers(min_value=0, max_value=2 ** 63 - 1)
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +103,8 @@ def test_double_encryptor_aad_binding(key, nonce, data, otp_secret, ctr, ad_a, a
 @given(key=key64, nonce=nonce_aead, data=plaintext, otp_secret=otp,
        ctr_enc=counter, ctr_dec=counter, ad=aad)
 def test_double_encryptor_counter_mismatch_corrupts(key, nonce, data, otp_secret,
-                                                    ctr_enc, ctr_dec, ad) -> None:
+                                                    ctr_enc, ctr_dec, ad,
+                                                    ) -> None:
     """Counter is mixed into OTP keystream only, not AEAD AAD. Wrong counter = wrong OTP mask.
     AEAD still verifies (inner ciphertext unchanged), but decrypted plaintext is scrambled
     and, if padded, the padding check fails."""

@@ -23,6 +23,7 @@ def _iso7816_unpad(data: bytes) -> bytes:
         raise ValueError("Invalid ISO/IEC 7816-4 padding")
     return data[:i]
 
+
 def _derive_nonces(nonce: bytes, key: bytes) -> tuple[bytes, bytes]:
     """
     Derive AES nonce, and ChaCha nonce from the caller-provided 12-byte nonce and the 64-byte key.

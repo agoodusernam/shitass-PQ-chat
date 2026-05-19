@@ -33,23 +33,23 @@ class ClientConfigDict(TypedDict):
     peer_nickname_change: bool
     own_nickname: str
     theme: str
-
+    
     # File paths (stored as strings in JSON, exposed as Path)
     message_notif_sound_file: str
     ringtone_file: str
     wordlist_file: str
-
+    
     # Voice settings
     voice_send_frequency: float
     voice_rate: int
     voice_channels: int
     voice_format: int
-
+    
     # Security settings
     send_dummy_packets: bool
     max_dummy_packet_size: int
     rekey_interval: int
-
+    
     # Network / transfer settings
     send_chunk_size: int
     max_message_size: int

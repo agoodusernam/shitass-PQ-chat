@@ -57,7 +57,7 @@ def _valid_utf8(data: bytes) -> bool:
 # Out-of-order delivery (double ratchet skipped-key buffer)
 # ---------------------------------------------------------------------------
 @given(messages=st.lists(st.text(min_size=1, max_size=64), min_size=2, max_size=10),
-       seed=st.integers(min_value=0, max_value=2**32 - 1))
+       seed=st.integers(min_value=0, max_value=2 ** 32 - 1))
 def test_out_of_order_delivery(messages: list[str], seed: int) -> None:
     a, b = _full_key_exchange(f"ooo-{seed}")
     wires = [a.encrypt_message(m) for m in messages]
@@ -107,13 +107,13 @@ def test_bitflip_detected(flip_byte_index: int, flip_bit: int, msg: str) -> None
 # Robustness: garbage input must raise only ValueError.
 # ---------------------------------------------------------------------------
 garbage = st.one_of(
-    st.binary(min_size=0, max_size=4096),
-    st.text(max_size=512).map(lambda s: s.encode("utf-8", errors="replace")),
-    st.dictionaries(
-        st.text(max_size=16),
-        st.one_of(st.text(max_size=64), st.integers(), st.booleans(), st.none()),
-        max_size=10,
-    ).map(lambda d: json.dumps(d).encode("utf-8")),
+        st.binary(min_size=0, max_size=4096),
+        st.text(max_size=512).map(lambda s: s.encode("utf-8", errors="replace")),
+        st.dictionaries(
+                st.text(max_size=16),
+                st.one_of(st.text(max_size=64), st.integers(), st.booleans(), st.none()),
+                max_size=10,
+        ).map(lambda d: json.dumps(d).encode("utf-8")),
 )
 
 

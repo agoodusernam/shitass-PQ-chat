@@ -30,7 +30,8 @@ No build step. No pre-commit hooks configured.
 
 ## Architecture
 
-Post-quantum E2E encrypted chat. Server is a dumb relay - it routes ciphertext and manages dead drops but has zero key material knowledge.
+Post-quantum E2E encrypted chat. Server is a dumb relay - it routes ciphertext and manages dead drops but has zero key
+material knowledge.
 
 ```
 UIs/ (GUI.py, TUI.py, debug_GUI.py)
@@ -60,23 +61,38 @@ utils/
   └─ vc_utils.py      - voice call audio helpers
 ```
 
-`SecureChatClient` (new_client.py) is a thin facade: owns `SecureChatProtocol` + socket, composes the five managers above, exposes the public API consumed by UIs and tests. State probed by tests (`_protocol`, `_socket`, `_key_exchange_complete`, etc.) lives on the facade; managers access it via the facade reference.
+`SecureChatClient` (new_client.py) is a thin facade: owns `SecureChatProtocol` + socket, composes the five managers
+above, exposes the public API consumed by UIs and tests. State probed by tests (`_protocol`, `_socket`,
+`_key_exchange_complete`, etc.) lives on the facade; managers access it via the facade reference.
 
 ### Manager dispatch rules
 
-- Managers MUST call their sibling managers directly (`self._client._key_exchange.handle_reset(...)`), never bounce through facade proxies (`self._client.handle_key_exchange_reset(...)`). Facade proxies are for external callers (UIs, tests) only.
+- Managers MUST call their sibling managers directly (`self._client._key_exchange.handle_reset(...)`), never bounce
+  through facade proxies (`self._client.handle_key_exchange_reset(...)`). Facade proxies are for external callers (UIs,
+  tests) only.
 - Inside a single manager, dispatch to own methods via `self.`, not via `self._client.<same_method>`.
-- When adding a new message-type case in `ConnectionManager.handle_message` or `SecureChatClient.handle_message_types`, route straight to the owning manager.
-- Tests patch behaviour on the manager that owns it: `patch.object(c._connection, "handle_keepalive")`, `patch.object(c._key_exchange, "handle_dsa_random")`, `patch.object(c._file_transfer, "handle_chunk_binary")`.
+- When adding a new message-type case in `ConnectionManager.handle_message` or `SecureChatClient.handle_message_types`,
+  route straight to the owning manager.
+- Tests patch behaviour on the manager that owns it: `patch.object(c._connection, "handle_keepalive")`,
+  `patch.object(c._key_exchange, "handle_dsa_random")`, `patch.object(c._file_transfer, "handle_chunk_binary")`.
 
-`SecureChatProtocol` (protocol/shared.py) owns crypto: hybrid key exchange, Double Ratchet, message encryption/decryption, replay protection. It composes two internal helper classes that live in the same file:
+`SecureChatProtocol` (protocol/shared.py) owns crypto: hybrid key exchange, Double Ratchet, message
+encryption/decryption, replay protection. It composes two internal helper classes that live in the same file:
 
-- `_KeyDerivation` - stateless namespace class (all `@staticmethod`) holding every HKDF / hash-based derivation. A `rekey=False` kwarg picks the domain-separated `info` string so the same helper covers the initial KE and the rekey KE paths.
-- `_RekeyState` - owns all `_rke_*` in-flight rekey KE attributes, all `_pending_*` activation attributes, the auto-rekey counters (`messages_since_last_rekey`, `rekey_interval`), and every `create_rekey_*` / `process_rekey_*` / `activate_pending_keys` / `reset_rekey` method. Holds a `self._protocol` back-reference to mutate session keys on activation and to report errors. Instance lives at `SecureChatProtocol._rekey`.
+- `_KeyDerivation` - stateless namespace class (all `@staticmethod`) holding every HKDF / hash-based derivation. A
+  `rekey=False` kwarg picks the domain-separated `info` string so the same helper covers the initial KE and the rekey KE
+  paths.
+- `_RekeyState` - owns all `_rke_*` in-flight rekey KE attributes, all `_pending_*` activation attributes, the
+  auto-rekey counters (`messages_since_last_rekey`, `rekey_interval`), and every `create_rekey_*` / `process_rekey_*` /
+  `activate_pending_keys` / `reset_rekey` method. Holds a `self._protocol` back-reference to mutate session keys on
+  activation and to report errors. Instance lives at `SecureChatProtocol._rekey`.
 
-`SecureChatProtocol` exposes rekey operations via explicit thin delegate methods (no `__getattr__`/`__setattr__`). External callers (tests, UIs, managers) use the original names - those are preserved as public methods or `@property` passthroughs on the protocol.
+`SecureChatProtocol` exposes rekey operations via explicit thin delegate methods (no `__getattr__`/`__setattr__`).
+External callers (tests, UIs, managers) use the original names - those are preserved as public methods or `@property`
+passthroughs on the protocol.
 
-`server.py` has two top-level classes: `DeadDropManager` (file storage) and `SecureChatRequestHandler` (TCP handler per client).
+`server.py` has two top-level classes: `DeadDropManager` (file storage) and `SecureChatRequestHandler` (TCP handler per
+client).
 
 ## Versions
 
@@ -86,37 +102,50 @@ utils/
 
 ## Key Exchange (16-step hybrid PQC)
 
-Combines ML-KEM-1024 + HQC-256 + X25519 with ML-DSA-87 signatures. Two roles: Client A (initiator) and Client B (responder), assigned by the server.
+Combines ML-KEM-1024 + HQC-256 + X25519 with ML-DSA-87 signatures. Two roles: Client A (initiator) and Client B (
+responder), assigned by the server.
 
 High-level flow:
+
 1. Both sides exchange ML-DSA public keys + 32-byte client randoms (`KE_DSA_RANDOM`).
 2. A combined random is derived: `HKDF-SHA-512(larger_random, salt=smaller_random, info=server_id + 'comb_rand')`.
 3. A sends ML-KEM-1024 public key (`KE_MLKEM_PUBKEY`), signed with ML-DSA.
-4. B encapsulates → derives `intermediary_key_1 = HKDF-SHA3-512(ML-KEM_secret, salt=combined_random, info=server_id + 'int_key_1')` → sends ML-KEM ciphertext + encrypted HQC/X25519 public keys (`KE_MLKEM_CT_KEYS`).
-5. A decapsulates, derives `intermediary_key_1`, decrypts B's keys; performs X25519 DH + HQC encapsulation → derives `intermediary_key_2 = HKDF-SHA3-512(intermediary_key_1, salt=X25519_secret, info=server_id + 'int_key_2')` → sends encrypted X25519 pubkey + HQC ciphertext (`KE_X25519_HQC_CT`).
+4. B encapsulates → derives
+   `intermediary_key_1 = HKDF-SHA3-512(ML-KEM_secret, salt=combined_random, info=server_id + 'int_key_1')` → sends
+   ML-KEM ciphertext + encrypted HQC/X25519 public keys (`KE_MLKEM_CT_KEYS`).
+5. A decapsulates, derives `intermediary_key_1`, decrypts B's keys; performs X25519 DH + HQC encapsulation → derives
+   `intermediary_key_2 = HKDF-SHA3-512(intermediary_key_1, salt=X25519_secret, info=server_id + 'int_key_2')` → sends
+   encrypted X25519 pubkey + HQC ciphertext (`KE_X25519_HQC_CT`).
 6. Both derive final keys and exchange `KE_VERIFICATION` HMAC proofs; mismatch = abort.
 
 All post-DSA messages are ML-DSA signed. ML-DSA keys are discarded after KE completes.
 
 Final key derivation:
+
 - **OTP material** (64 B): `HKDF-SHA3-512(HQC_secret, salt=combined_random, info=server_id + 'otp_material')`
-- **Own chain key root** (64 B): `HKDF-SHA3-512(ML-KEM_secret || X25519_secret, salt=own_random, info=server_id + 'chain_key_root')`
+- **Own chain key root** (64 B):
+  `HKDF-SHA3-512(ML-KEM_secret || X25519_secret, salt=own_random, info=server_id + 'chain_key_root')`
 - **Peer chain key root** (64 B): same but `salt=peer_random`
 
 Full spec: `docs/SPEC.md`.
 
 ## Per-Message Encryption
 
-1. ISO/IEC 7816-4 bit-pad plaintext to 512-byte multiple (append `0x80` then `0x00` fill). PKCS7 cannot represent a 512-byte block (pad-byte count ≤ 255), and the `cryptography` library caps `PKCS7(block_size)` at 2040 bits. Padding helpers are `_iso7816_pad` / `_iso7816_unpad` in `protocol/crypto_classes.py`.
+1. ISO/IEC 7816-4 bit-pad plaintext to 512-byte multiple (append `0x80` then `0x00` fill). PKCS7 cannot represent a
+   512-byte block (pad-byte count ≤ 255), and the `cryptography` library caps `PKCS7(block_size)` at 2040 bits. Padding
+   helpers are `_iso7816_pad` / `_iso7816_unpad` in `protocol/crypto_classes.py`.
 2. XOR with SHAKE-256 keystream (OTP layer, keyed on HQC secret + secret nonces + counter).
 3. Double AEAD: AES-256-GCM-SIV → ChaCha20-Poly1305 (sequential).
 4. HMAC-SHA-512 over AAD (type, counter, nonce, per-message DH public key).
 
-**Nonce hiding**: The 12-byte public nonce in the wire frame is XOR-mixed with key bytes to produce the real AEAD nonces, keeping actual nonces secret.
+**Nonce hiding**: The 12-byte public nonce in the wire frame is XOR-mixed with key bytes to produce the real AEAD
+nonces, keeping actual nonces secret.
 
-Double Ratchet advances per message with per-message ephemeral X25519 keypairs. LRU cache (capacity 1,000) handles out-of-order messages.
+Double Ratchet advances per message with per-message ephemeral X25519 keypairs. LRU cache (capacity 1,000) handles
+out-of-order messages.
 
 Wire format (`ENCRYPTED_MESSAGE`, type 10):
+
 ```
 {"type": 10, "counter": uint32, "nonce": base64(12B), "ciphertext": base64, "dh_public_key": base64(32B), "verification": base64}
 ```
@@ -125,52 +154,74 @@ Wire format (`ENCRYPTED_MESSAGE`, type 10):
 
 - **Main thread**: UI event loop
 - **Sender thread** (protocol): dequeues `_message_queue`, encrypts, sends every ~250 ms tick
-- **Receiver thread** (client): `ConnectionManager.receive_loop()`, reads TCP socket, dispatches via `handle_message` → owning manager
-- **Voice audio thread** (UI-owned): writes `VOICE_CALL_DATA` frames directly to the socket via `network_utils.send_message`, bypassing the 250 ms sender queue. Consequence: audio frames can arrive at the peer *before* a queued `VOICE_CALL_ACCEPT`. `VoiceCallManager.request()` flips `_active = True` at request time (not on accept) so inbound `VOICE_CALL_DATA` bypasses the rate limiter on the requester side.
+- **Receiver thread** (client): `ConnectionManager.receive_loop()`, reads TCP socket, dispatches via `handle_message` →
+  owning manager
+- **Voice audio thread** (UI-owned): writes `VOICE_CALL_DATA` frames directly to the socket via
+  `network_utils.send_message`, bypassing the 250 ms sender queue. Consequence: audio frames can arrive at the peer
+  *before* a queued `VOICE_CALL_ACCEPT`. `VoiceCallManager.request()` flips `_active = True` at request time (not on
+  accept) so inbound `VOICE_CALL_DATA` bypasses the rate limiter on the requester side.
 - **Timer threads**: keepalive + auto-rekey (count threshold or time threshold)
 
 ## Rekeying
 
-Runs the same hybrid KE as the initial handshake but over the existing encrypted channel (all rekey frames are `ENCRYPTED_MESSAGE` with `type=64` inner JSON). 6-step flow: both sides exchange DSA randoms, A sends ML-KEM pubkey, B sends encapsulated keys, A sends X25519/HQC ciphertext, both exchange verification proofs.
+Runs the same hybrid KE as the initial handshake but over the existing encrypted channel (all rekey frames are
+`ENCRYPTED_MESSAGE` with `type=64` inner JSON). 6-step flow: both sides exchange DSA randoms, A sends ML-KEM pubkey, B
+sends encapsulated keys, A sends X25519/HQC ciphertext, both exchange verification proofs.
 
-Race condition: if both peers initiate simultaneously, the side with the lexicographically smaller `client_random` becomes responder. Counters reset to zero after key switch.
+Race condition: if both peers initiate simultaneously, the side with the lexicographically smaller `client_random`
+becomes responder. Counters reset to zero after key switch.
 
 Auto-rekey triggers: message count threshold or time threshold, both with ±10% jitter.
 
 ## Dead Drops
 
-Anonymous async file sharing. Per-file key derivation uses Argon2id (memory_cost=4 GiB, iterations=4, lanes=4) then HKDF-SHA3-512 with a per-upload random salt. Password hash sent to server for download auth is a separate Argon2id derivation (memory_cost=2 GiB, iterations=6). Download-time challenge uses PBKDF2-HMAC-SHA3-512 over the stored password hash with a server-provided salt. Uses `ChunkIndependentDoubleEncryptor` - no chained authentication, so chunks decrypt in any order.
+Anonymous async file sharing. Per-file key derivation uses Argon2id (memory_cost=4 GiB, iterations=4, lanes=4) then
+HKDF-SHA3-512 with a per-upload random salt. Password hash sent to server for download auth is a separate Argon2id
+derivation (memory_cost=2 GiB, iterations=6). Download-time challenge uses PBKDF2-HMAC-SHA3-512 over the stored password
+hash with a server-provided salt. Uses `ChunkIndependentDoubleEncryptor` - no chained authentication, so chunks decrypt
+in any order.
 
-Server stores encrypted chunks in `deaddrop_files/` (configurable). Neither peer's session identity is exposed. Chunk limit: `DEADDROP_MAX_CHUNKS = 1,048,576` (memory exhaustion guard).
+Server stores encrypted chunks in `deaddrop_files/` (configurable). Neither peer's session identity is exposed. Chunk
+limit: `DEADDROP_MAX_CHUNKS = 1,048,576` (memory exhaustion guard).
 
 Dead drop KE uses a separate ML-KEM exchange with the server (independent of the peer session).
 
 ### Upload flow
 
-`DeaddropManager.upload()` MUST wait on `_upload_accept_event` after sending encrypted metadata, before streaming any chunks. `_on_accept` sets the event on `DEADDROP_ACCEPT`; `DEADDROP_DENY` also sets it (with `_upload_accepted=False`) so the uploader unblocks and aborts. Streaming chunks before the server accepts the metadata cascades into spurious `"No active deaddrop upload"` errors for each chunk + the trailing `DEADDROP_COMPLETE` frame. Server error responses for metadata are intentionally generic (no leaking of name collision, quota, etc.) - the client cannot distinguish reasons.
+`DeaddropManager.upload()` MUST wait on `_upload_accept_event` after sending encrypted metadata, before streaming any
+chunks. `_on_accept` sets the event on `DEADDROP_ACCEPT`; `DEADDROP_DENY` also sets it (with `_upload_accepted=False`)
+so the uploader unblocks and aborts. Streaming chunks before the server accepts the metadata cascades into spurious
+`"No active deaddrop upload"` errors for each chunk + the trailing `DEADDROP_COMPLETE` frame. Server error responses for
+metadata are intentionally generic (no leaking of name collision, quota, etc.) - the client cannot distinguish reasons.
 
 ## Field Validation
 
 `utils/checks.py` enforces strict allowlists on all JSON messages:
+
 - `allowed_outer_fields(msg_type)` - per-type allowlist for pre-verification (plaintext) frames.
-- `allowed_unverified_inner_fields()` - superset allowlist for decrypted inner JSON before session verification completes.
+- `allowed_unverified_inner_fields()` - superset allowlist for decrypted inner JSON before session verification
+  completes.
 
 Unknown fields → message dropped. This limits attack surface during the most vulnerable pre-verification phase.
 
 ## Rate Limits
 
 - 5 messages/second per peer (client-side, excess dropped).
-- Pre-verification message size limit: 33,260 bytes (size of largest KE message; lifted during file transfer/voice/rekey).
+- Pre-verification message size limit: 33,260 bytes (size of largest KE message; lifted during file
+  transfer/voice/rekey).
 - Max message size: 64 MiB (`MAX_MESSAGE_SIZE`).
 - Skipped-counter buffer: 1,000 entries (out-of-order delivery + memory exhaustion guard).
 
 ## Traffic Shaping
 
-When encrypted and not transferring files, clients MAY send `DUMMY_MESSAGE` (type 12) packets every tick, up to `MAX_DUMMY_PACKET_SIZE = 512` bytes. Dummy messages go through full encrypt/decrypt + ratchet; counters advance normally. Disabled during file transfers.
+When encrypted and not transferring files, clients MAY send `DUMMY_MESSAGE` (type 12) packets every tick, up to
+`MAX_DUMMY_PACKET_SIZE = 512` bytes. Dummy messages go through full encrypt/decrypt + ratchet; counters advance
+normally. Disabled during file transfers.
 
 ## Configuration
 
-`config.py` exposes singletons `ClientConfigHandler()` / `ServerConfigHandler()`. Auto-creates `config.json` on first run.
+`config.py` exposes singletons `ClientConfigHandler()` / `ServerConfigHandler()`. Auto-creates `config.json` on first
+run.
 
 Key client options: rekey interval/count, dummy packet toggle, file paths, voice format, nickname.
 Key server options: dead drop storage path + enabled flag, max dead drop size (default 10 GB), `max_unexpected_msgs`.
@@ -179,34 +230,38 @@ Server identifier stored in `identifier.txt` (auto-created; mixed into all HKDF 
 
 ## UI Abstraction
 
-All UIs implement `UIBase` (`SecureChatABCs/ui_base.py`). Capability flags (`FILE_TRANSFER`, `VOICE_CALLS`, `DEADDROP`, etc.) let the client adapt. When adding protocol features, check capability flags before calling UI methods.
+All UIs implement `UIBase` (`SecureChatABCs/ui_base.py`). Capability flags (`FILE_TRANSFER`, `VOICE_CALLS`, `DEADDROP`,
+etc.) let the client adapt. When adding protocol features, check capability flags before calling UI methods.
 
 ## Testing Notes
 
-- `tests/test_new_client.py` uses helper `_make_client()` to build a client with a MagicMock UI and a stub socket - safe to instantiate without network.
-- `_full_ke_protocol_pair()` / `_inject_ready_protocol()` give tests a real post-KE protocol state for round-trip encrypt/decrypt.
+- `tests/test_new_client.py` uses helper `_make_client()` to build a client with a MagicMock UI and a stub socket - safe
+  to instantiate without network.
+- `_full_ke_protocol_pair()` / `_inject_ready_protocol()` give tests a real post-KE protocol state for round-trip
+  encrypt/decrypt.
 - `patch("new_client.send_message")` intercepts raw sends for keepalive / KE tests.
 - When adding new dispatched cases, add tests that patch the owning manager method (not the facade).
 
 ### Key Derivation Test Vectors
 
-`tests/key_derivation_vectors.json` - 256 vectors per method (512 for rekey-aware methods: 256 `rekey=False` + 256 `rekey=True`).
+`tests/key_derivation_vectors.json` - 256 vectors per method (512 for rekey-aware methods: 256 `rekey=False` + 256
+`rekey=True`).
 
 Top-level structure: `{ "<method_name>": [ { "inputs": {...}, "output": ... }, ... ] }`
 
 All `bytes` values are base64-encoded strings. `int`/`bool` inputs are stored as-is.
 
-| Method | Input fields                                                       | Output |
-|---|--------------------------------------------------------------------|---|
-| `derive_combined_random` | `own_random`, `peer_random`, `server_id`, `rekey`                  | base64 bytes |
-| `derive_intermediary_key_1` | `mlkem_secret`, `combined_random`, `server_id`, `rekey`            | base64 bytes |
-| `derive_intermediary_key_2` | `int_key_1`, `dh_secret`, `server_id`, `rekey`                     | base64 bytes |
-| `derive_otp_material` | `hqc_secret`, `combined_random`, `server_id`, `rekey`              | base64 bytes |
-| `derive_chain_key_root` | `mlkem_secret`, `dh_secret`, `client_random`, `server_id`, `rekey` | base64 bytes |
+| Method                      | Input fields                                                       | Output                                                        |
+|-----------------------------|--------------------------------------------------------------------|---------------------------------------------------------------|
+| `derive_combined_random`    | `own_random`, `peer_random`, `server_id`, `rekey`                  | base64 bytes                                                  |
+| `derive_intermediary_key_1` | `mlkem_secret`, `combined_random`, `server_id`, `rekey`            | base64 bytes                                                  |
+| `derive_intermediary_key_2` | `int_key_1`, `dh_secret`, `server_id`, `rekey`                     | base64 bytes                                                  |
+| `derive_otp_material`       | `hqc_secret`, `combined_random`, `server_id`, `rekey`              | base64 bytes                                                  |
+| `derive_chain_key_root`     | `mlkem_secret`, `dh_secret`, `client_random`, `server_id`, `rekey` | base64 bytes                                                  |
 | `compute_verification_pair` | `otp`, `own_chain_root`, `peer_chain_root`, `combined_random`      | `{"verification_key": ..., "key_verification_material": ...}` |
-| `derive_message_key` | `chain_key`, `counter` (int)                                       | base64 bytes |
-| `ratchet_chain_key` | `chain_key`, `counter` (int)                                       | base64 bytes |
-| `mix_dh_with_chain` | `chain_key`, `dh_shared`, `counter` (int)                          | base64 bytes |
+| `derive_message_key`        | `chain_key`, `counter` (int)                                       | base64 bytes                                                  |
+| `ratchet_chain_key`         | `chain_key`, `counter` (int)                                       | base64 bytes                                                  |
+| `mix_dh_with_chain`         | `chain_key`, `dh_shared`, `counter` (int)                          | base64 bytes                                                  |
 
 ### Encryption Class Test Vectors
 
@@ -214,14 +269,16 @@ All `bytes` values are base64-encoded strings. `int`/`bool` inputs are stored as
 
 Top-level structure: `{ "<class_name>": [ { "inputs": {...}, "output": ... }, ... ] }`
 
-All `bytes` values are base64-encoded strings. `int`/`bool` inputs are stored as-is. `associated_data` is `null` when not provided.
+All `bytes` values are base64-encoded strings. `int`/`bool` inputs are stored as-is. `associated_data` is `null` when
+not provided.
 
-| Class | Input fields | Notes | Output |
-|---|---|---|---|
-| `DoubleEncryptor` | `key` (64B), `OTP_secret` (64B), `message_counter` (int), `nonce` (12B), `plaintext`, `associated_data` (base64 or null), `pad` (bool) | `pad=True` applies ISO 7816-4 padding | base64 ciphertext |
-| `ChunkIndependentDoubleEncryptor` | `key` (64B), `nonce` (16B), `plaintext` | AES-CTR + ChaCha20, no AEAD, no padding | base64 ciphertext |
-| `KeyExchangeDoubleEncryptor` | `key` (64B), `nonce` (12B), `plaintext` | AES-GCM-SIV + ChaCha20-Poly1305, no AAD | base64 ciphertext |
+| Class                             | Input fields                                                                                                                           | Notes                                   | Output            |
+|-----------------------------------|----------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------|-------------------|
+| `DoubleEncryptor`                 | `key` (64B), `OTP_secret` (64B), `message_counter` (int), `nonce` (12B), `plaintext`, `associated_data` (base64 or null), `pad` (bool) | `pad=True` applies ISO 7816-4 padding   | base64 ciphertext |
+| `ChunkIndependentDoubleEncryptor` | `key` (64B), `nonce` (16B), `plaintext`                                                                                                | AES-CTR + ChaCha20, no AEAD, no padding | base64 ciphertext |
+| `KeyExchangeDoubleEncryptor`      | `key` (64B), `nonce` (12B), `plaintext`                                                                                                | AES-GCM-SIV + ChaCha20-Poly1305, no AAD | base64 ciphertext |
 
 ## Known Limitations
 
-Python implementation - no constant-time guarantees. Not production-ready; timing attacks possible. Server sees metadata (IPs, padded sizes, timing). Endpoint compromise leaks keys and plaintext. Educational/research use only.
+Python implementation - no constant-time guarantees. Not production-ready; timing attacks possible. Server sees
+metadata (IPs, padded sizes, timing). Endpoint compromise leaks keys and plaintext. Educational/research use only.

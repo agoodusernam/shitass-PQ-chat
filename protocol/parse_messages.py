@@ -53,7 +53,7 @@ def parse_ke_dsa_random(data: bytes) -> dict[str, Any]:
         client_random = base64.b64decode(message["client_random"], validate=True)
     except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError, binascii.Error) as e:
         raise DecodeError(f"KE_DSA_RANDOM decode error: {type(e).__name__}") from e
-
+    
     peer_version = message.get("version", "")
     version_warning = ""
     if peer_version and peer_version != PROTOCOL_VERSION:

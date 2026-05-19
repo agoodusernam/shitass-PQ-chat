@@ -645,7 +645,7 @@ class DebugGUI(UIBase):
                 else:
                     display = str(val)
                 txt.insert(tk.END, f"  {attr:<35} {display}\n")
-
+        
         _write_section("Chain Keys & Counters", [
             "send_chain_key", "receive_chain_key",
             "message_counter", "peer_counter",
@@ -776,7 +776,7 @@ class DebugGUI(UIBase):
                         else:
                             display = str(val)
                         lines.append(f"    {attr:<35} {display}")
-
+                
                 _section("Chain Keys & Counters", [
                     "send_chain_key", "receive_chain_key",
                     "message_counter", "peer_counter",

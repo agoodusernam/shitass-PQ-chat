@@ -56,17 +56,17 @@ config = ClientConfigHandler()
 
 class DeaddropManager:
     """Manages a single client's dead drop session with the server."""
-
+    
     def __init__(self, client: "SecureChatClient") -> None:
         self._client = client
-
+        
         # Session / handshake
         self.supported: bool = False
         self.shared_secret: bytes | None = None
         self._in_progress: bool = False
         self._started: bool = False
         self._handshake_event: threading.Event = threading.Event()
-
+        
         # Upload state
         self._chunks: dict[int, bytes] = {}
         self._file_size: int = 0
@@ -74,7 +74,7 @@ class DeaddropManager:
         self._password_hash: str = ""
         self._upload_accept_event: threading.Event = threading.Event()
         self._upload_accepted: bool = False
-
+        
         # Download state
         self.download_in_progress: bool = False
         self._download_name: str = ""
@@ -82,7 +82,7 @@ class DeaddropManager:
         self._download_chunks: dict[int, bytes] = {}
         self._download_max_index: int = -1
         self._download_key: bytes | None = None
-
+        
         # Streaming download state
         self._dl_encryptor: ChunkIndependentDoubleEncryptor | None = None
         self._dl_password: str = ""
@@ -91,27 +91,27 @@ class DeaddropManager:
         self._dl_part_path: str | None = None
         self._dl_file: BinaryIO | None = None
         self._dl_bytes_downloaded: int = 0
-
+    
     # internal accessors
-
+    
     @property
     def _ui(self) -> UIBase:
         return self._client.ui
-
+    
     @property
     def _socket(self) -> socket:
         return self._client._socket
-
+    
     @property
     def _server_identifier(self) -> str:
         return self._client.server_identifier
-
+    
     # public API
-
+    
     @property
     def session_active(self) -> bool:
         return self.shared_secret is not None
-
+    
     def reset(self) -> None:
         """Clear every piece of dead drop session state. Called on disconnect."""
         self.shared_secret = None
@@ -138,7 +138,7 @@ class DeaddropManager:
         self._started = False
         self._upload_accept_event.set()
         self._upload_accepted = False
-
+    
     def start_handshake(self) -> None:
         """Send a DEADDROP_START frame to the server to begin the key-exchange handshake."""
         if not self._client.connected:
@@ -147,15 +147,15 @@ class DeaddropManager:
         if self._in_progress:
             self._ui.display_error_message("Deaddrop already in progress")
             return
-
+        
         self.shared_secret = None
         self.supported = False
         self._handshake_event.clear()
         self._started = True
-
+        
         self._ui.display_system_message("Starting deaddrop handshake")
         encode_send_message(self._socket, {"type": MessageType.DEADDROP_START})
-
+    
     def wait_for_handshake(self, timeout: float = 3.0) -> bool:
         """Block until the handshake completes or *timeout* seconds elapse."""
         if not self._client.connected:
@@ -168,19 +168,19 @@ class DeaddropManager:
             self._ui.display_error_message("Deaddrop handshake timed out")
             return False
         return bool(self.shared_secret)
-
+    
     def upload(self, name: str, password: str, file_path: Path) -> None:
         """Encrypt and upload a file to the server's deaddrop store."""
         if not self.shared_secret:
             self._ui.display_error_message("Deaddrop not initialised - handshake required")
             return
-
+        
         if not file_path.is_file():
             self._ui.display_error_message(f"File not found: {file_path}")
             return
-
+        
         file_size = file_path.resolve().stat().st_size
-
+        
         hkdf_salt = os.urandom(DEADDROP_HKDF_SALT_SIZE)
         key = self._derive_file_key(password, hkdf_salt)
         h = HMAC(key, hashes.SHA3_512())
@@ -188,12 +188,12 @@ class DeaddropManager:
             while chunk := f.read(8192):
                 h.update(chunk)
         file_hash = base64.b64encode(h.finalize()).decode("utf-8")
-
+        
         password_hash = self._hash_password(password)
         self._file_size = file_size
         self._name = name
         self._password_hash = password_hash
-
+        
         inner_meta = {
             "type":               MessageType.DEADDROP_UPLOAD,
             "name":               name,
@@ -206,16 +206,16 @@ class DeaddropManager:
         self._upload_accept_event.clear()
         outer_meta = self._encrypt_inner(json.dumps(inner_meta).encode("utf-8"))
         encode_send_message(self._socket, outer_meta)
-
+        
         if not self._upload_accept_event.wait(timeout=10.0):
             self._ui.display_error_message("Deaddrop upload timed out waiting for server acceptance")
             return
         if not self._upload_accepted:
             return
-
+        
         encryptor = ChunkIndependentDoubleEncryptor(key)
         self._chunks.clear()
-
+        
         chunk_index = 0
         file_ext = os.path.splitext(file_path)[1][:DEADDROP_FILE_EXT_HEADER_SIZE]
         header = file_ext.encode("utf-8").ljust(DEADDROP_FILE_EXT_HEADER_SIZE, b"\x00")
@@ -232,29 +232,29 @@ class DeaddropManager:
                 nonce = hashlib.sha3_256(key + chunk_index.to_bytes(4, byteorder='little')).digest()[:CTR_NONCE_SIZE]
                 if not chunk_data:
                     break
-
+                
                 ct = encryptor.encrypt(nonce, plaintext_chunk)
                 payload = chunk_index.to_bytes(4, byteorder='little') + ct
                 outer_nonce = os.urandom(NONCE_SIZE)
                 frame = self._encrypt_chunk(payload, outer_nonce)
-
+                
                 result = send_message(self._socket, frame)
                 if result is not None:
                     self._ui.display_error_message(f"Failed to send chunk: {result}")
                     chunk_index += 1
                     continue
-
+                
                 chunk_index += 1
                 if chunk_index % 50 == 0:
                     self._ui.display_system_message(
                             f"{utils.bytes_to_human_readable(chunk_index * 1024 * 1024)}/"
                             f"{utils.bytes_to_human_readable(file_size)} sent",
                     )
-
+        
         complete_outer = self._encrypt_inner(json.dumps({"type": MessageType.DEADDROP_COMPLETE}).encode("utf-8"))
         encode_send_message(self._socket, complete_outer)
         self._ui.display_system_message("Deaddrop upload complete")
-
+    
     def check(self, name: str) -> None:
         """Ask the server whether a deaddrop entry with the given *name* exists."""
         if not self.shared_secret:
@@ -266,13 +266,13 @@ class DeaddropManager:
             "name": name,
         }).encode("utf-8"))
         encode_send_message(self._socket, outer)
-
+    
     def download(self, name: str, password: str) -> None:
         """Request a deaddrop file download from the server."""
         if not self.shared_secret:
             self._ui.display_error_message("Deaddrop not initialised - handshake required")
             return
-
+        
         self._name = name
         self._password_hash = self._hash_password(password)
         self._dl_password = password
@@ -291,15 +291,15 @@ class DeaddropManager:
             except Exception:
                 pass
             self._dl_file = None
-
+        
         outer_dl = self._encrypt_inner(json.dumps({
             "type": MessageType.DEADDROP_DOWNLOAD,
             "name": name,
         }).encode("utf-8"))
         encode_send_message(self._socket, outer_dl)
-
+    
     # server-message handlers
-
+    
     def handle_start_response(self, message: dict[str, Any]) -> None:
         """Process the server's DEADDROP_START response, derive the shared secret, and reply."""
         supported = bool(message.get("supported", False))
@@ -312,7 +312,7 @@ class DeaddropManager:
             self._handshake_event.set()
             self._started = False
             return
-
+        
         try:
             mlkem_public_b64 = str(message["mlkem_public"])
             mlkem_public = base64.b64decode(mlkem_public_b64, validate=True)
@@ -326,17 +326,17 @@ class DeaddropManager:
             self._handshake_event.set()
             self._started = False
             return
-
+        
         kem_shared_secret, mlkem_ciphertext = MLKEM1024PublicKey.from_public_bytes(mlkem_public).encapsulate()
-
+        
         self.shared_secret = ConcatKDFHash(
                 algorithm=hashes.SHA3_512(),
                 length=DEADDROP_KDF_KEY_LENGTH,
                 otherinfo=b"deaddrop_key_exchange" + self._server_identifier.encode("utf-8"),
         ).derive(kem_shared_secret)
-
+        
         self.supported = True
-
+        
         encode_send_message(self._socket, {
             "type":     MessageType.DEADDROP_KE_RESPONSE,
             "mlkem_ct": base64.b64encode(mlkem_ciphertext).decode("utf-8"),
@@ -344,13 +344,13 @@ class DeaddropManager:
         self._ui.display_system_message("Deaddrop handshake complete")
         self._handshake_event.set()
         self._started = False
-
+    
     def handle_encrypted_message(self, outer: dict[str, Any]) -> None:
         """Decrypt and dispatch an incoming DEADDROP_MESSAGE frame from the server."""
         if not self.shared_secret:
             self._ui.display_error_message("Received deaddrop message before handshake was complete")
             return
-
+        
         try:
             nonce_b64 = str(outer["nonce"])
             ct_b64 = str(outer["ciphertext"])
@@ -362,12 +362,12 @@ class DeaddropManager:
         except binascii.Error:
             self._ui.display_error_message("Invalid base64 in deaddrop message from server")
             return
-
+        
         aad_raw = json.dumps({
             "type":  MessageType.DEADDROP_MESSAGE,
             "nonce": nonce_b64,
         }).encode("utf-8")
-
+        
         try:
             aead = ChaCha20Poly1305(self.shared_secret)
             inner_bytes = aead.decrypt(nonce, ciphertext, aad_raw)
@@ -375,7 +375,7 @@ class DeaddropManager:
         except Exception:
             self._ui.display_error_message("Failed to decrypt deaddrop message from server")
             return
-
+        
         inner_type = MessageType(int(inner.get("type", MessageType.NONE)))
         match inner_type:
             case MessageType.DEADDROP_CHECK_RESPONSE:
@@ -404,7 +404,7 @@ class DeaddropManager:
                 self.download_in_progress = False
             case _:
                 self._ui.display_error_message(f"Received unknown deaddrop message type {inner_type}")
-
+    
     def handle_binary_chunk(self, message_data: bytes) -> None:
         """Decrypt a raw binary deaddrop chunk frame and forward it to the streaming processor.
 
@@ -424,9 +424,9 @@ class DeaddropManager:
                 int.from_bytes(decrypted[:DEADDROP_LENGTH_PREFIX_SIZE], "big"),
                 decrypted[DEADDROP_LENGTH_PREFIX_SIZE:],
         )
-
+    
     # inner-type handlers
-
+    
     def _on_check_response(self, inner: dict[str, Any]) -> None:
         exists = bool(inner.get("exists", False))
         name = self._name or inner.get("name", "")
@@ -435,7 +435,7 @@ class DeaddropManager:
             self._ui.display_system_message(f"Deaddrop '{name}' exists on server.")
         else:
             self._ui.display_error_message(f"Deaddrop '{name}' does not exist on server.")
-
+    
     def _on_accept(self, inner: dict[str, Any]) -> None:
         self._in_progress = True
         if self.download_in_progress:
@@ -457,7 +457,7 @@ class DeaddropManager:
             self._upload_accepted = True
             self._upload_accept_event.set()
             self._ui.display_system_message("Deaddrop upload accepted by server")
-
+    
     def _on_prove(self, inner: dict[str, Any]) -> None:
         salt_b64 = inner.get("salt")
         if not isinstance(salt_b64, str):
@@ -468,11 +468,11 @@ class DeaddropManager:
         except binascii.Error:
             self._ui.display_error_message("Invalid base64 salt in deaddrop prove message")
             return
-
+        
         if not self._password_hash:
             self._ui.display_error_message("No stored deaddrop password hash for download")
             return
-
+        
         pbk = PBKDF2HMAC(
                 algorithm=hashes.SHA3_512(),
                 length=DEADDROP_KDF_KEY_LENGTH,
@@ -485,7 +485,7 @@ class DeaddropManager:
             "hash": base64.b64encode(client_hash).decode("utf-8"),
         }).encode("utf-8"))
         encode_send_message(self._socket, outer_msg)
-
+    
     def _on_data(self, inner: dict[str, Any]) -> None:
         if not self.download_in_progress:
             return
@@ -497,14 +497,14 @@ class DeaddropManager:
             self._ui.display_error_message("Malformed deaddrop data from server")
             return
         self._process_data_streaming(chunk_index, chunk_data)
-
+    
     # key derivation
-
+    
     def _derive_file_key(self, password: str, hkdf_salt: bytes | None = None) -> bytes:
         salt = hashlib.sha3_512(
                 b"deaddrop-file-key-v1:" + self._server_identifier.encode("utf-8"),
         ).digest()
-
+        
         argon = Argon2id(
                 salt=salt,
                 memory_cost=1024 * 1024 * 4,
@@ -513,7 +513,7 @@ class DeaddropManager:
                 length=DOUBLE_KEY_SIZE,
         )
         stretched = argon.derive(password.encode("utf-8"))
-
+        
         hkdf = HKDF(
                 algorithm=hashes.SHA3_512(),
                 length=DOUBLE_KEY_SIZE,
@@ -521,7 +521,7 @@ class DeaddropManager:
                 info=b"deaddrop-file-encryption-key-v1",
         )
         return hkdf.derive(stretched)
-
+    
     def _hash_password(self, password: str) -> str:
         """Derive a slow Argon2id hash of the deaddrop password for server-side authentication."""
         self._ui.display_system_message("Hashing deaddrop password, program may be unresponsive.")
@@ -534,9 +534,9 @@ class DeaddropManager:
                 length=DOUBLE_KEY_SIZE,
         )
         return base64.b64encode(hasher.derive(password.encode("utf-8"))).decode("utf-8")
-
+    
     # frame-level crypto helpers
-
+    
     def _encrypt_inner(self, inner: bytes) -> dict[str, Any]:
         """Encrypt *inner* with ChaCha20-Poly1305 using the deaddrop shared secret."""
         if not self.shared_secret:
@@ -553,7 +553,7 @@ class DeaddropManager:
             "nonce":      base64.b64encode(nonce).decode("utf-8"),
             "ciphertext": base64.b64encode(ciphertext).decode("utf-8"),
         }
-
+    
     def _encrypt_chunk(self, chunk: bytes, nonce: bytes) -> bytes:
         """Encrypt a raw binary deaddrop chunk and prepend the magic number and nonce for framing."""
         if not self.shared_secret:
@@ -561,9 +561,9 @@ class DeaddropManager:
         aead = ChaCha20Poly1305(self.shared_secret)
         ciphertext = aead.encrypt(nonce, chunk, nonce)
         return constants.MAGIC_NUMBER_DEADDROPS + nonce + ciphertext
-
+    
     # streaming download
-
+    
     def _rename_invalid(self, path: str | Path) -> None:
         """Rename a download whose HMAC failed (or was missing) with a ``.corrupt`` suffix."""
         path = Path(path)
@@ -574,7 +574,7 @@ class DeaddropManager:
             except OSError:
                 self._ui.display_error_message(f"Failed to rename corrupt file: {path}")
             return
-
+        
         if new_path.is_dir():
             new_path = new_path / (path.stem + str(int(time.time())) + "".join(path.suffixes) + ".corrupt")
             try:
@@ -582,7 +582,7 @@ class DeaddropManager:
             except OSError:
                 self._ui.display_error_message(f"Failed to rename corrupt file: {path}")
             return
-
+        
         if new_path.is_file():
             corrupt_folder_path: Path = Path('currupt_deaddrop_files').resolve()
             corrupt_folder_path.mkdir(parents=True, exist_ok=True)
@@ -596,7 +596,7 @@ class DeaddropManager:
                 os.replace(path, new_path)
             except OSError:
                 self._ui.display_error_message(f"Failed to rename corrupt file: {path}")
-
+    
     def _finalise_download(self) -> None:
         """Close the partial download file, rename it to its final name, and verify its HMAC."""
         self._dl_expected_index = 0
@@ -609,11 +609,11 @@ class DeaddropManager:
                 pass
             finally:
                 self._dl_file = None
-
+        
         if not self._dl_part_path:
             self._ui.display_error_message("No deaddrop partial file to finalise")
             return
-
+        
         part_path = self._dl_part_path
         final_path = part_path[:-5] if part_path.lower().endswith(".part") else part_path
         try:
@@ -621,7 +621,7 @@ class DeaddropManager:
         except Exception as exc:
             self._ui.display_error_message(f"Failed to finalise deaddrop file: {exc}")
             return
-
+        
         expected_b64 = self._download_expected_hash or ""
         key = self._download_key
         if not expected_b64:
@@ -634,7 +634,7 @@ class DeaddropManager:
             self._rename_invalid(final_path)
             self._dl_part_path = None
             return
-
+        
         if isinstance(expected_b64, str) and expected_b64.startswith("b'") and expected_b64.endswith("'"):
             expected_b64 = expected_b64[2:-1]
         try:
@@ -644,13 +644,13 @@ class DeaddropManager:
             self._rename_invalid(final_path)
             self._dl_part_path = None
             return
-
+        
         h = HMAC(key, hashes.SHA3_512())
         with open(final_path, "rb") as f:
             while chunk := f.read(8192):
                 h.update(chunk)
         computed_hmac = h.finalize()
-
+        
         if bytes_eq(computed_hmac, expected_hmac):
             self._ui.display_system_message("Deaddrop file integrity verified (HMAC OK).")
         else:
@@ -662,11 +662,11 @@ class DeaddropManager:
             self._rename_invalid(final_path)
             self._dl_part_path = None
             return
-
+        
         self._ui.on_deaddrop_download_complete(self._name, final_path)
         self._ui.display_system_message(f"Deaddrop download complete, saved to: {final_path}")
         self._dl_part_path = None
-
+    
     def _process_data_streaming(self, chunk_index: int, chunk_data: bytes) -> None:
         """Decrypt and stream-write a single deaddrop download chunk to the partial output file."""
         if chunk_index != self._dl_expected_index:
@@ -674,18 +674,18 @@ class DeaddropManager:
                     f"Unexpected deaddrop chunk index {chunk_index}, expected {self._dl_expected_index}",
             )
             return
-
+        
         if (chunk_index + 1) % 100 == 0:
             size_so_far = utils.bytes_to_human_readable(self._dl_bytes_downloaded)
             self._ui.display_system_message(f"Received {size_so_far} so far")
-
+        
         if self._download_key is None:
             self._ui.display_error_message("Deaddrop key not initialised")
             return
-
+        
         if self._dl_encryptor is None:
             self._dl_encryptor = ChunkIndependentDoubleEncryptor(self._download_key)
-
+        
         try:
             nonce = hashlib.sha3_256(
                     self._download_key + chunk_index.to_bytes(4, byteorder='little'),
@@ -698,7 +698,7 @@ class DeaddropManager:
                 ext_header = pt[:DEADDROP_FILE_EXT_HEADER_SIZE]
                 body = pt[DEADDROP_FILE_EXT_HEADER_SIZE:]
                 self._dl_bytes_downloaded += len(body)
-
+                
                 file_ext = ext_header.rstrip(b"\x00").decode("utf-8", errors="ignore")
                 file_ext = "".join(c for c in file_ext if c.isalnum() or c in ".-_") or ".bin"
                 safe_name = "".join(c for c in self._name if c.isalnum() or c in ("-", "_")) or "deaddrop"
@@ -707,7 +707,7 @@ class DeaddropManager:
                 else:
                     final_name = safe_name
                 part_path = final_name + ".part"
-
+                
                 try:
                     f = open(part_path, "wb")
                 except Exception as exc:
@@ -715,7 +715,7 @@ class DeaddropManager:
                     return
                 self._dl_file = f
                 self._dl_part_path = part_path
-
+                
                 if body:
                     try:
                         f.write(body)

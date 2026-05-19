@@ -413,9 +413,10 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         We intentionally obscure if a client was rate limited or not
         to prevent information leakage and other oracle related vulnerabilities.
     """
-    server: SecureChatServer
+    server: SecureChatServer  # type: ignore[param-type]
     
-    def __init__(self, request: socket.socket | tuple[bytes, socket.socket], client_address: str,
+    def __init__(self, request: socket.socket | tuple[bytes, socket.socket],
+                 client_address: str,
                  server: SecureChatServer,
                  ) -> None:
         self.client_id: str = ""

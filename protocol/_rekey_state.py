@@ -33,7 +33,7 @@ class _RekeyState:
     """
     
     def __init__(self, protocol: "SecureChatProtocol") -> None:
-        self._protocol = protocol
+        self._protocol: "SecureChatProtocol" = protocol
         
         # In-flight rekey KE state
         self._rke_step: int = 0  # 0=off, 1=I am A (initiator), 2=I am B (responder)
@@ -216,7 +216,7 @@ class _RekeyState:
         priv = MLDSA87PrivateKey.generate()
         self._rke_mldsa_priv = priv
         self._rke_mldsa_pub = priv.public_key().public_bytes_raw()
-
+    
     def create_dsa_random(self, is_initiator: bool) -> dict:
         """Start a rekey: generate ephemeral ML-DSA keys + client random; return dsa_random payload."""
         self._generate_mldsa_keypair()
@@ -300,7 +300,7 @@ class _RekeyState:
         
         try:
             MLDSA87PublicKey.from_public_bytes(self._rke_peer_mldsa_pub).verify(
-                mldsa_sig, mlkem_pub, context=ML_DSA_CONTEXT,
+                    mldsa_sig, mlkem_pub, context=ML_DSA_CONTEXT,
             )
         except InvalidSignature as exc:
             raise ValueError("ML-DSA signature verification failed on rekey mlkem_pubkey") from exc
@@ -355,7 +355,7 @@ class _RekeyState:
         signed_payload = mlkem_ct + enc_hqc_pub + enc_x25519_pub + nonce1 + nonce2
         try:
             MLDSA87PublicKey.from_public_bytes(self._rke_peer_mldsa_pub).verify(
-                mldsa_sig, signed_payload, context=ML_DSA_CONTEXT,
+                    mldsa_sig, signed_payload, context=ML_DSA_CONTEXT,
             )
         except InvalidSignature as exc:
             raise ValueError("ML-DSA signature verification failed on rekey mlkem_ct_keys") from exc
@@ -417,7 +417,7 @@ class _RekeyState:
         signed_payload = enc_x25519_pub + enc_hqc_ct + nonce1 + nonce2
         try:
             MLDSA87PublicKey.from_public_bytes(self._rke_peer_mldsa_pub).verify(
-                mldsa_sig, signed_payload, context=ML_DSA_CONTEXT,
+                    mldsa_sig, signed_payload, context=ML_DSA_CONTEXT,
             )
         except InvalidSignature as exc:
             raise ValueError("ML-DSA signature verification failed on rekey x25519_hqc_ct") from exc

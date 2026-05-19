@@ -85,7 +85,7 @@ class _QueueKind(enum.Enum):
 def _build_aad(msg_type: MessageType, counter: int, nonce: bytes, dh_pub: bytes) -> bytes:
     """
     Build the JSON-encoded AAD used by both message and file-chunk encryption.
-    
+
     :param msg_type: ``MessageType.ENCRYPTED_MESSAGE`` or ``MessageType.FILE_CHUNK``.
     :param counter:  The message / chunk counter.
     :param nonce:    The raw nonce bytes (will be base64-encoded in the AAD).
@@ -100,6 +100,7 @@ def _build_aad(msg_type: MessageType, counter: int, nonce: bytes, dh_pub: bytes)
         "dh_public_key": base64.b64encode(dh_pub).decode('utf-8'),
     }
     return json.dumps(aad_data).encode('utf-8')
+
 
 class SecureChatProtocol(ProtocolBase):
     """
@@ -289,7 +290,7 @@ class SecureChatProtocol(ProtocolBase):
     def reset_key_exchange(self) -> None:
         """
         Reset all cryptographic state to initial values for key exchange restart.
-        
+
         These values will be rewritten quickly, so it's not necessary to zero them manually.
         Even that likely wouldn't actually clear the data from RAM
         """
@@ -363,11 +364,11 @@ class SecureChatProtocol(ProtocolBase):
     def send_emergency_close(self) -> bool:
         """
         Send an emergency close message immediately, bypassing the queue.
-        
+
         Behavior:
             - If encryption is ready, encrypt immediately and send over the socket.
             - If encryption is not ready, send plaintext immediately.
-        
+
         Returns:
             bool: True if the message was sent successfully, False otherwise.
         """
@@ -397,7 +398,7 @@ class SecureChatProtocol(ProtocolBase):
     
     def _sender_loop(self) -> None:
         """Background thread loop that sends messages every 250 ms.
-        
+
         Dequeues one item per tick, encrypts it, and sends it over the socket.
         When the queue is empty and dummy-message sending is enabled, a random
         dummy packet is sent instead to obscure traffic patterns.
@@ -423,9 +424,9 @@ class SecureChatProtocol(ProtocolBase):
         
         return None
     
-    def _prepare_item_for_sending(self, item: tuple["_QueueKind", Any] | bytes | None) -> tuple[bytes | None, bool]:
+    def _prepare_item_for_sending(self, item: tuple["_QueueKind", Any] | bytes | bytearray | None) -> tuple[bytes | None, bool]:
         """Convert a queue item into bytes ready for transmission.
-        
+
         Returns (data_to_send, switch_keys_after) where switch_keys_after signals
         that pending keys should be activated after the message is sent.
         """
@@ -536,7 +537,7 @@ class SecureChatProtocol(ProtocolBase):
         
         try:
             MLDSA87PublicKey.from_public_bytes(self._peer_mldsa_public_key).verify(
-                mldsa_signature, mlkem_public_key, context=ML_DSA_CONTEXT,
+                    mldsa_signature, mlkem_public_key, context=ML_DSA_CONTEXT,
             )
         except InvalidSignature as exc:
             raise ValueError("ML-DSA signature verification failed on KE_MLKEM_PUBKEY") from exc
@@ -582,7 +583,7 @@ class SecureChatProtocol(ProtocolBase):
         # Verify signature
         try:
             MLDSA87PublicKey.from_public_bytes(self._peer_mldsa_public_key).verify(
-                parsed["mldsa_signature"], parsed["signed_payload"], context=ML_DSA_CONTEXT,
+                    parsed["mldsa_signature"], parsed["signed_payload"], context=ML_DSA_CONTEXT,
             )
         except InvalidSignature as exc:
             raise ValueError("ML-DSA signature verification failed on KE_MLKEM_CT_KEYS") from exc
@@ -647,7 +648,7 @@ class SecureChatProtocol(ProtocolBase):
         # Verify signature
         try:
             MLDSA87PublicKey.from_public_bytes(self._peer_mldsa_public_key).verify(
-                parsed["mldsa_signature"], parsed["signed_payload"], context=ML_DSA_CONTEXT,
+                    parsed["mldsa_signature"], parsed["signed_payload"], context=ML_DSA_CONTEXT,
             )
         except InvalidSignature as exc:
             raise ValueError("ML-DSA signature verification failed on KE_X25519_HQC_CT") from exc
@@ -776,11 +777,11 @@ class SecureChatProtocol(ProtocolBase):
         Encrypt a message with authentication and replay protection using perfect forward secrecy.
         Integrates a Double Ratchet step using X25519 by including a fresh sender public key per message
         and mixing the DH shared secret into the chain key derivation.
-        
+
         :param plaintext: The plaintext message to encrypt.
         :return: The encrypted message as bytes, ready to send.
         :raises: ValueError: If no shared key or send chain key is established.
-        
+
         Additional MAC rationale:
             For authentication with AES or Poly1305, the message must be decrypted.
             To decrypt the message we need to derive the key.
@@ -830,7 +831,7 @@ class SecureChatProtocol(ProtocolBase):
         """Decrypt and authenticate a message using perfect forward secrecy with proper state management.
         Incorporates Double Ratchet: mixes DH shared secret (from peer's included X25519 public key and our
         message-phase private key) into the chain before deriving the message key.
-        
+
         Raises value error if message is invalid or verification fails.
         """
         if not self.shared_key or not self._receive_chain_key:
@@ -876,7 +877,7 @@ class SecureChatProtocol(ProtocolBase):
         self._commit_recv_state(counter, peer_dh_pub_bytes, new_chain_key, use_saved)
         if not use_saved and new_chain_key:
             self.messages_since_last_rekey += 1
-
+        
         return decrypted_data_str
     
     def encrypt_file_chunk(self, transfer_id: str, chunk_index: int, chunk_data: bytes) -> bytes:
@@ -969,7 +970,7 @@ class SecureChatProtocol(ProtocolBase):
             raise ValueError("Invalid message type in decrypted chunk")
         
         self._commit_recv_state(counter, peer_eph_pub, new_chain_key, use_saved)
-
+        
         return {
             "transfer_id": header["transfer_id"],
             "chunk_index": header["chunk_index"],
@@ -1034,7 +1035,7 @@ class SecureChatProtocol(ProtocolBase):
         message_key = _KeyDerivation.derive_message_key(mixed_chain_key, counter)
         new_chain_key = _KeyDerivation.ratchet_chain_key(temp_chain_key, counter)
         return message_key, new_chain_key
-
+    
     def _advance_recv_ratchet(self, counter: int, peer_pub_bytes: bytes) -> tuple[bytes, bytes, bool]:
         """Resolve chain key for *counter*, save/restore skipped states, derive message key.
 
@@ -1048,7 +1049,7 @@ class SecureChatProtocol(ProtocolBase):
                                  f"higher than {self.peer_counter} got {counter}")
             message_key, _ = self._ratchet_recv_step(saved, peer_pub_bytes, counter)
             return message_key, b"", True
-
+        
         if counter - (self.peer_counter + 1) > DEFAULT_MAX_RATCHET_FORWARD:
             raise ValueError("Message is probably legitimate but we would have to ratchet " +
                              "further than the configured maximum to attempt decryption.")
@@ -1059,7 +1060,7 @@ class SecureChatProtocol(ProtocolBase):
             temp_chain_key = _KeyDerivation.ratchet_chain_key(temp_chain_key, i)
         message_key, new_chain_key = self._ratchet_recv_step(temp_chain_key, peer_pub_bytes, counter)
         return message_key, new_chain_key, False
-
+    
     def _commit_recv_state(
             self, counter: int, peer_pub_bytes: bytes, new_chain_key: bytes, use_saved: bool,
     ) -> None:
@@ -1073,7 +1074,7 @@ class SecureChatProtocol(ProtocolBase):
             self._receive_chain_key = new_chain_key
             self.peer_counter = counter
             self.msg_peer_base_public = peer_pub_bytes
-
+    
     # rekey delegates
     
     def activate_pending_keys(self) -> None:

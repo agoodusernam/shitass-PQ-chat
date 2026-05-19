@@ -19,7 +19,7 @@ import os
 from hypothesis import HealthCheck, settings
 
 _COMMON = {
-    "deadline": None,
+    "deadline":              None,
     "suppress_health_check": [HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
 }
 

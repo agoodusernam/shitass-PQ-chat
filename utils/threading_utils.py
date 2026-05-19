@@ -16,7 +16,7 @@ class ThreadSafeDict(MutableMapping[K, V]):
     def __init__(self, *args, **kwargs) -> None:
         self._data: dict[K, V] = dict(*args, **kwargs)
         self.lock = threading.RLock()  # RLock so the same thread can re-enter
-        
+    
     def __getitem__(self, key: K) -> V:
         with self.lock:
             return self._data[key]

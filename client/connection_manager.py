@@ -31,26 +31,26 @@ config = ClientConfigHandler()
 
 class ConnectionManager:
     """Handles receive loop, dispatch, rate limiting, keepalive, and server-info frames."""
-
+    
     def __init__(self, client: "SecureChatClient") -> None:
         self._client = client
-        self._rl_window_start: float = 0.0
+        self._rl_window_start: float | int = 0.0
         self._rl_count: int = 0
-
+    
     @property
     def _ui(self) -> UIBase:
         return self._client.ui
-
+    
     @property
     def _protocol(self) -> ProtocolBase:
         return self._client._protocol
-
+    
     @property
     def _socket(self) -> socket:
         return self._client._socket
-
+    
     # receive loop
-
+    
     def receive_loop(self) -> None:
         """Background thread loop: read raw frames from socket, dispatch to handle_message."""
         while self._client.connected:
@@ -65,9 +65,9 @@ class ConnectionManager:
                     break
                 self._ui.display_error_message(f"Error receiving message: {e}")
                 break
-
+    
     # dispatch
-
+    
     def _try_log_decrypted(self, message_data: bytes, context: str) -> None:
         """Attempt to decrypt dropped message and log raw bytes + decrypted text if successful."""
         proto = getattr(self._client, "_protocol", None)
@@ -79,7 +79,7 @@ class ConnectionManager:
             self._ui.log_raw_bytes("RECV", context + ":decrypted", message_data, decrypted_text=decrypted)
         except (ValueError, Exception):
             self._ui.log_raw_bytes("RECV", context, message_data)
-
+    
     def handle_message(self, message_data: bytes) -> None:
         """Top-level dispatcher for all incoming frames.
 
@@ -98,7 +98,7 @@ class ConnectionManager:
                 self._try_log_decrypted(message_data, "dropped:rate_limit")
                 return
             self._rl_count += 1
-
+        
         if len(message_data) > 33260 and not client.bypass_rate_limits:
             self._ui.display_error_message(
                     "Received overly large message without key verification. Dropping."
@@ -106,7 +106,7 @@ class ConnectionManager:
             )
             self._try_log_decrypted(message_data, "dropped:oversized")
             return
-
+        
         try:
             message_json: dict[str, Any] = json.loads(message_data)
             message_type = MessageType(int(message_json.get("type")))  # type: ignore
@@ -116,18 +116,18 @@ class ConnectionManager:
                 self._ui.display_error_message("Received message that could not be decoded.")
                 self._ui.log_raw_bytes("RECV", "dropped:decode_error", message_data)
             return
-
+        
         if message_type == MessageType.NONE:
             self._ui.display_error_message("Received message with invalid type.")
             return
-
+        
         allowed = allowed_outer_fields(message_type)
         unexpected = first_unexpected_field(message_json, allowed)
         if unexpected:
             self._ui.display_error_message(
                     f"Dropped message from unverified peer due to unexpected field '{unexpected}'.")
             return
-
+        
         match message_type:
             case MessageType.KE_DSA_RANDOM:
                 client._key_exchange.handle_dsa_random(message_data)
@@ -167,7 +167,7 @@ class ConnectionManager:
                 client._deaddrop.handle_encrypted_message(message_json)
             case _:
                 self._ui.display_error_message(f"Unknown message type: {message_type}")
-
+    
     def handle_maybe_binary_chunk(self, message_data: bytes) -> bool:
         """Try to interpret a non-JSON frame as encrypted binary chunk (file transfer or deaddrop)."""
         if not len(message_data) >= FILE_CHUNK_CIPHERTEXT_OFFSET:
@@ -187,9 +187,9 @@ class ConnectionManager:
             except ValueError:
                 return False
         return False
-
+    
     # keepalive
-
+    
     def handle_keepalive(self) -> None:
         """Respond to a server keepalive ping to prevent the connection from being dropped."""
         response_message = {"type": MessageType.KEEP_ALIVE_RESPONSE}
@@ -197,14 +197,14 @@ class ConnectionManager:
         if result is not None:
             self._ui.display_error_message(f"Failed to send keepalive response: {result}")
             self._ui.display_system_message("Server may disconnect after 3 keepalive failures.")
-
+    
     # server info
-
+    
     def handle_server_full(self) -> None:
         self._ui.display_error_message("Server is full. Cannot connect at this time.")
         self._ui.display_error_message("Please try again later.")
         self._client.disconnect()
-
+    
     def handle_server_version_info(self, message_data: bytes) -> None:
         """Parse server's version/identifier frame, store values, warn if protocol major version differs."""
         message = json.loads(message_data)
@@ -214,14 +214,14 @@ class ConnectionManager:
                     "Server returned invalid protocol version information, communication may "
                     "still work but may be unreliable or have missing features.",
             )
-
+        
         self._ui.display_system_message(f"Server Protocol Version: v{self._client.server_protocol_version}")
         identifier = message.get("identifier", "")
         if isinstance(identifier, str) and identifier.strip():
             self._client.server_identifier = identifier.strip()
             self._protocol.set_server_identifier(self._client.server_identifier)
             self._ui.display_system_message(f"Server Identifier: {self._client.server_identifier}")
-
+        
         if self._client.server_protocol_version != PROTOCOL_VERSION:
             self._ui.display_system_message(
                     f"Protocol version mismatch: Client v{PROTOCOL_VERSION}, "
@@ -231,7 +231,7 @@ class ConnectionManager:
             major_client = PROTOCOL_VERSION.split('.')[0]
             if major_server != major_client:
                 self._ui.display_error_message("Versions may not be compatible - communication issues possible")
-
+    
     def on_server_disconnect(self, reason: str) -> None:
         self._ui.display_system_message(f"Server disconnected: {reason}")
         self._client.disconnect()

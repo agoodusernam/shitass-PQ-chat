@@ -253,7 +253,7 @@ class TestHandleMessageRouting:
         with patch.object(c._key_exchange, "handle_verification") as mock_kv:
             c.handle_message(self._make_json_msg(MessageType.KE_VERIFICATION))
         mock_kv.assert_called_once()
-
+    
     def test_routes_key_exchange_reset(self) -> None:
         c = _make_client()
         with patch.object(c._key_exchange, "handle_reset") as mock_ker:

@@ -216,29 +216,29 @@ def chunk_file(file_path: Path | str, compress: bool = True, chunk_size: int = S
                     break
                 yield file_chunk
         return
-
+    
     # Use streaming compression
     compressor: StreamingGzipCompressor = StreamingGzipCompressor()
     pending_data: bytes = b""
-
+    
     try:
         with open(file_path, 'rb') as original_file:
             while True:
                 # Read a chunk from the original file
                 file_chunk = original_file.read(chunk_size)
-
+                
                 if not file_chunk:
                     # End of file - finalize compression
                     final_compressed = compressor.finalise()
                     if final_compressed:
                         pending_data += final_compressed
                     break
-
+                
                 # Compress this chunk
                 compressed_chunk = compressor.compress_chunk(file_chunk)
                 if compressed_chunk:
                     pending_data += compressed_chunk
-
+                
                 # Yield complete chunks when we have enough data
                 while len(pending_data) >= chunk_size:
                     yield pending_data[:chunk_size]

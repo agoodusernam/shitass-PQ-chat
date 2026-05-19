@@ -30,7 +30,7 @@ def receive_message(sock: Any, max_size: int = MAX_MESSAGE_SIZE) -> bytes:
         if not chunk:
             raise ConnectionError("Connection closed")
         length_data += chunk
-
+    
     length = struct.unpack('!I', length_data)[0]
     if length > max_size:
         raise ValueError(f"Message too large (max {max_size} bytes)")

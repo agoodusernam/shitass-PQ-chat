@@ -34,6 +34,7 @@ from utils.threading_utils import ThreadSafeDict
 config = ClientConfigHandler()
 
 
+# noinspection PyPropertyDefinition
 class SecureChatClient(ClientBase):
     """Core secure-chat client: networking, cryptography, and protocol logic.
 
@@ -97,7 +98,7 @@ class SecureChatClient(ClientBase):
         
         # Voice call state — delegated to VoiceCallManager
         self._voice_call: VoiceCallManager = VoiceCallManager(self)
-
+        
         # Key exchange state — delegated to KeyExchangeManager
         self._key_exchange: KeyExchangeManager = KeyExchangeManager(self)
         
@@ -111,7 +112,7 @@ class SecureChatClient(ClientBase):
         
         # Deaddrop session — delegated to DeaddropManager
         self._deaddrop: DeaddropManager = DeaddropManager(self)
-
+        
         # Networking + dispatch — delegated to ConnectionManager
         self._connection: ConnectionManager = ConnectionManager(self)
     
@@ -134,11 +135,11 @@ class SecureChatClient(ClientBase):
     @property
     def voice_call_active(self) -> bool:
         return self._voice_call.active
-
+    
     @property
     def voice_muted(self) -> bool:
         return self._voice_call.muted
-
+    
     @voice_muted.setter
     def voice_muted(self, value: bool) -> None:
         self._voice_call.muted = value
@@ -146,20 +147,20 @@ class SecureChatClient(ClientBase):
     @property
     def file_transfer_active(self) -> bool:
         """True if any file transfer (regular or deaddrop download) is currently in progress."""
-        return bool(self._file_transfer.active or self._deaddrop.download_in_progress)
-
+        return self._file_transfer.active or self._deaddrop.download_in_progress
+    
     @property
     def deaddrop_supported(self) -> bool:
         return self._deaddrop.supported
-
+    
     @property
     def pending_file_transfers(self) -> ThreadSafeDict[str, FileTransfer]:
         return self._file_transfer.pending_file_transfers
-
+    
     @property
     def active_file_metadata(self) -> ThreadSafeDict[str, FileMetadata]:
         return self._file_transfer.active_file_metadata
-
+    
     @property
     def pending_file_requests(self) -> ThreadSafeDict[str, FileMetadata]:
         return self._file_transfer.active_file_metadata
@@ -167,7 +168,7 @@ class SecureChatClient(ClientBase):
     @property
     def bypass_rate_limits(self) -> bool:
         """True when rate limiting should be suspended — during file transfers, voice calls, rekeying, or while key verification is still pending after key exchange."""
-        return bool(self.file_transfer_active or self._voice_call.active or self._protocol.rekey_in_progress
+        return (self.file_transfer_active or self._voice_call.active or self._protocol.rekey_in_progress
                     or (self._key_exchange_complete and not self._verification_complete))
     
     @property
@@ -286,47 +287,47 @@ class SecureChatClient(ClientBase):
         return True
     
     # file transfer — thin proxies to FileTransferManager
-
+    
     def send_file(self, file_path: Path | str, compress: bool = True) -> None:
         self._file_transfer.send(file_path, compress=compress)
-
+    
     def reject_file_transfer(self, transfer_id: str) -> None:
         self._file_transfer.reject(transfer_id)
-
+    
     # key exchange & verification — thin proxies to KeyExchangeManager
-
+    
     def initiate_key_exchange(self) -> None:
         self._key_exchange.initiate()
-
+    
     def handle_ke_dsa_random(self, message_data: bytes) -> None:
         self._key_exchange.handle_dsa_random(message_data)
-
+    
     def confirm_key_verification(self, verified: bool) -> None:
         self._key_exchange.confirm_verification(verified)
-
+    
     def handle_key_verification_message(self, message_data: bytes) -> None:
         self._key_exchange.handle_verification_message(message_data)
-
+    
     def handle_key_exchange_reset(self, message_data: bytes) -> None:
         self._key_exchange.handle_reset(message_data)
-
+    
     def handle_rekey(self, inner: dict[str, Any]) -> None:
         self._key_exchange.handle_rekey(inner)
-
+    
     def initiate_rekey(self) -> None:
         self._key_exchange.initiate_rekey()
-
+    
     def check_and_initiate_auto_rekey(self) -> None:
         self._key_exchange.check_auto_rekey()
     
     # voice calls — thin proxies to VoiceCallManager
-
+    
     def request_voice_call(self, rate: int, chunk_size: int, audio_format: int) -> None:
         self._voice_call.request(rate, chunk_size, audio_format)
-
+    
     def on_user_response(self, accepted: bool, rate: int, chunk_size: int, audio_format: int) -> None:
         self._voice_call.on_user_response(accepted, rate, chunk_size, audio_format)
-
+    
     def send_voice_data(self, audio_data: bytes) -> None:
         self._voice_call.send_audio(audio_data)
     
@@ -341,29 +342,29 @@ class SecureChatClient(ClientBase):
         self._protocol.queue_json(payload)
     
     # deaddrop — thin proxies to DeaddropManager
-
+    
     def start_deaddrop(self) -> None:
         self._deaddrop.start_handshake()
-
+    
     def deaddrop_session_active(self) -> bool:
         return self._deaddrop.session_active
-
+    
     def wait_for_deaddrop_handshake(self, timeout: float = 3.0) -> bool:
         return self._deaddrop.wait_for_handshake(timeout)
-
+    
     def deaddrop_upload(self, name: str, password: str, file_path: Path) -> None:
         self._deaddrop.upload(name, password, file_path)
-
+    
     def deaddrop_check(self, name: str) -> None:
         self._deaddrop.check(name)
-
+    
     def deaddrop_download(self, name: str, password: str) -> None:
         self._deaddrop.download(name, password)
     
     def _send_raw(self, data: bytes) -> Any:
         """Send a raw frame over the socket. Exists so tests can patch `new_client.send_message`."""
         return send_message(self._socket, data)
-
+    
     def on_error(self, message: str) -> None:
         """Handle an error reported by the protocol layer."""
         self.ui.display_error_message(message)
@@ -377,15 +378,15 @@ class SecureChatClient(ClientBase):
         self._protocol.reset_key_exchange()
         self.file_handler.clear()
         self._file_transfer.clear()
-
+    
     # connection dispatch — thin proxies to ConnectionManager
-
+    
     def handle_message(self, message_data: bytes) -> None:
         self._connection.handle_message(message_data)
-
+    
     def handle_maybe_binary_chunk(self, message_data: bytes) -> bool:
         return self._connection.handle_maybe_binary_chunk(message_data)
-
+    
     def handle_keepalive(self) -> None:
         self._connection.handle_keepalive()
     
@@ -461,13 +462,13 @@ class SecureChatClient(ClientBase):
             
             case MessageType.FILE_METADATA:
                 self._file_transfer.handle_metadata(message_json)
-
+            
             case MessageType.FILE_ACCEPT:
                 self._file_transfer.handle_accept(message_json)
-
+            
             case MessageType.FILE_REJECT:
                 self._file_transfer.handle_reject(message_json)
-
+            
             case MessageType.FILE_COMPLETE:
                 self._file_transfer.handle_complete(message_json)
             
@@ -483,16 +484,16 @@ class SecureChatClient(ClientBase):
             
             case MessageType.VOICE_CALL_INIT:
                 self._voice_call.handle_init(message_json)
-
+            
             case MessageType.VOICE_CALL_ACCEPT:
                 self._voice_call.handle_accept(message_json)
-
+            
             case MessageType.VOICE_CALL_REJECT:
                 self._voice_call.handle_reject()
-
+            
             case MessageType.VOICE_CALL_DATA:
                 self._voice_call.handle_data(message_json)
-
+            
             case MessageType.VOICE_CALL_END:
                 self._voice_call.handle_end()
             
@@ -549,4 +550,3 @@ class SecureChatClient(ClientBase):
         self.peer_nickname = str(message.get("nickname", "Other User"))[:config["max_nickname_length"]]
         self.ui.on_nickname_change(self.peer_nickname)
         self.ui.display_system_message(f"Peer changed nickname to: {self.peer_nickname}")
-    

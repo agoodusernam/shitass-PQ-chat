@@ -20,7 +20,6 @@ from protocol import parse_messages as pm
 from protocol.constants import ML_DSA_CONTEXT, PROTOCOL_VERSION
 from protocol.types import DecodeError
 
-
 # ---------------------------------------------------------------------------
 # Shared fixtures — expensive crypto material generated once per session.
 # ---------------------------------------------------------------------------
@@ -31,9 +30,10 @@ _MLDSA_PUB = _MLDSA_PUB_OBJ.public_bytes_raw()
 
 def _verify_mldsa(message: bytes, signature: bytes) -> bool:
     from cryptography.exceptions import InvalidSignature
+    
     try:
         MLDSA87PublicKey.from_public_bytes(_MLDSA_PUB).verify(
-            signature, message, context=ML_DSA_CONTEXT,
+                signature, message, context=ML_DSA_CONTEXT,
         )
     except InvalidSignature:
         return False
@@ -50,23 +50,23 @@ client_random = st.binary(min_size=32, max_size=32)
 
 # JSON-ish garbage: bytes that may or may not parse as JSON.
 garbage_bytes = st.one_of(
-    st.binary(min_size=0, max_size=4096),
-    st.text(max_size=512).map(lambda s: s.encode("utf-8", errors="replace")),
-    st.dictionaries(st.text(max_size=16), st.text(max_size=64), max_size=8)
+        st.binary(min_size=0, max_size=4096),
+        st.text(max_size=512).map(lambda s: s.encode("utf-8", errors="replace")),
+        st.dictionaries(st.text(max_size=16), st.text(max_size=64), max_size=8)
         .map(lambda d: json.dumps(d).encode("utf-8")),
 )
 
 # Dicts that decode as JSON but have the wrong shape for the target parser.
 malformed_json_dicts = st.dictionaries(
-    st.text(min_size=0, max_size=20),
-    st.one_of(
-        st.text(max_size=64),
-        st.integers(),
-        st.booleans(),
-        st.none(),
-        st.binary(max_size=64).map(lambda b: base64.b64encode(b).decode()),
-    ),
-    max_size=10,
+        st.text(min_size=0, max_size=20),
+        st.one_of(
+                st.text(max_size=64),
+                st.integers(),
+                st.booleans(),
+                st.none(),
+                st.binary(max_size=64).map(lambda b: base64.b64encode(b).decode()),
+        ),
+        max_size=10,
 ).map(lambda d: json.dumps(d).encode("utf-8"))
 
 
@@ -145,30 +145,30 @@ def test_roundtrip_key_verification_message(verified: bool) -> None:
 
 
 @given(
-    transfer_id=st.text(min_size=1, max_size=32),
-    filename=st.text(min_size=1, max_size=64).filter(lambda s: "\x00" not in s and "/" not in s and s not in (".", "..")),
-    file_size=st.integers(min_value=0, max_value=2**40),
-    file_hash=st.text(alphabet="0123456789abcdef", min_size=1, max_size=128),
-    total_chunks=st.integers(min_value=0, max_value=2**32),
-    compressed=st.booleans(),
-    compressed_size=st.integers(min_value=0, max_value=2**40),
+        transfer_id=st.text(min_size=1, max_size=32),
+        filename=st.text(min_size=1, max_size=64).filter(lambda s: "\x00" not in s and "/" not in s and s not in (".", "..")),
+        file_size=st.integers(min_value=0, max_value=2 ** 40),
+        file_hash=st.text(alphabet="0123456789abcdef", min_size=1, max_size=128),
+        total_chunks=st.integers(min_value=0, max_value=2 ** 32),
+        compressed=st.booleans(),
+        compressed_size=st.integers(min_value=0, max_value=2 ** 40),
 )
 def test_roundtrip_file_metadata(
-    transfer_id: str,
-    filename: str,
-    file_size: int,
-    file_hash: str,
-    total_chunks: int,
-    compressed: bool,
-    compressed_size: int,
+        transfer_id: str,
+        filename: str,
+        file_size: int,
+        file_hash: str,
+        total_chunks: int,
+        compressed: bool,
+        compressed_size: int,
 ) -> None:
     msg = {
-        "transfer_id": transfer_id,
-        "filename": filename,
-        "file_size": file_size,
-        "file_hash": file_hash,
-        "total_chunks": total_chunks,
-        "compressed": compressed,
+        "transfer_id":     transfer_id,
+        "filename":        filename,
+        "file_size":       file_size,
+        "file_hash":       file_hash,
+        "total_chunks":    total_chunks,
+        "compressed":      compressed,
         "compressed_size": compressed_size,
     }
     out = pm.process_file_metadata(msg)
@@ -184,10 +184,10 @@ def test_roundtrip_file_metadata(
 
 def test_file_metadata_compressed_size_defaults_to_file_size() -> None:
     msg = {
-        "transfer_id": "abc",
-        "filename": "x.bin",
-        "file_size": 123,
-        "file_hash": "deadbeef",
+        "transfer_id":  "abc",
+        "filename":     "x.bin",
+        "file_size":    123,
+        "file_hash":    "deadbeef",
         "total_chunks": 1,
     }
     out = pm.process_file_metadata(msg)
@@ -201,10 +201,10 @@ def test_file_metadata_compressed_size_defaults_to_file_size() -> None:
 @given(peer_version=st.text(min_size=1, max_size=16).filter(lambda s: s != PROTOCOL_VERSION))
 def test_ke_dsa_random_emits_version_warning(peer_version: str) -> None:
     payload = {
-        "type": 1,
-        "version": peer_version,
+        "type":             1,
+        "version":          peer_version,
         "mldsa_public_key": base64.b64encode(b"x").decode(),
-        "client_random": base64.b64encode(b"y").decode(),
+        "client_random":    base64.b64encode(b"y").decode(),
     }
     out = pm.parse_ke_dsa_random(json.dumps(payload).encode("utf-8"))
     assert "WARNING" in out["version_warning"]
@@ -258,11 +258,11 @@ def test_process_key_verification_robustness(data: bytes) -> None:
 
 
 @given(
-    msg=st.dictionaries(
-        st.text(max_size=16),
-        st.one_of(st.text(max_size=32), st.integers(), st.booleans(), st.none()),
-        max_size=10,
-    )
+        msg=st.dictionaries(
+                st.text(max_size=16),
+                st.one_of(st.text(max_size=32), st.integers(), st.booleans(), st.none()),
+                max_size=10,
+        ),
 )
 def test_process_file_metadata_missing_fields_raise_keyerror(msg: dict) -> None:
     required = {"transfer_id", "filename", "file_size", "file_hash", "total_chunks"}
@@ -278,17 +278,17 @@ def test_process_file_metadata_missing_fields_raise_keyerror(msg: dict) -> None:
 # Extra: base64 field mutation — parse must reject non-base64 blobs cleanly.
 # ---------------------------------------------------------------------------
 @given(
-    bad=st.text(
-        alphabet=st.characters(blacklist_categories=["Cs"]),
-        min_size=1,
-        max_size=64,
-    ).filter(lambda s: not all(c.isalnum() or c in "+/=" for c in s)),
+        bad=st.text(
+                alphabet=st.characters(blacklist_categories=["Cs"]),
+                min_size=1,
+                max_size=64,
+        ).filter(lambda s: not all(c.isalnum() or c in "+/=" for c in s)),
 )
 def test_ke_dsa_random_rejects_non_base64(bad: str) -> None:
     payload = {
-        "type": 1,
+        "type":             1,
         "mldsa_public_key": bad,
-        "client_random": base64.b64encode(b"y" * 32).decode(),
+        "client_random":    base64.b64encode(b"y" * 32).decode(),
     }
     with pytest.raises(DecodeError):
         pm.parse_ke_dsa_random(json.dumps(payload).encode("utf-8"))

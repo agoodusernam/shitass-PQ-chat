@@ -57,17 +57,18 @@ def _run(vectors: dict, cls_name: str, fn) -> None:
 def test_double_encryptor(vectors) -> None:
     def fn(inp: dict) -> str:
         enc = DoubleEncryptor(
-            key=_b(inp["key"]),
-            OTP_secret=_b(inp["OTP_secret"]),
-            message_counter=inp["message_counter"],
+                key=_b(inp["key"]),
+                OTP_secret=_b(inp["OTP_secret"]),
+                message_counter=inp["message_counter"],
         )
         ct = enc.encrypt(
-            nonce=_b(inp["nonce"]),
-            data=_b(inp["plaintext"]),
-            associated_data=_maybe_b(inp["associated_data"]),
-            pad=inp["pad"],
+                nonce=_b(inp["nonce"]),
+                data=_b(inp["plaintext"]),
+                associated_data=_maybe_b(inp["associated_data"]),
+                pad=inp["pad"],
         )
         return base64.b64encode(ct).decode()
+    
     _run(vectors, "DoubleEncryptor", fn)
 
 
@@ -76,6 +77,7 @@ def test_chunk_independent_double_encryptor(vectors) -> None:
         enc = ChunkIndependentDoubleEncryptor(key=_b(inp["key"]))
         ct = enc.encrypt(nonce=_b(inp["nonce"]), data=_b(inp["plaintext"]))
         return base64.b64encode(ct).decode()
+    
     _run(vectors, "ChunkIndependentDoubleEncryptor", fn)
 
 
@@ -84,6 +86,7 @@ def test_key_exchange_double_encryptor(vectors) -> None:
         enc = KeyExchangeDoubleEncryptor(key=_b(inp["key"]))
         ct = enc.encrypt(nonce=_b(inp["nonce"]), data=_b(inp["plaintext"]))
         return base64.b64encode(ct).decode()
+    
     _run(vectors, "KeyExchangeDoubleEncryptor", fn)
 
 
@@ -95,15 +98,15 @@ def test_double_encryptor_decrypt_roundtrip(vectors) -> None:
     for i, case in enumerate(vectors["DoubleEncryptor"]):
         inp = case["inputs"]
         dec = DoubleEncryptor(
-            key=_b(inp["key"]),
-            OTP_secret=_b(inp["OTP_secret"]),
-            message_counter=inp["message_counter"],
+                key=_b(inp["key"]),
+                OTP_secret=_b(inp["OTP_secret"]),
+                message_counter=inp["message_counter"],
         )
         pt = dec.decrypt(
-            nonce=_b(inp["nonce"]),
-            data=_b(case["output"]),
-            associated_data=_maybe_b(inp["associated_data"]),
-            pad=inp["pad"],
+                nonce=_b(inp["nonce"]),
+                data=_b(case["output"]),
+                associated_data=_maybe_b(inp["associated_data"]),
+                pad=inp["pad"],
         )
         assert pt == _b(inp["plaintext"]), f"DoubleEncryptor[{i}] decrypt mismatch"
 
