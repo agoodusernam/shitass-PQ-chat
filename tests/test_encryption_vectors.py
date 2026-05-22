@@ -7,6 +7,7 @@ Guards against silent regressions in AEAD layering, OTP keystream derivation,
 nonce mixing, or padding for DoubleEncryptor / ChunkIndependentDoubleEncryptor /
 KeyExchangeDoubleEncryptor.
 """
+
 from __future__ import annotations
 
 import base64
@@ -116,7 +117,9 @@ def test_chunk_independent_decrypt_roundtrip(vectors) -> None:
         inp = case["inputs"]
         dec = ChunkIndependentDoubleEncryptor(key=_b(inp["key"]))
         pt = dec.decrypt(nonce=_b(inp["nonce"]), data=_b(case["output"]))
-        assert pt == _b(inp["plaintext"]), f"ChunkIndependentDoubleEncryptor[{i}] decrypt mismatch"
+        assert pt == _b(inp["plaintext"]), (
+            f"ChunkIndependentDoubleEncryptor[{i}] decrypt mismatch"
+        )
 
 
 def test_key_exchange_decrypt_roundtrip(vectors) -> None:
@@ -124,7 +127,9 @@ def test_key_exchange_decrypt_roundtrip(vectors) -> None:
         inp = case["inputs"]
         dec = KeyExchangeDoubleEncryptor(key=_b(inp["key"]))
         pt = dec.decrypt(nonce=_b(inp["nonce"]), data=_b(case["output"]))
-        assert pt == _b(inp["plaintext"]), f"KeyExchangeDoubleEncryptor[{i}] decrypt mismatch"
+        assert pt == _b(inp["plaintext"]), (
+            f"KeyExchangeDoubleEncryptor[{i}] decrypt mismatch"
+        )
 
 
 # ---------------------------------------------------------------------------

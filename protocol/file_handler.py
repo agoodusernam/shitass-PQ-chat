@@ -66,7 +66,7 @@ class ProtocolFileHandler:
         
         for transfer_id in ids_to_remove:
             del self.open_file_handles[transfer_id]
-            
+    
     @property
     def has_active_file_transfers(self) -> bool:
         """Check if any file transfers (sending or receiving) are currently active."""

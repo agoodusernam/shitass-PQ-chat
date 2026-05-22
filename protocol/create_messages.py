@@ -26,7 +26,7 @@ def create_error_message(error_text: str) -> bytes:
         "type":  MessageType.ERROR,
         "error": error_text,
     }
-    return json.dumps(message).encode('utf-8')
+    return json.dumps(message).encode("utf-8")
 
 
 def create_reset_message() -> bytes:
@@ -35,7 +35,7 @@ def create_reset_message() -> bytes:
         "type":    MessageType.KEY_EXCHANGE_RESET,
         "message": "Key exchange reset - other client disconnected",
     }
-    return json.dumps(message).encode('utf-8')
+    return json.dumps(message).encode("utf-8")
 
 
 def create_key_verification_message(verified: bool) -> bytes:
@@ -44,7 +44,7 @@ def create_key_verification_message(verified: bool) -> bytes:
         "type":     MessageType.KEY_VERIFICATION,
         "verified": verified,
     }
-    return json.dumps(message).encode('utf-8')
+    return json.dumps(message).encode("utf-8")
 
 
 def create_ke_dsa_random(mldsa_public_key: bytes, client_random: bytes) -> bytes:
@@ -52,10 +52,10 @@ def create_ke_dsa_random(mldsa_public_key: bytes, client_random: bytes) -> bytes
     message = {
         "version":          PROTOCOL_VERSION,
         "type":             MessageType.KE_DSA_RANDOM,
-        "mldsa_public_key": base64.b64encode(mldsa_public_key).decode('utf-8'),
-        "client_random":    base64.b64encode(client_random).decode('utf-8'),
+        "mldsa_public_key": base64.b64encode(mldsa_public_key).decode("utf-8"),
+        "client_random":    base64.b64encode(client_random).decode("utf-8"),
     }
-    return json.dumps(message).encode('utf-8')
+    return json.dumps(message).encode("utf-8")
 
 
 def create_ke_mlkem_pubkey(mlkem_public_key: bytes, mldsa_private_key: MLDSA87PrivateKey) -> bytes:
@@ -63,16 +63,20 @@ def create_ke_mlkem_pubkey(mlkem_public_key: bytes, mldsa_private_key: MLDSA87Pr
     signature = mldsa_private_key.sign(mlkem_public_key, context=ML_DSA_CONTEXT)
     message = {
         "type":             MessageType.KE_MLKEM_PUBKEY,
-        "mlkem_public_key": base64.b64encode(mlkem_public_key).decode('utf-8'),
-        "mldsa_signature":  base64.b64encode(signature).decode('utf-8'),
+        "mlkem_public_key": base64.b64encode(mlkem_public_key).decode("utf-8"),
+        "mldsa_signature":  base64.b64encode(signature).decode("utf-8"),
     }
-    return json.dumps(message).encode('utf-8')
+    return json.dumps(message).encode("utf-8")
 
 
-def create_ke_mlkem_ct_keys(mlkem_ciphertext: bytes, encrypted_hqc_pubkey: bytes,
-                            encrypted_x25519_pubkey: bytes, nonce1: bytes, nonce2: bytes,
-                            mldsa_private_key: MLDSA87PrivateKey,
-                            ) -> bytes:
+def create_ke_mlkem_ct_keys(
+        mlkem_ciphertext: bytes,
+        encrypted_hqc_pubkey: bytes,
+        encrypted_x25519_pubkey: bytes,
+        nonce1: bytes,
+        nonce2: bytes,
+        mldsa_private_key: MLDSA87PrivateKey,
+    ) -> bytes:
     """Create KE_MLKEM_CT_KEYS message (step 10): ML-KEM ciphertext + encrypted HQC/X25519 pubkeys."""
     signed_payload = mlkem_ciphertext + encrypted_hqc_pubkey + encrypted_x25519_pubkey + nonce1 + nonce2
     signature = mldsa_private_key.sign(signed_payload, context=ML_DSA_CONTEXT)
@@ -85,15 +89,20 @@ def create_ke_mlkem_ct_keys(mlkem_ciphertext: bytes, encrypted_hqc_pubkey: bytes
         "nonce2":                  base64.b64encode(nonce2).decode('utf-8'),
         "mldsa_signature":         base64.b64encode(signature).decode('utf-8'),
     }
-    return json.dumps(message).encode('utf-8')
+    return json.dumps(message).encode("utf-8")
 
 
-def create_ke_x25519_hqc_ct(encrypted_x25519_pubkey: bytes, encrypted_hqc_ciphertext: bytes,
-                            nonce1: bytes, nonce2: bytes,
-                            mldsa_private_key: MLDSA87PrivateKey,
-                            ) -> bytes:
+def create_ke_x25519_hqc_ct(
+        encrypted_x25519_pubkey: bytes,
+        encrypted_hqc_ciphertext: bytes,
+        nonce1: bytes,
+        nonce2: bytes,
+        mldsa_private_key: MLDSA87PrivateKey,
+) -> bytes:
     """Create KE_X25519_HQC_CT message (step 13): encrypted X25519 pubkey + encrypted HQC ciphertext."""
-    signed_payload = encrypted_x25519_pubkey + encrypted_hqc_ciphertext + nonce1 + nonce2
+    signed_payload = (
+            encrypted_x25519_pubkey + encrypted_hqc_ciphertext + nonce1 + nonce2
+    )
     signature = mldsa_private_key.sign(signed_payload, context=ML_DSA_CONTEXT)
     message = {
         "type":                     MessageType.KE_X25519_HQC_CT,
@@ -103,7 +112,7 @@ def create_ke_x25519_hqc_ct(encrypted_x25519_pubkey: bytes, encrypted_hqc_cipher
         "nonce2":                   base64.b64encode(nonce2).decode('utf-8'),
         "mldsa_signature":          base64.b64encode(signature).decode('utf-8'),
     }
-    return json.dumps(message).encode('utf-8')
+    return json.dumps(message).encode("utf-8")
 
 
 def create_ke_verification(verification_key: bytes) -> bytes:
@@ -113,9 +122,9 @@ def create_ke_verification(verification_key: bytes) -> bytes:
     proof = h.finalize()
     message = {
         "type":             MessageType.KE_VERIFICATION,
-        "verification_key": base64.b64encode(proof).decode('utf-8'),
+        "verification_key": base64.b64encode(proof).decode("utf-8"),
     }
-    return json.dumps(message).encode('utf-8')
+    return json.dumps(message).encode("utf-8")
 
 
 def create_file_accept_message(transfer_id: str) -> dict:
@@ -151,7 +160,7 @@ def create_file_metadata_message(file_path: Path, compress: bool = True, chunk_s
     
     # Calculate file hash for integrity verification (of original uncompressed file)
     file_hash = hashlib.blake2b(digest_size=BLAKE2B_DIGEST_SIZE)
-    with open(file_path, 'rb') as f:
+    with open(file_path, "rb") as f:
         while chunk := f.read(16384):
             file_hash.update(chunk)
     

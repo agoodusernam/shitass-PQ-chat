@@ -70,7 +70,7 @@ class TestSendAudio:
     def test_inactive_no_send(self) -> None:
         c = _make_client()
         c._protocol = MagicMock()
-        with patch("client.voice_call_manager.network_utils.send_message") as send:
+        with patch.object(c, "send_raw") as send:
             c._voice_call.send_audio(b"pcm")
             send.assert_not_called()
     
@@ -80,10 +80,10 @@ class TestSendAudio:
         c._protocol.encrypt_message = MagicMock(return_value=b"ct")
         c._voice_call._active = True
         
-        with patch("client.voice_call_manager.network_utils.send_message") as send:
+        with patch.object(c, "send_raw") as send:
             c._voice_call.send_audio(b"pcmpayload")
             send.assert_called_once()
-            sent_sock, sent_bytes = send.call_args.args
+            (sent_bytes,) = send.call_args.args
             assert sent_bytes == b"ct"
         
         plain = c._protocol.encrypt_message.call_args.args[0]

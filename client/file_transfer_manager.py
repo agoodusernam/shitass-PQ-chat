@@ -4,13 +4,13 @@ Owns outbound and inbound peer-to-peer file transfer state and frames:
 metadata request / accept / reject / complete handshake, chunk assembly,
 and the background chunk-sender thread.
 """
+
 from __future__ import annotations
 
 import os
 import threading
 from copy import deepcopy
 from pathlib import Path
-from socket import socket
 from typing import TYPE_CHECKING, Any
 
 from SecureChatABCs.protocol_base import ProtocolBase
@@ -22,7 +22,6 @@ from protocol.file_handler import ProtocolFileHandler
 from protocol.parse_messages import process_file_metadata
 from protocol.types import FileMetadata, FileTransfer
 from protocol.utils import chunk_file
-from utils.network_utils import send_message
 from utils.threading_utils import ThreadSafeDict
 
 if TYPE_CHECKING:
@@ -49,10 +48,6 @@ class FileTransferManager:
     @property
     def _protocol(self) -> ProtocolBase:
         return self._client._protocol
-    
-    @property
-    def _socket(self) -> socket:
-        return self._client._socket
     
     @property
     def _file_handler(self) -> ProtocolFileHandler:
@@ -84,8 +79,7 @@ class FileTransferManager:
                         "Warning: Sending file over an unverified connection. This is vulnerable to MitM attacks.",
                 )
             
-            metadata = create_file_metadata_message(
-                    file_path_obj, compress=compress, chunk_size=config["send_chunk_size"])
+            metadata = create_file_metadata_message(file_path_obj, compress=compress, chunk_size=config["send_chunk_size"],)
             compress = metadata["compressed"]
             
             transfer_id = metadata["transfer_id"]
@@ -187,10 +181,9 @@ class FileTransferManager:
             transfer_info = self.pending_file_transfers[transfer_id]
             file_path = transfer_info["file_path"]
         
-        self._ui.display_system_message(
-                f"File transfer accepted. Sending {transfer_info['metadata']['filename']}...")
+        self._ui.display_system_message(f"File transfer accepted. Sending {transfer_info['metadata']['filename']}...")
         
-        self._file_handler.sending_transfers[transfer_id] = transfer_info['metadata']
+        self._file_handler.sending_transfers[transfer_id] = transfer_info["metadata"]
         
         threading.Thread(
                 target=self._send_chunks,
@@ -259,9 +252,7 @@ class FileTransferManager:
         if transfer_id not in self._last_progress_shown:
             self._last_progress_shown[transfer_id] = -1
         
-        if (progress - self._last_progress_shown[transfer_id] >= 10 or
-                is_complete or
-                received_chunks == 1):
+        if progress - self._last_progress_shown[transfer_id] >= 10 or is_complete or received_chunks == 1:
             self._ui.file_download_progress(
                     transfer_id,
                     metadata["filename"],
@@ -282,7 +273,9 @@ class FileTransferManager:
             try:
                 compressed = metadata.get("compressed", True)
                 self._file_handler.reassemble_file(
-                        transfer_id, output_path, metadata["file_hash"],
+                        transfer_id,
+                        output_path,
+                        metadata["file_hash"],
                         compressed=compressed,
                 )
                 self._ui.on_file_transfer_complete(transfer_id, output_path)
@@ -318,7 +311,7 @@ class FileTransferManager:
                 if transfer_id not in self.pending_file_transfers:
                     break
                 
-                result = send_message(self._socket, self._protocol.encrypt_file_chunk(transfer_id, i, chunk))
+                result = self._client.send_raw(self._protocol.encrypt_file_chunk(transfer_id, i, chunk))
                 if result is not None:
                     self._ui.display_error_message(f"File transfer failed while sending chunk {i}: {result}")
                     self._file_handler.stop_sending_transfer(transfer_id)

@@ -40,9 +40,17 @@ from cryptography.hazmat.primitives.asymmetric.mlkem import MLKEM1024PrivateKey
 
 from config import ServerConfigHandler
 from protocol.constants import (
-    MAGIC_NUMBER_DEADDROPS, MAGIC_NUMBER_FILE_TRANSFER, MessageType, PROTOCOL_VERSION,
-    NONCE_SIZE, DEADDROP_KDF_KEY_LENGTH, DEADDROP_SALT_SIZE, DEADDROP_PBKDF2_ITERATIONS,
-    MAGIC_SIZE, DEADDROP_NONCE_OFFSET, DEADDROP_CIPHERTEXT_OFFSET,
+    MAGIC_NUMBER_DEADDROPS,
+    MAGIC_NUMBER_FILE_TRANSFER,
+    MessageType,
+    PROTOCOL_VERSION,
+    NONCE_SIZE,
+    DEADDROP_KDF_KEY_LENGTH,
+    DEADDROP_SALT_SIZE,
+    DEADDROP_PBKDF2_ITERATIONS,
+    MAGIC_SIZE,
+    DEADDROP_NONCE_OFFSET,
+    DEADDROP_CIPHERTEXT_OFFSET,
     DEADDROP_LENGTH_PREFIX_SIZE,
 )
 from protocol.create_messages import create_reset_message
@@ -56,9 +64,9 @@ SERVER_VERSION: Final[int] = 9
 class DeadDropManager:
     """
     Manages deaddrop files.
-    
+
     Handles retrieving, verifying, and storing deaddrop files.
-    
+
     Attributes:
         deaddrop_files (dict[str, str]): A dictionary mapping deaddrop names to their file path.
     """
@@ -114,7 +122,9 @@ class DeadDropManager:
         else:
             raise FileNotFoundError(f"Deaddrop file '{name}' does not exist")
     
-    def add_file(self, name: str, password: str, file_hash: str, file_key_salt: str = "") -> None:
+    def add_file(
+            self, name: str, password: str, file_hash: str, file_key_salt: str = "",
+    ) -> None:
         """
         Create a new deaddrop file with name validation
         :param name: The name of the deaddrop file.
@@ -184,7 +194,7 @@ class DeadDropManager:
         if not self.check_file(name):
             raise FileNotFoundError(f"Deaddrop file '{name}' does not exist")
         
-        return open(self.deaddrop_files[name].with_suffix('.bin'), "rb")
+        return open(self.deaddrop_files[name].with_suffix(".bin"), "rb")
     
     def chunk_file(self, name: str) -> Generator[bytes, None, None]:
         with self.get_file(name) as f:
@@ -232,7 +242,7 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
     Logging is intentionally very minimal since this is a security and privacy focused application.
     """
     
-    def __init__(self, host: str = '0.0.0.0', port: int = 16384) -> None:
+    def __init__(self, host: str = "0.0.0.0", port: int = 16384) -> None:
         """Initialise the secure chat server.
         
         Args:
@@ -240,7 +250,7 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
                 Defaults to 'localhost'.
             port (int, optional): The port number to listen on. Defaults to 16384.
         """
-        self.clients: dict[str, 'SecureChatRequestHandler'] = {}
+        self.clients: dict[str, "SecureChatRequestHandler"] = {}
         self.clients_lock: threading.Lock = threading.Lock()
         self.running: bool = False
         self.client_counter: int = 0
@@ -284,7 +294,7 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
         """
         id_path = self._get_identifier_path()
         try:
-            with open(id_path, 'r', encoding='utf-8') as f:
+            with open(id_path, "r", encoding="utf-8") as f:
                 ident = f.read().strip()
                 if ident:
                     return ident
@@ -294,7 +304,7 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
         # Create a new identifier
         words: list[str]
         wl_path = self._get_wordlist_path()
-        with open(wl_path, 'r', encoding='utf-8') as f:
+        with open(wl_path, "r", encoding="utf-8") as f:
             words = [line.strip() for line in f if line.strip()]
         if not words:
             raise ValueError("wordlist.txt is empty or not found")
@@ -304,11 +314,11 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
         identifier = " ".join(selected)
         
         # Write atomically: write to temp then replace
-        with open(id_path, 'w', encoding='utf-8') as f:
+        with open(id_path, "w", encoding="utf-8") as f:
             f.write(identifier)
         return identifier
     
-    def add_client(self, client_handler: 'SecureChatRequestHandler') -> bool:
+    def add_client(self, client_handler: "SecureChatRequestHandler") -> bool:
         """Add a client to the server. Returns True if added, False if server rejects the client."""
         with self.clients_lock:
             # Enforce normal 2-client limit unless a deaddrop session is active
@@ -415,10 +425,12 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
     """
     server: SecureChatServer  # type: ignore[param-type]
     
-    def __init__(self, request: socket.socket | tuple[bytes, socket.socket],
-                 client_address: str,
-                 server: SecureChatServer,
-                 ) -> None:
+    def __init__(
+            self,
+            request: socket.socket | tuple[bytes, socket.socket],
+            client_address: str,
+            server: SecureChatServer,
+    ) -> None:
         self.client_id: str = ""
         self.connected: bool = True
         self.sender_lock: threading.Lock = threading.Lock()
@@ -532,10 +544,15 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                 continue
             
             if not self.key_exchange_complete:
-                if message_type in (MessageType.KE_DSA_RANDOM, MessageType.KE_MLKEM_PUBKEY,
-                                    MessageType.KE_MLKEM_CT_KEYS, MessageType.KE_X25519_HQC_CT,
-                                    MessageType.KE_VERIFICATION,
-                                    MessageType.KEY_EXCHANGE_RESET, MessageType.INITIATE_KEY_EXCHANGE):
+                if message_type in (
+                        MessageType.KE_DSA_RANDOM,
+                        MessageType.KE_MLKEM_PUBKEY,
+                        MessageType.KE_MLKEM_CT_KEYS,
+                        MessageType.KE_X25519_HQC_CT,
+                        MessageType.KE_VERIFICATION,
+                        MessageType.KEY_EXCHANGE_RESET,
+                        MessageType.INITIATE_KEY_EXCHANGE,
+                ):
                     self.handle_key_exchange(message, message_data)
                     continue
                 
@@ -764,7 +781,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
     def disconnect(self, reason: str = "", notify: bool = True) -> None:
         """
         Disconnect the client and clean up.
-        
+
         If a reason is provided, the server will attempt to send a SERVER_DISCONNECT
         control message with the reason before closing the connection.
         """
@@ -828,7 +845,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             "type":          MessageType.DEADDROP_START,
             "supported":     True,
             "max_file_size": _config["deaddrop_max_size"],
-            "mlkem_public":  base64.b64encode(public_key).decode('utf-8'),
+            "mlkem_public":  base64.b64encode(public_key).decode("utf-8"),
         }
         with self.sender_lock:
             encode_send_message(self.request, msg)
@@ -930,7 +947,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             download_salt = os.urandom(DEADDROP_SALT_SIZE)
             msg = {
                 "type": MessageType.DEADDROP_PROVE,
-                "salt": base64.b64encode(download_salt).decode('utf-8'),
+                "salt": base64.b64encode(download_salt).decode("utf-8"),
             }
             self.send_deaddrop_message(msg)
             return
@@ -946,11 +963,11 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         download_salt = os.urandom(DEADDROP_SALT_SIZE)
         msg = {
             "type": MessageType.DEADDROP_PROVE,
-            "salt": base64.b64encode(download_salt).decode('utf-8'),
+            "salt": base64.b64encode(download_salt).decode("utf-8"),
         }
         self.send_deaddrop_message(msg)
         
-        og_hash = self.server.deaddrop_manager.get_password_hash(name).encode('utf-8')
+        og_hash = self.server.deaddrop_manager.get_password_hash(name).encode("utf-8")
         
         pbk = PBKDF2HMAC(
                 algorithm=hashes.SHA3_512(),
@@ -1228,9 +1245,9 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         """Send a deaddrop message to the client."""
         msg: bytes
         if isinstance(message, dict):
-            msg = json.dumps(message).encode('utf-8')
+            msg = json.dumps(message).encode("utf-8")
         elif isinstance(message, str):
-            msg = message.encode('utf-8')
+            msg = message.encode("utf-8")
         else:
             msg = message
         

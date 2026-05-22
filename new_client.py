@@ -5,11 +5,10 @@ This module contains the client class that handles all networking, crypto,
 protocol, and background operations.  It delegates every user-facing
 interaction to a pluggable UI object that implements ``UIBase``.
 """
+
 import binascii
 import json
-import socket
 import string
-import threading
 from pathlib import Path
 from typing import Any
 
@@ -22,13 +21,16 @@ from client.file_transfer_manager import FileTransferManager
 from client.key_exchange_manager import KeyExchangeManager
 from client.voice_call_manager import VoiceCallManager
 from config import ClientConfigHandler
-from protocol.constants import MessageType
+from protocol import constants
+from protocol.constants import FILE_CHUNK_CIPHERTEXT_OFFSET, MAGIC_SIZE, MessageType
 from protocol.file_handler import ProtocolFileHandler
 from protocol.shared import SecureChatProtocol
 from protocol.types import FileMetadata, FileTransfer
-from utils import network_utils
-from utils.checks import allowed_unverified_inner_fields, first_unexpected_field
-from utils.network_utils import send_message
+from utils.checks import (
+    allowed_outer_fields,
+    allowed_unverified_inner_fields,
+    first_unexpected_field,
+)
 from utils.threading_utils import ThreadSafeDict
 
 config = ClientConfigHandler()
@@ -71,16 +73,11 @@ class SecureChatClient(ClientBase):
         # Connection configuration
         self.host: str = "0.0.0.0"
         self.port: int = 16384
-        self._socket: socket.socket = socket.socket()
         
         self.file_handler: ProtocolFileHandler = ProtocolFileHandler()
         self._protocol: ProtocolBase = SecureChatProtocol(self, self.file_handler)
         
-        # Threads
-        self._receive_thread: threading.Thread | None = None
-        
         # Session state flags
-        self._connected: bool = False
         self._key_exchange_complete: bool = False
         self._verification_complete: bool = False
         self._verification_started: bool = False
@@ -106,10 +103,6 @@ class SecureChatClient(ClientBase):
         self._file_transfer: FileTransferManager = FileTransferManager(self)
         self.file_transfer_update_interval: int = 10
         
-        # Server version information
-        self.server_protocol_version: str = "0.0.0"
-        self.server_identifier: str = ""
-        
         # Deaddrop session — delegated to DeaddropManager
         self._deaddrop: DeaddropManager = DeaddropManager(self)
         
@@ -118,7 +111,19 @@ class SecureChatClient(ClientBase):
     
     @property
     def connected(self) -> bool:
-        return self._connected
+        return self._connection.connected
+    
+    @property
+    def server_protocol_version(self) -> str:
+        return self._connection.server_protocol_version
+    
+    @property
+    def server_identifier(self) -> str:
+        return self._connection.server_identifier
+    
+    def set_server_identifier(self, identifier: str) -> None:
+        self._connection.server_identifier = identifier
+        self._protocol.set_server_identifier(identifier)
     
     @property
     def key_exchange_complete(self) -> bool:
@@ -168,8 +173,12 @@ class SecureChatClient(ClientBase):
     @property
     def bypass_rate_limits(self) -> bool:
         """True when rate limiting should be suspended — during file transfers, voice calls, rekeying, or while key verification is still pending after key exchange."""
-        return (self.file_transfer_active or self._voice_call.active or self._protocol.rekey_in_progress
-                    or (self._key_exchange_complete and not self._verification_complete))
+        return (
+                self.file_transfer_active
+                or self._voice_call.active
+                or self._protocol.rekey_in_progress
+                or (self._key_exchange_complete and not self._verification_complete)
+        )
     
     @property
     def own_nickname(self) -> str:
@@ -201,59 +210,20 @@ class SecureChatClient(ClientBase):
         
         Returns True on success, False if the connection could not be established.
         """
-        try:
-            self._socket.close()
-            self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self._socket.settimeout(30)
-            self._socket.connect((host, port))
-            self._connected = True
-            self.host, self.port = host, port
-            
-            self.ui.display_system_message(f"Connected to secure chat server at {self.host}:{self.port}")
-            self.ui.display_system_message("Waiting for another user to connect...")
-            
-            self._receive_thread = threading.Thread(target=self._connection.receive_loop, daemon=True)
-            self._receive_thread.start()
-            
-            self.ui.on_connected()
-            return True
-        
-        except socket.timeout:
-            self.ui.display_error_message("Connection timed out. Please try again.")
-            self._socket.close()
+        if not self._connection.connect(host, port):
             return False
         
-        except ConnectionRefusedError:
-            self.ui.display_error_message("Connection refused. Please check the server address and port.")
-            self._socket.close()
-            return False
-        
-        except Exception as e:
-            self.ui.display_error_message(f"Failed to connect to server: {e}")
-            self._socket.close()
-            return False
+        self.host, self.port = host, port
+        self.ui.display_system_message(f"Connected to secure chat server at {self.host}:{self.port}")
+        self.ui.display_system_message("Waiting for another user to connect...")
+        self.ui.on_connected()
+        return True
     
     def disconnect(self) -> None:
         self.end_call(notify_peer=self.key_exchange_complete and self.connected)
         self._protocol.stop_sender_thread()
-        
-        if self.connected:
-            network_utils.encode_send_message(self._socket, {"type": MessageType.CLIENT_DISCONNECT})
-        
-        self._connected = False
-        try:
-            self._socket.close()
-        except Exception:
-            pass
-        
+        self._connection.disconnect()
         self._deaddrop.reset()
-        
-        if self._receive_thread and self._receive_thread.is_alive():
-            try:
-                self._receive_thread.join(timeout=1.0)
-            except Exception:
-                pass
-        
         self.ui.on_graceful_disconnect("Disconnected from server.")
     
     def end_call(self, notify_peer: bool = True) -> None:
@@ -361,9 +331,19 @@ class SecureChatClient(ClientBase):
     def deaddrop_download(self, name: str, password: str) -> None:
         self._deaddrop.download(name, password)
     
-    def _send_raw(self, data: bytes) -> Any:
-        """Send a raw frame over the socket. Exists so tests can patch `new_client.send_message`."""
-        return send_message(self._socket, data)
+    def send_raw(self, data: bytes) -> str | None:
+        """Send a raw frame over the socket via the ConnectionManager.
+
+        Returns None on success, an error string on failure.
+        """
+        return self._connection.send_raw(data)
+    
+    def send_encoded(self, obj: Any) -> str | None:
+        """JSON-encode and send a frame over the socket via the ConnectionManager.
+
+        Returns None on success, an error string on failure.
+        """
+        return self._connection.send_encoded(obj)
     
     def on_error(self, message: str) -> None:
         """Handle an error reported by the protocol layer."""
@@ -379,13 +359,96 @@ class SecureChatClient(ClientBase):
         self.file_handler.clear()
         self._file_transfer.clear()
     
-    # connection dispatch — thin proxies to ConnectionManager
+    # connection dispatch
     
     def handle_message(self, message_data: bytes) -> None:
+        """Hand an inbound frame to the ConnectionManager transport gate."""
         self._connection.handle_message(message_data)
     
+    def route(self, message_data: bytes) -> None:
+        """Route an inbound outer frame to its handler.
+
+        Called by ConnectionManager once transport checks (rate limit, size cap)
+        pass. Parses the frame, detects binary chunks, enforces the outer field
+        allowlist, then dispatches by message type.
+        """
+        try:
+            message_json: dict[str, Any] = json.loads(message_data)
+            message_type = MessageType(int(message_json.get("type")))  # type: ignore
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+            if not self.handle_maybe_binary_chunk(message_data):
+                self.ui.display_error_message("Received message that could not be decoded.")
+                self.ui.log_raw_bytes("RECV", "dropped:decode_error", message_data)
+            return
+        
+        if message_type == MessageType.NONE:
+            self.ui.display_error_message("Received message with invalid type.")
+            return
+        
+        unexpected = first_unexpected_field(message_json, allowed_outer_fields(message_type))
+        if unexpected:
+            self.ui.display_error_message(f"Dropped message from unverified peer due to unexpected field '{unexpected}'.")
+            return
+        
+        match message_type:
+            case MessageType.KE_DSA_RANDOM:
+                self._key_exchange.handle_dsa_random(message_data)
+            case MessageType.KE_MLKEM_PUBKEY:
+                self._key_exchange.handle_mlkem_pubkey(message_data)
+            case MessageType.KE_MLKEM_CT_KEYS:
+                self._key_exchange.handle_mlkem_ct_keys(message_data)
+            case MessageType.KE_X25519_HQC_CT:
+                self._key_exchange.handle_x25519_hqc_ct(message_data)
+            case MessageType.KE_VERIFICATION:
+                self._key_exchange.handle_verification(message_data)
+            case MessageType.ENCRYPTED_MESSAGE:
+                if self.key_exchange_complete:
+                    self.handle_encrypted_message(message_data)
+                else:
+                    self.ui.display_error_message("\nReceived encrypted message before key exchange complete")
+            case MessageType.ERROR:
+                self.ui.display_error_message(f"{message_json.get('error', 'Unknown error')}")
+            case MessageType.KEY_VERIFICATION:
+                self._key_exchange.handle_verification_message(message_data)
+            case MessageType.KEY_EXCHANGE_RESET:
+                self._key_exchange.handle_reset(message_data)
+            case MessageType.KEEP_ALIVE:
+                self._connection.handle_keepalive()
+            case MessageType.INITIATE_KEY_EXCHANGE:
+                self._key_exchange.initiate()
+            case MessageType.SERVER_FULL:
+                self._connection.handle_server_full()
+            case MessageType.SERVER_VERSION_INFO:
+                self._connection.handle_server_version_info(message_data)
+            case MessageType.SERVER_DISCONNECT:
+                reason = message_json.get("reason", "Server initiated disconnect")
+                self._connection.on_server_disconnect(reason)
+            case MessageType.DEADDROP_START:
+                self._deaddrop.handle_start_response(message_json)
+            case MessageType.DEADDROP_MESSAGE:
+                self._deaddrop.handle_encrypted_message(message_json)
+            case _:
+                self.ui.display_error_message(f"Unknown message type: {message_type}")
+    
     def handle_maybe_binary_chunk(self, message_data: bytes) -> bool:
-        return self._connection.handle_maybe_binary_chunk(message_data)
+        """Try to interpret a non-JSON frame as an encrypted binary chunk (file transfer or deaddrop)."""
+        if not len(message_data) >= FILE_CHUNK_CIPHERTEXT_OFFSET:
+            return False
+        magic: bytes = message_data[:MAGIC_SIZE]
+        if magic == constants.MAGIC_NUMBER_FILE_TRANSFER:
+            try:
+                result = self._protocol.decrypt_file_chunk(message_data)
+                self._file_transfer.handle_chunk_binary(result)
+                return True
+            except ValueError:
+                return False
+        elif magic == constants.MAGIC_NUMBER_DEADDROPS:
+            try:
+                self._deaddrop.handle_binary_chunk(message_data)
+                return True
+            except ValueError:
+                return False
+        return False
     
     def handle_keepalive(self) -> None:
         self._connection.handle_keepalive()
@@ -420,9 +483,8 @@ class SecureChatClient(ClientBase):
             allowed_inner = allowed_unverified_inner_fields()
             unexpected_inner = first_unexpected_field(message_json, allowed_inner)
             if unexpected_inner:
-                self.ui.display_error_message(
-                        f"Dropped decrypted message from unverified peer due to unexpected field '{unexpected_inner}'.",
-                )
+                self.ui.display_error_message(f"Dropped decrypted message from unverified peer due " +
+                                              f"to unexpected field '{unexpected_inner}'.")
                 return
         
         message_type = MessageType(message_json.get("type", -1))
@@ -431,22 +493,26 @@ class SecureChatClient(ClientBase):
             return
         
         try:
-            self.handle_message_types(message_type, message_json, received_message_counter)
+            self.handle_message_types(
+                    message_type, message_json, received_message_counter,
+            )
         except Exception as e:
             self.ui.display_error_message(f"Error handling a message: {e}")
             return
         
         self.check_and_initiate_auto_rekey()
     
-    def handle_message_types(self, message_type: MessageType, message_json: dict[str, Any],
-                             received_message_counter: int,
-                             ) -> bool:
+    def handle_message_types(
+            self,
+            message_type: MessageType,
+            message_json: dict[str, Any],
+            received_message_counter: int,
+    ) -> bool:
         """Route a decrypted inner message to the correct handler based on its type.
 
         Returns True if the message type was recognised and handled, False otherwise.
         """
         match message_type:
-            
             case MessageType.DUMMY_MESSAGE:
                 pass
             

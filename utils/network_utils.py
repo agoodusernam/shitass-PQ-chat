@@ -7,14 +7,14 @@ from protocol.constants import MAX_MESSAGE_SIZE
 
 
 def encode_send_message(sock: socket.socket, data: Any) -> str | None:
-    encoded: bytes = json.dumps(data).encode('utf-8')
+    encoded: bytes = json.dumps(data).encode("utf-8")
     return send_message(sock, encoded)
 
 
 def send_message(sock: socket.socket, data: bytes) -> str | None:
     """Send a length-prefixed message over a socket."""
     try:
-        length = struct.pack('!I', len(data))
+        length = struct.pack("!I", len(data))
         sock.sendall(length + data)
         return None
     except socket.error as e:
@@ -24,19 +24,19 @@ def send_message(sock: socket.socket, data: bytes) -> str | None:
 def receive_message(sock: Any, max_size: int = MAX_MESSAGE_SIZE) -> bytes:
     """Receive a length-prefixed message from a socket."""
     # First, receive the length
-    length_data = b''
+    length_data = b""
     while len(length_data) < 4:
         chunk = sock.recv(4 - len(length_data))
         if not chunk:
             raise ConnectionError("Connection closed")
         length_data += chunk
     
-    length = struct.unpack('!I', length_data)[0]
+    length = struct.unpack("!I", length_data)[0]
     if length > max_size:
         raise ValueError(f"Message too large (max {max_size} bytes)")
     
     # Then receive the message
-    message_data = b''
+    message_data = b""
     while len(message_data) < length:
         chunk = sock.recv(length - len(message_data))
         if not chunk:

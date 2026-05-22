@@ -3,17 +3,16 @@
 Owns voice call state (active, muted) and handles signaling frames
 (init/accept/reject/end) plus encrypted audio data frames.
 """
+
 from __future__ import annotations
 
 import base64
 import json
-from socket import socket
 from typing import TYPE_CHECKING, Any
 
 from SecureChatABCs.ui_base import UIBase, UICapability
 from SecureChatABCs.protocol_base import ProtocolBase
 from protocol.constants import MessageType
-from utils import network_utils
 
 if TYPE_CHECKING:
     from new_client import SecureChatClient
@@ -34,10 +33,6 @@ class VoiceCallManager:
     @property
     def _protocol(self) -> ProtocolBase:
         return self._client._protocol
-    
-    @property
-    def _socket(self) -> socket:
-        return self._client._socket
     
     @property
     def active(self) -> bool:
@@ -83,7 +78,7 @@ class VoiceCallManager:
             "type":       MessageType.VOICE_CALL_DATA,
             "audio_data": base64.b64encode(audio_data).decode('utf-8'),
         })
-        network_utils.send_message(self._socket, self._protocol.encrypt_message(message))
+        self._client.send_raw(self._protocol.encrypt_message(message))
     
     def end(self, notify_peer: bool = True) -> None:
         """End current voice call and optionally notify the peer."""

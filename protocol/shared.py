@@ -5,7 +5,6 @@ import binascii
 import enum
 import json
 import os
-import socket
 import struct
 import threading
 import time
@@ -16,10 +15,14 @@ from SecureChatABCs.protocol_base import ProtocolBase
 from protocol._rekey_state import _RekeyState
 from protocol.file_handler import ProtocolFileHandler
 from config import ClientConfigHandler
-from utils.network_utils import send_message
-from protocol.crypto_classes import DoubleEncryptor, KeyExchangeDoubleEncryptor, _KeyDerivation
+from protocol.crypto_classes import (
+    DoubleEncryptor,
+    KeyExchangeDoubleEncryptor,
+    _KeyDerivation,
+)
 from protocol.constants import (
-    DEFAULT_MAX_RATCHET_FORWARD, MessageType,
+    DEFAULT_MAX_RATCHET_FORWARD,
+    MessageType,
     MAGIC_NUMBER_FILE_TRANSFER,
     NONCE_SIZE,
     CLIENT_RANDOM_SIZE,
@@ -52,17 +55,28 @@ from protocol.parse_messages import (
 )
 
 try:
-    import pqcrypto  # type: ignore[import-untyped]
-    import cryptography
+    import pqcrypto  # noqa: F401
+    import cryptography  # noqa: F401
 except ImportError as _exc:
     print("Required cryptographic libraries not found.")
-    raise ImportError("Please install the required libraries with pip install -r requirements.txt")
+    raise ImportError(
+            "Please install the required libraries with pip install -r requirements.txt",
+    )
 
 from pqcrypto.kem import hqc_256  # type: ignore # Still not production ready, but better than before
 from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
-from cryptography.hazmat.primitives.asymmetric.mlkem import MLKEM1024PrivateKey, MLKEM1024PublicKey
-from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA87PrivateKey, MLDSA87PublicKey
+from cryptography.hazmat.primitives.asymmetric.x25519 import (
+    X25519PrivateKey,
+    X25519PublicKey,
+)
+from cryptography.hazmat.primitives.asymmetric.mlkem import (
+    MLKEM1024PrivateKey,
+    MLKEM1024PublicKey,
+)
+from cryptography.hazmat.primitives.asymmetric.mldsa import (
+    MLDSA87PrivateKey,
+    MLDSA87PublicKey,
+)
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.hmac import HMAC
@@ -96,10 +110,10 @@ def _build_aad(msg_type: MessageType, counter: int, nonce: bytes, dh_pub: bytes)
     aad_data = {
         "type":          msg_type,
         "counter":       counter,
-        "nonce":         base64.b64encode(nonce).decode('utf-8'),
-        "dh_public_key": base64.b64encode(dh_pub).decode('utf-8'),
+        "nonce":         base64.b64encode(nonce).decode("utf-8"),
+        "dh_public_key": base64.b64encode(dh_pub).decode("utf-8"),
     }
-    return json.dumps(aad_data).encode('utf-8')
+    return json.dumps(aad_data).encode("utf-8")
 
 
 class SecureChatProtocol(ProtocolBase):
@@ -115,7 +129,11 @@ class SecureChatProtocol(ProtocolBase):
     """
     client: "ClientBase | None" = None
     
-    def __init__(self, client: "ClientBase | None" = None, file_handler: ProtocolFileHandler | None = None) -> None:
+    def __init__(
+            self,
+            client: "ClientBase | None" = None,
+            file_handler: ProtocolFileHandler | None = None,
+    ) -> None:
         """
         Initialise the secure chat protocol with the default cryptographic state.
 
@@ -156,7 +174,6 @@ class SecureChatProtocol(ProtocolBase):
         Guaranteed Private Attributes:
             _file_handler (ProtocolFileHandler | None): File-transfer delegate; ``None`` when unused.
             _message_queue (deque): Queue of outgoing items pending encryption and dispatch.
-            _socket (socket.socket | None): Active transport socket; ``None`` when not connected.
             _sender_thread (threading.Thread | None): Background sender thread; ``None`` when stopped.
             _sender_running (bool): Whether the background sender thread is active.
             _sender_lock (threading.Lock): Mutex protecting access to ``_message_queue``.
@@ -196,7 +213,6 @@ class SecureChatProtocol(ProtocolBase):
         
         # Transport + queuing
         self._message_queue: deque[tuple[_QueueKind, str | dict[str, Any]]] = deque()
-        self._socket: socket.socket | None = None
         self._sender_thread: threading.Thread | None = None
         self._sender_running: bool = False
         self._sender_lock: threading.Lock = threading.Lock()
@@ -326,12 +342,14 @@ class SecureChatProtocol(ProtocolBase):
         with self._sender_lock:
             self._message_queue.clear()
     
-    def start_sender_thread(self, sock: socket.socket) -> None:
-        """Start the background sender thread for message queuing."""
+    def start_sender_thread(self) -> None:
+        """Start the background sender thread for message queuing.
+
+        Frames are transmitted via ``self.client.send_raw``.
+        """
         if self._sender_thread is not None and self._sender_thread.is_alive():
             return  # Thread already running
         
-        self._socket = sock
         self._sender_running = True
         self._sender_thread = threading.Thread(target=self._sender_loop, daemon=True)
         self._sender_thread.start()
@@ -344,7 +362,6 @@ class SecureChatProtocol(ProtocolBase):
             if self._sender_thread.is_alive():
                 self._report_error("Sender thread still running. Ignoring.")
         self._sender_thread = None
-        self._socket = None
     
     def queue_json(self, obj: dict[str, Any]) -> None:
         """Encrypt a JSON-serialisable dict and add it to the send queue."""
@@ -372,17 +389,17 @@ class SecureChatProtocol(ProtocolBase):
         Returns:
             bool: True if the message was sent successfully, False otherwise.
         """
-        if not self._socket:
+        if self.client is None:
             return False
         emergency_message = {"type": MessageType.EMERGENCY_CLOSE}
         if self.shared_key and self._send_chain_key:
             # Encrypt immediately using normal ratcheting
             encrypted = self.encrypt_message(json.dumps(emergency_message))
-            send_message(self._socket, encrypted)
+            self.client.send_raw(encrypted)
         
         else:
             # Fall back to plaintext immediate send
-            send_message(self._socket, json.dumps(emergency_message).encode('utf-8'))
+            self.client.send_raw(json.dumps(emergency_message).encode("utf-8"))
         
         return True
     
@@ -392,7 +409,7 @@ class SecureChatProtocol(ProtocolBase):
         
         dummy_message = {
             "type": MessageType.DUMMY_MESSAGE,
-            "data": base64.b64encode(dummy_data).decode('utf-8'),
+            "data": base64.b64encode(dummy_data).decode("utf-8"),
         }
         return self.encrypt_message(json.dumps(dummy_message))
     
@@ -407,7 +424,7 @@ class SecureChatProtocol(ProtocolBase):
             item = self._get_next_item()
             to_send, switch_keys_after = self._prepare_item_for_sending(item)
             
-            if to_send is not None and self._socket is not None:
+            if to_send is not None and self.client is not None:
                 self._send_prepared_item(to_send, switch_keys_after)
             
             time.sleep(0.25)
@@ -424,7 +441,9 @@ class SecureChatProtocol(ProtocolBase):
         
         return None
     
-    def _prepare_item_for_sending(self, item: tuple["_QueueKind", Any] | bytes | bytearray | None) -> tuple[bytes | None, bool]:
+    def _prepare_item_for_sending(
+            self, item: tuple["_QueueKind", Any] | bytes | bytearray | None,
+    ) -> tuple[bytes | None, bool]:
         """Convert a queue item into bytes ready for transmission.
 
         Returns (data_to_send, switch_keys_after) where switch_keys_after signals
@@ -475,8 +494,8 @@ class SecureChatProtocol(ProtocolBase):
     
     def _send_prepared_item(self, to_send: bytes, switch_keys_after: bool) -> None:
         """Send prepared bytes and activate pending keys afterwards if requested."""
-        assert self._socket is not None
-        result = send_message(self._socket, to_send)
+        assert self.client is not None
+        result = self.client.send_raw(to_send)
         if result is not None:
             self._report_error(f"Failed to send message: {result}")
         
@@ -523,6 +542,8 @@ class SecureChatProtocol(ProtocolBase):
     def create_ke_mlkem_pubkey(self) -> bytes:
         """Create KE_MLKEM_PUBKEY message (step 8): generate ML-KEM and X25519 keypairs, send signed ML-KEM pubkey.
         X25519 keypair is generated here (step 2) for use in step 12."""
+        if self._mldsa_private_key is None:
+            raise ValueError("No ML-DSA private key available for signing")
         self._mlkem_private_key = MLKEM1024PrivateKey.generate()
         self.mlkem_public_key = self._mlkem_private_key.public_key()
         self._dh_private_key = X25519PrivateKey.generate()
@@ -537,7 +558,9 @@ class SecureChatProtocol(ProtocolBase):
         
         try:
             MLDSA87PublicKey.from_public_bytes(self._peer_mldsa_public_key).verify(
-                    mldsa_signature, mlkem_public_key, context=ML_DSA_CONTEXT,
+                    mldsa_signature,
+                    mlkem_public_key,
+                    context=ML_DSA_CONTEXT,
             )
         except InvalidSignature as exc:
             raise ValueError("ML-DSA signature verification failed on KE_MLKEM_PUBKEY") from exc
@@ -548,12 +571,13 @@ class SecureChatProtocol(ProtocolBase):
         """Create KE_MLKEM_CT_KEYS (step 10): encapsulate ML-KEM, derive intermediary key 1,
         encrypt our HQC and X25519 public keys with it."""
         # Generate HQC and X25519 keypairs
+        if self._mldsa_private_key is None:
+            raise ValueError("No ML-DSA private key available for signing")
+        if self.peer_mlkem_public_key is None:
+            raise ValueError("Peer ML-KEM public key not set")
         self.hqc_public_key, self._hqc_private_key = hqc_256.generate_keypair()
         self._dh_private_key = X25519PrivateKey.generate()
         self.dh_public_key_bytes = self._dh_private_key.public_key().public_bytes_raw()
-        
-        if self.peer_mlkem_public_key is None:
-            raise ValueError("Peer ML-KEM public key not set")
         # Encapsulate ML-KEM to get ciphertext and shared secret
         mlkem_shared_secret, mlkem_ciphertext = self.peer_mlkem_public_key.encapsulate()
         self._ke_mlkem_shared_secret = mlkem_shared_secret
@@ -570,8 +594,12 @@ class SecureChatProtocol(ProtocolBase):
         encrypted_x25519_pubkey = encryptor.encrypt(nonce2, self.dh_public_key_bytes)
         
         return create_ke_mlkem_ct_keys(
-                mlkem_ciphertext, encrypted_hqc_pubkey, encrypted_x25519_pubkey,
-                nonce1, nonce2, self._mldsa_private_key,
+                mlkem_ciphertext,
+                encrypted_hqc_pubkey,
+                encrypted_x25519_pubkey,
+                nonce1,
+                nonce2,
+                self._mldsa_private_key,
         )
     
     def process_ke_mlkem_ct_keys(self, data: bytes) -> None:
@@ -583,7 +611,9 @@ class SecureChatProtocol(ProtocolBase):
         # Verify signature
         try:
             MLDSA87PublicKey.from_public_bytes(self._peer_mldsa_public_key).verify(
-                    parsed["mldsa_signature"], parsed["signed_payload"], context=ML_DSA_CONTEXT,
+                    parsed["mldsa_signature"],
+                    parsed["signed_payload"],
+                    context=ML_DSA_CONTEXT,
             )
         except InvalidSignature as exc:
             raise ValueError("ML-DSA signature verification failed on KE_MLKEM_CT_KEYS") from exc
@@ -609,6 +639,10 @@ class SecureChatProtocol(ProtocolBase):
         encapsulates HQC, derives intermediary key 2, encrypts X25519 pubkey with int_key_1
         and HQC ciphertext with int_key_2, then derives final keys."""
         # Perform X25519 DH with peer's public key (from step 10)
+        if self._dh_private_key is None:
+            raise ValueError("No DH private key available for X25519 DH")
+        if self._mldsa_private_key is None:
+            raise ValueError("Peer ML-KEM public key not set")
         peer_dh_pub = X25519PublicKey.from_public_bytes(self.peer_dh_public_key_bytes)
         dh_shared_secret = self._dh_private_key.exchange(peer_dh_pub)
         
@@ -630,8 +664,11 @@ class SecureChatProtocol(ProtocolBase):
         
         # Sign before finalizing (finalize discards ML-DSA keys)
         message = create_ke_x25519_hqc_ct(
-                encrypted_x25519_pubkey, encrypted_hqc_ciphertext,
-                nonce1, nonce2, self._mldsa_private_key,
+                encrypted_x25519_pubkey,
+                encrypted_hqc_ciphertext,
+                nonce1,
+                nonce2,
+                self._mldsa_private_key,
         )
         
         # Derive final keys (step 12)
@@ -643,12 +680,16 @@ class SecureChatProtocol(ProtocolBase):
         """Process peer's KE_X25519_HQC_CT (step 14): decrypt X25519 pubkey with int_key_1,
         perform DH, derive int_key_2, decrypt HQC ciphertext with int_key_2, decapsulate HQC,
         derive final keys."""
+        if self._dh_private_key is None:
+            raise ValueError("No DH private key available for X25519 DH")
         parsed = parse_ke_x25519_hqc_ct(data)
         
         # Verify signature
         try:
             MLDSA87PublicKey.from_public_bytes(self._peer_mldsa_public_key).verify(
-                    parsed["mldsa_signature"], parsed["signed_payload"], context=ML_DSA_CONTEXT,
+                    parsed["mldsa_signature"],
+                    parsed["signed_payload"],
+                    context=ML_DSA_CONTEXT,
             )
         except InvalidSignature as exc:
             raise ValueError("ML-DSA signature verification failed on KE_X25519_HQC_CT") from exc
@@ -680,15 +721,21 @@ class SecureChatProtocol(ProtocolBase):
         server_id = self._server_identifier.encode("utf-8")
         
         self._otp_material = _KeyDerivation.derive_otp_material(
-                self._hqc_secret, self._combined_random, server_id,
+                self._hqc_secret,
+                self._combined_random,
+                server_id,
         )
         own_chain_key_root = _KeyDerivation.derive_chain_key_root(
-                self._ke_mlkem_shared_secret, dh_shared_secret,
-                self._ke_client_random, server_id,
+                self._ke_mlkem_shared_secret,
+                dh_shared_secret,
+                self._ke_client_random,
+                server_id,
         )
         peer_chain_key_root = _KeyDerivation.derive_chain_key_root(
-                self._ke_mlkem_shared_secret, dh_shared_secret,
-                self._peer_client_random, server_id,
+                self._ke_mlkem_shared_secret,
+                dh_shared_secret,
+                self._peer_client_random,
+                server_id,
         )
         
         self._send_chain_key = own_chain_key_root
@@ -696,7 +743,9 @@ class SecureChatProtocol(ProtocolBase):
         
         self._verification_key, self._key_verification_material = (
             _KeyDerivation.compute_verification_pair(
-                    self._otp_material, own_chain_key_root, peer_chain_key_root,
+                    self._otp_material,
+                    own_chain_key_root,
+                    peer_chain_key_root,
                     self._combined_random,
             )
         )
@@ -735,19 +784,24 @@ class SecureChatProtocol(ProtocolBase):
     
     def _derive_combined_random(self) -> bytes:
         return _KeyDerivation.derive_combined_random(
-                self._ke_client_random, self._peer_client_random,
+                self._ke_client_random,
+                self._peer_client_random,
                 self._server_identifier.encode("utf-8"),
         )
     
     def _derive_intermediary_key_1(self, mlkem_shared_secret: bytes) -> bytes:
         return _KeyDerivation.derive_intermediary_key_1(
-                mlkem_shared_secret, self._combined_random,
+                mlkem_shared_secret,
+                self._combined_random,
                 self._server_identifier.encode("utf-8"),
         )
     
-    def _derive_intermediary_key_2(self, intermediary_key_1: bytes, dh_shared_secret: bytes) -> bytes:
+    def _derive_intermediary_key_2(
+            self, intermediary_key_1: bytes, dh_shared_secret: bytes,
+    ) -> bytes:
         return _KeyDerivation.derive_intermediary_key_2(
-                intermediary_key_1, dh_shared_secret,
+                intermediary_key_1,
+                dh_shared_secret,
                 self._server_identifier.encode("utf-8"),
         )
     
@@ -799,7 +853,7 @@ class SecureChatProtocol(ProtocolBase):
         nonce, eph_pub_bytes, message_key = self._ratchet_send_step()
         
         if isinstance(plaintext, str):
-            plaintext_bytes = plaintext.encode('utf-8')
+            plaintext_bytes = plaintext.encode("utf-8")
         else:
             plaintext_bytes = plaintext
         
@@ -811,9 +865,9 @@ class SecureChatProtocol(ProtocolBase):
         encrypted_message: dict[str, MessageType | int | str] = {
             "type":          MessageType.ENCRYPTED_MESSAGE,
             "counter":       self.message_counter,
-            "nonce":         base64.b64encode(nonce).decode('utf-8'),
-            "ciphertext":    base64.b64encode(ciphertext).decode('utf-8'),
-            "dh_public_key": base64.b64encode(eph_pub_bytes).decode('utf-8'),
+            "nonce":         base64.b64encode(nonce).decode("utf-8"),
+            "ciphertext":    base64.b64encode(ciphertext).decode("utf-8"),
+            "dh_public_key": base64.b64encode(eph_pub_bytes).decode("utf-8"),
         }
         
         verif_hasher = HMAC(self._verification_key, hashes.SHA512())
@@ -825,7 +879,7 @@ class SecureChatProtocol(ProtocolBase):
         
         encrypted_message["verification"] = base64.b64encode(verif_hasher.finalize()).decode('utf-8')
         
-        return json.dumps(encrypted_message).encode('utf-8')
+        return json.dumps(encrypted_message).encode("utf-8")
     
     def decrypt_message(self, data: bytes) -> str:
         """Decrypt and authenticate a message using perfect forward secrecy with proper state management.
@@ -870,7 +924,7 @@ class SecureChatProtocol(ProtocolBase):
             raise ValueError("Message is probably legitimate but failed to decrypt, InvalidTag")
         
         try:
-            decrypted_data_str = decrypted_data.decode('utf-8')
+            decrypted_data_str = decrypted_data.decode("utf-8")
         except UnicodeDecodeError:
             raise ValueError("Message is probably legitimate but failed to decode, UnicodeDecodeError")
         
@@ -880,7 +934,9 @@ class SecureChatProtocol(ProtocolBase):
         
         return decrypted_data_str
     
-    def encrypt_file_chunk(self, transfer_id: str, chunk_index: int, chunk_data: bytes) -> bytes:
+    def encrypt_file_chunk(
+            self, transfer_id: str, chunk_index: int, chunk_data: bytes,
+    ) -> bytes:
         """
         Encrypt a file chunk using the Double Ratchet, identical in structure to encrypt_message
         but operating on raw binary data rather than JSON text.
@@ -902,11 +958,11 @@ class SecureChatProtocol(ProtocolBase):
             "transfer_id": transfer_id,
             "chunk_index": chunk_index,
         }
-        header_json = json.dumps(header).encode('utf-8')
+        header_json = json.dumps(header).encode("utf-8")
         
         aad = _build_aad(MessageType.FILE_CHUNK, self.message_counter, nonce, eph_pub_bytes)
         
-        header_len = struct.pack('!H', len(header_json))
+        header_len = struct.pack("!H", len(header_json))
         plaintext = header_len + header_json + chunk_data
         encryptor = DoubleEncryptor(message_key, self._otp_material, self.message_counter)
         ciphertext = encryptor.encrypt(nonce, plaintext, aad)
@@ -952,14 +1008,14 @@ class SecureChatProtocol(ProtocolBase):
             raise ValueError("Invalid decrypted data: too short")
         
         try:
-            header_len = struct.unpack('!H', plaintext[:HEADER_LENGTH_SIZE])[0]
+            header_len = struct.unpack("!H", plaintext[:HEADER_LENGTH_SIZE])[0]
         except struct.error:
             raise ValueError("Invalid decrypted data: header length")
         
         if len(plaintext) < HEADER_LENGTH_SIZE + header_len:
             raise ValueError("Invalid decrypted data: header length mismatch")
         
-        header_json = plaintext[HEADER_LENGTH_SIZE:HEADER_LENGTH_SIZE + header_len]
+        header_json = plaintext[HEADER_LENGTH_SIZE: HEADER_LENGTH_SIZE + header_len]
         chunk_data = plaintext[HEADER_LENGTH_SIZE + header_len:]
         try:
             header = json.loads(header_json)
@@ -1000,18 +1056,24 @@ class SecureChatProtocol(ProtocolBase):
         dh_shared = eph_priv.exchange(X25519PublicKey.from_public_bytes(peer_pub_bytes))
         
         mixed_chain_key = _KeyDerivation.mix_dh_with_chain(
-                self._send_chain_key, dh_shared, self.message_counter,
+                self._send_chain_key,
+                dh_shared,
+                self.message_counter,
         )
         message_key = _KeyDerivation.derive_message_key(mixed_chain_key, self.message_counter)
         self._send_chain_key = _KeyDerivation.ratchet_chain_key(
-                self._send_chain_key, self.message_counter,
+                self._send_chain_key,
+                self.message_counter,
         )
         
         nonce = os.urandom(NONCE_SIZE)
         return nonce, eph_pub_bytes, message_key
     
     def _ratchet_recv_step(
-            self, temp_chain_key: bytes, peer_eph_pub: bytes, counter: int,
+            self,
+            temp_chain_key: bytes,
+            peer_eph_pub: bytes,
+            counter: int,
     ) -> tuple[bytes, bytes]:
         """
         Perform one Double Ratchet receive step.
@@ -1036,7 +1098,9 @@ class SecureChatProtocol(ProtocolBase):
         new_chain_key = _KeyDerivation.ratchet_chain_key(temp_chain_key, counter)
         return message_key, new_chain_key
     
-    def _advance_recv_ratchet(self, counter: int, peer_pub_bytes: bytes) -> tuple[bytes, bytes, bool]:
+    def _advance_recv_ratchet(
+            self, counter: int, peer_pub_bytes: bytes,
+    ) -> tuple[bytes, bytes, bool]:
         """Resolve chain key for *counter*, save/restore skipped states, derive message key.
 
         Returns (message_key, new_chain_key, use_saved).
@@ -1062,7 +1126,11 @@ class SecureChatProtocol(ProtocolBase):
         return message_key, new_chain_key, False
     
     def _commit_recv_state(
-            self, counter: int, peer_pub_bytes: bytes, new_chain_key: bytes, use_saved: bool,
+            self,
+            counter: int,
+            peer_pub_bytes: bytes,
+            new_chain_key: bytes,
+            use_saved: bool,
     ) -> None:
         """Update receive-side ratchet state after a successful decryption."""
         if use_saved:
@@ -1125,4 +1193,3 @@ class SecureChatProtocol(ProtocolBase):
     @rekey_interval.setter
     def rekey_interval(self, value: int) -> None:
         self._rekey.rekey_interval = value
-    

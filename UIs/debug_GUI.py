@@ -28,10 +28,12 @@ from debug_client import DebugClient
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 class Ltk:
     """
     Literal types for Tkinter constants because type checking YAY
     """
+    
     END: Literal["end"] = "end"
     W: Literal["w"] = "w"
     X: Literal["x"] = "x"
@@ -79,6 +81,7 @@ def _hex_preview(data: bytes, n: int = 16) -> str:
 # ---------------------------------------------------------------------------
 # DebugGUI
 # ---------------------------------------------------------------------------
+
 
 class DebugGUI(UIBase):
     """Debug UI: chat panel on the left, live debug panel on the right."""
@@ -146,37 +149,71 @@ class DebugGUI(UIBase):
     
     def _build_conn_bar(self, parent: tk.Frame) -> None:
         tk.Label(parent, text="Host:", bg=BG_COLOR, fg=FG_COLOR).pack(side=ltk.LEFT)
-        self.host_entry = tk.Entry(parent, width=15, bg=ENTRY_BG_COLOR, fg=FG_COLOR,
-                                   insertbackground=FG_COLOR, relief=ltk.FLAT)
+        self.host_entry = tk.Entry(
+                parent,
+                width=15,
+                bg=ENTRY_BG_COLOR,
+                fg=FG_COLOR,
+                insertbackground=FG_COLOR,
+                relief=ltk.FLAT,
+        )
         self.host_entry.insert(0, "localhost")
         self.host_entry.pack(side=ltk.LEFT, padx=(4, 10))
         
         tk.Label(parent, text="Port:", bg=BG_COLOR, fg=FG_COLOR).pack(side=ltk.LEFT)
-        self.port_entry = tk.Entry(parent, width=7, bg=ENTRY_BG_COLOR, fg=FG_COLOR,
-                                   insertbackground=FG_COLOR, relief=ltk.FLAT)
+        self.port_entry = tk.Entry(
+                parent,
+                width=7,
+                bg=ENTRY_BG_COLOR,
+                fg=FG_COLOR,
+                insertbackground=FG_COLOR,
+                relief=ltk.FLAT,
+        )
         self.port_entry.insert(0, "16384")
         self.port_entry.pack(side=ltk.LEFT, padx=(4, 10))
         
-        self.connect_btn = tk.Button(parent, text="Connect", command=self._toggle_connection,
-                                     bg=BUTTON_BG_COLOR, fg=FG_COLOR, relief=ltk.FLAT,
-                                     activebackground=BUTTON_ACTIVE_BG, activeforeground=FG_COLOR)
+        self.connect_btn = tk.Button(
+                parent,
+                text="Connect",
+                command=self._toggle_connection,
+                bg=BUTTON_BG_COLOR,
+                fg=FG_COLOR,
+                relief=ltk.FLAT,
+                activebackground=BUTTON_ACTIVE_BG,
+                activeforeground=FG_COLOR,
+        )
         self.connect_btn.pack(side=ltk.LEFT, padx=(0, 6))
         
-        self.status_label = tk.Label(parent, text="Not Connected", bg=BG_COLOR,
-                                     fg=STATUS_NOT_CONNECTED, font=("Consolas", 9, "bold"))
+        self.status_label = tk.Label(
+                parent,
+                text="Not Connected",
+                bg=BG_COLOR,
+                fg=STATUS_NOT_CONNECTED,
+                font=("Consolas", 9, "bold"),
+        )
         self.status_label.pack(side=ltk.RIGHT, padx=(10, 0))
     
     def _build_chat_panel(self, parent: tk.Frame) -> None:
         chat_frame = tk.Frame(parent, bg=BG_COLOR)
         chat_frame.pack(side=ltk.LEFT, fill=ltk.BOTH, expand=True, padx=(0, 6))
         
-        tk.Label(chat_frame, text="Chat", bg=BG_COLOR, fg=FG_COLOR,
-                 font=("Consolas", 10, "bold")).pack(anchor=ltk.W)
+        tk.Label(
+                chat_frame,
+                text="Chat",
+                bg=BG_COLOR,
+                fg=FG_COLOR,
+                font=("Consolas", 10, "bold"),
+        ).pack(anchor=ltk.W)
         
         self.chat_display = scrolledtext.ScrolledText(
-                chat_frame, state=ltk.DISABLED, wrap=ltk.WORD,
-                font=("Consolas", 10), bg=TEXT_BG_COLOR, fg=FG_COLOR,
-                relief=ltk.FLAT, height=28,
+                chat_frame,
+                state=ltk.DISABLED,
+                wrap=ltk.WORD,
+                font=("Consolas", 10),
+                bg=TEXT_BG_COLOR,
+                fg=FG_COLOR,
+                relief=ltk.FLAT,
+                height=28,
         )
         self.chat_display.pack(fill=ltk.BOTH, expand=True, pady=(4, 6))
         self.chat_display.tag_configure("time", foreground=TIME_COLOR)
@@ -186,34 +223,62 @@ class DebugGUI(UIBase):
         input_frame = tk.Frame(chat_frame, bg=BG_COLOR)
         input_frame.pack(fill=ltk.X)
         
-        self.message_entry = tk.Entry(input_frame, bg=ENTRY_BG_COLOR, fg=FG_COLOR,
-                                      insertbackground=FG_COLOR, relief=ltk.FLAT,
-                                      font=("Consolas", 10))
+        self.message_entry = tk.Entry(
+                input_frame,
+                bg=ENTRY_BG_COLOR,
+                fg=FG_COLOR,
+                insertbackground=FG_COLOR,
+                relief=ltk.FLAT,
+                font=("Consolas", 10),
+        )
         self.message_entry.pack(side=ltk.LEFT, fill=ltk.X, expand=True, padx=(0, 6))
         self.message_entry.bind("<Return>", self._send_message)
         
-        tk.Button(input_frame, text="Send", command=self._send_message,
-                  bg=BUTTON_BG_COLOR, fg=FG_COLOR, relief=ltk.FLAT,
-                  activebackground=BUTTON_ACTIVE_BG, activeforeground=FG_COLOR,
-                  ).pack(side=ltk.LEFT, padx=(0, 4))
+        tk.Button(
+                input_frame,
+                text="Send",
+                command=self._send_message,
+                bg=BUTTON_BG_COLOR,
+                fg=FG_COLOR,
+                relief=ltk.FLAT,
+                activebackground=BUTTON_ACTIVE_BG,
+                activeforeground=FG_COLOR,
+        ).pack(side=ltk.LEFT, padx=(0, 4))
         
-        tk.Button(input_frame, text="📁", command=self._send_file,
-                  bg=BUTTON_BG_COLOR, fg=FG_COLOR, relief=ltk.FLAT,
-                  activebackground=BUTTON_ACTIVE_BG, activeforeground=FG_COLOR,
-                  ).pack(side=ltk.LEFT)
+        tk.Button(
+                input_frame,
+                text="📁",
+                command=self._send_file,
+                bg=BUTTON_BG_COLOR,
+                fg=FG_COLOR,
+                relief=ltk.FLAT,
+                activebackground=BUTTON_ACTIVE_BG,
+                activeforeground=FG_COLOR,
+        ).pack(side=ltk.LEFT)
     
     def _build_debug_panel(self, parent: tk.Frame) -> None:
         debug_outer = tk.Frame(parent, bg=BG_COLOR)
         debug_outer.pack(side=ltk.LEFT, fill=ltk.BOTH, expand=False)
         
-        tk.Label(debug_outer, text="Debug Panel", bg=BG_COLOR, fg=FG_COLOR,
-                 font=("Consolas", 10, "bold")).pack(anchor=ltk.W)
+        tk.Label(
+                debug_outer,
+                text="Debug Panel",
+                bg=BG_COLOR,
+                fg=FG_COLOR,
+                font=("Consolas", 10, "bold"),
+        ).pack(anchor=ltk.W)
         
         # Live info display
         self.debug_display = scrolledtext.ScrolledText(
-                debug_outer, state=ltk.DISABLED, wrap=ltk.WORD,
-                font=("Consolas", 9), bg=DEBUG_BG_COLOR, fg=DEBUG_FG_COLOR,
-                relief=ltk.FLAT, width=52, height=22,
+                debug_outer,
+                state=ltk.DISABLED,
+                wrap=ltk.WORD,
+                font=("Consolas", 9),
+                bg=DEBUG_BG_COLOR,
+                fg=DEBUG_FG_COLOR,
+                relief=ltk.FLAT,
+                width=52,
+                height=22,
         )
         self.debug_display.pack(fill=ltk.BOTH, expand=True, pady=(4, 6))
         
@@ -233,17 +298,26 @@ class DebugGUI(UIBase):
         ]
         
         for label, cmd in actions:
-            tk.Button(btn_frame, text=label, command=cmd,
-                      bg=BUTTON_BG_COLOR, fg=FG_COLOR, relief=ltk.FLAT,
-                      activebackground=BUTTON_ACTIVE_BG, activeforeground=FG_COLOR,
-                      anchor=ltk.W, width=22,
-                      ).pack(fill=ltk.X, pady=1)
+            tk.Button(
+                    btn_frame,
+                    text=label,
+                    command=cmd,
+                    bg=BUTTON_BG_COLOR,
+                    fg=FG_COLOR,
+                    relief=ltk.FLAT,
+                    activebackground=BUTTON_ACTIVE_BG,
+                    activeforeground=FG_COLOR,
+                    anchor=ltk.W,
+                    width=22,
+            ).pack(fill=ltk.X, pady=1)
     
     # ------------------------------------------------------------------
     # UIBase — required display methods
     # ------------------------------------------------------------------
     
-    def display_regular_message(self, message: str, nickname: str | None = None) -> None:
+    def display_regular_message(
+            self, message: str, nickname: str | None = None,
+    ) -> None:
         nick = nickname or self.peer_nickname
         self._log_message("RECV", "TEXT", f"{nick}: {message}")
         self._on_tk(self._append_chat, f"{nick}: {message}")
@@ -284,8 +358,10 @@ class DebugGUI(UIBase):
         return False
     
     def prompt_rekey(self) -> bool | None:
-        msg = ("Peer requested a rekey.\n\n"
-               "Yes → proceed\nNo → disconnect\nCancel → reject but stay connected")
+        msg = (
+            "Peer requested a rekey.\n\n"
+            "Yes → proceed\nNo → disconnect\nCancel → reject but stay connected"
+        )
         res = messagebox.askyesnocancel("Rekey Request", msg)
         if res is True:
             return True
@@ -309,7 +385,9 @@ class DebugGUI(UIBase):
     def on_unexpected_disconnect(self, reason: str) -> None:
         self._on_tk(self._set_status, "Disconnected (Error)", STATUS_NOT_CONNECTED)
         self._on_tk(self.connect_btn.config, text="Connect")
-        self._on_tk(messagebox.showerror, "Disconnected", f"Unexpected disconnect: {reason}")
+        self._on_tk(
+                messagebox.showerror, "Disconnected", f"Unexpected disconnect: {reason}",
+        )
     
     # ------------------------------------------------------------------
     # UIBase — optional event hooks
@@ -328,7 +406,9 @@ class DebugGUI(UIBase):
     def on_nickname_change(self, new_nickname: str) -> None:
         old = self.peer_nickname
         self.peer_nickname = new_nickname
-        self._on_tk(self._append_chat, f"Peer renamed: {old} → {new_nickname}", tag="system")
+        self._on_tk(
+                self._append_chat, f"Peer renamed: {old} → {new_nickname}", tag="system",
+        )
     
     def on_delivery_confirmation(self, message_counter: int) -> None:
         self._on_tk(self._mark_delivered, message_counter)
@@ -337,28 +417,44 @@ class DebugGUI(UIBase):
         self._on_tk(self._append_chat, f"Ephemeral mode → {mode}", tag="system")
     
     def on_emergency_close(self) -> None:
-        self._on_tk(self._append_chat, "EMERGENCY CLOSE received from peer.", tag="error")
+        self._on_tk(
+                self._append_chat, "EMERGENCY CLOSE received from peer.", tag="error",
+        )
     
-    def file_download_progress(self, transfer_id: str, filename: str,
-                               received_chunks: int, total_chunks: int,
-                               bytes_transferred: int = -1,
-                               ) -> None:
+    def file_download_progress(
+            self,
+            transfer_id: str,
+            filename: str,
+            received_chunks: int,
+            total_chunks: int,
+            bytes_transferred: int = -1,
+    ) -> None:
         pct = (received_chunks / total_chunks * 100) if total_chunks else 0
-        self._on_tk(self._append_chat,
-                    f"[DL] {filename}: {pct:.1f}% ({received_chunks}/{total_chunks})",
-                    tag="system")
+        self._on_tk(
+                self._append_chat,
+                f"[DL] {filename}: {pct:.1f}% ({received_chunks}/{total_chunks})",
+                tag="system",
+        )
     
-    def file_upload_progress(self, transfer_id: str, filename: str,
-                             sent_chunks: int, total_chunks: int,
-                             bytes_transferred: int = -1,
-                             ) -> None:
+    def file_upload_progress(
+            self,
+            transfer_id: str,
+            filename: str,
+            sent_chunks: int,
+            total_chunks: int,
+            bytes_transferred: int = -1,
+    ) -> None:
         pct = (sent_chunks / total_chunks * 100) if total_chunks else 0
-        self._on_tk(self._append_chat,
-                    f"[UL] {filename}: {pct:.1f}% ({sent_chunks}/{total_chunks})",
-                    tag="system")
+        self._on_tk(
+                self._append_chat,
+                f"[UL] {filename}: {pct:.1f}% ({sent_chunks}/{total_chunks})",
+                tag="system",
+        )
     
     def on_file_transfer_complete(self, transfer_id: str, output_path: str) -> None:
-        self._on_tk(self._append_chat, f"File transfer complete: {output_path}", tag="system")
+        self._on_tk(
+                self._append_chat, f"File transfer complete: {output_path}", tag="system",
+        )
     
     # ------------------------------------------------------------------
     # Internal helpers — chat
@@ -406,7 +502,9 @@ class DebugGUI(UIBase):
             except ValueError:
                 messagebox.showerror("Error", "Invalid port number")
                 return
-            threading.Thread(target=self.client.connect, args=(host, port), daemon=True).start()
+            threading.Thread(
+                    target=self.client.connect, args=(host, port), daemon=True,
+            ).start()
     
     def _send_message(self, event: tk.Event | None = None) -> str:
         text = self.message_entry.get().strip()
@@ -431,7 +529,9 @@ class DebugGUI(UIBase):
             
             self.sent_messages[counter] = f"status_{counter}"
             self._log_message("SENT", "TEXT", f"{nick}: {text}")
-            threading.Thread(target=self.client.send_message, args=(text,), daemon=True).start()
+            threading.Thread(
+                    target=self.client.send_message, args=(text,), daemon=True,
+            ).start()
         
         self.message_entry.delete(0, tk.END)
         return "break"
@@ -456,7 +556,9 @@ class DebugGUI(UIBase):
             return
         path = filedialog.askopenfilename()
         if path:
-            threading.Thread(target=self.client.send_file, args=(Path(path),), daemon=True).start()
+            threading.Thread(
+                    target=self.client.send_file, args=(Path(path),), daemon=True,
+            ).start()
     
     # ------------------------------------------------------------------
     # Debug panel — periodic update
@@ -464,7 +566,8 @@ class DebugGUI(UIBase):
     
     def _schedule_debug_update(self) -> None:
         self._debug_timer_id = self.root.after(  # type: ignore[assignment]
-                self._debug_update_interval_ms, self._periodic_debug_update,
+                self._debug_update_interval_ms,
+                self._periodic_debug_update,
         )
     
     def _periodic_debug_update(self) -> None:
@@ -488,11 +591,21 @@ class DebugGUI(UIBase):
             lines.append("  No client attached\n")
         else:
             lines.append(f"  Connected:          {'Yes' if c.connected else 'No'}")
-            lines.append(f"  Key exchange done:  {'Yes' if c.key_exchange_complete else 'No'}")
-            lines.append(f"  Verification done:  {'Yes' if c.verification_complete else 'No'}")
-            lines.append(f"  Peer key verified:  {'Yes' if c.peer_key_verified else 'No'}")
-            lines.append(f"  Voice call active:  {'Yes' if c.voice_call_active else 'No'}")
-            lines.append(f"  File xfer active:   {'Yes' if c.file_transfer_active else 'No'}")
+            lines.append(
+                    f"  Key exchange done:  {'Yes' if c.key_exchange_complete else 'No'}",
+            )
+            lines.append(
+                    f"  Verification done:  {'Yes' if c.verification_complete else 'No'}",
+            )
+            lines.append(
+                    f"  Peer key verified:  {'Yes' if c.peer_key_verified else 'No'}",
+            )
+            lines.append(
+                    f"  Voice call active:  {'Yes' if c.voice_call_active else 'No'}",
+            )
+            lines.append(
+                    f"  File xfer active:   {'Yes' if c.file_transfer_active else 'No'}",
+            )
             lines.append("")
             
             # -- Server info (best-effort) --
@@ -610,7 +723,9 @@ class DebugGUI(UIBase):
         try:
             garbage = os.urandom(64)
             sock.sendall(garbage)
-            self._append_chat(f"Sent 64 bytes of garbage: {garbage[:16].hex()}…", tag="error")
+            self._append_chat(
+                    f"Sent 64 bytes of garbage: {garbage[:16].hex()}…", tag="error",
+            )
         except Exception as exc:
             messagebox.showerror("Send Error", str(exc))
     
@@ -629,9 +744,13 @@ class DebugGUI(UIBase):
         win.configure(bg=BG_COLOR)
         win.geometry("700x500")
         
-        txt = scrolledtext.ScrolledText(win, font=("Consolas", 9),
-                                        bg=DEBUG_BG_COLOR, fg=DEBUG_FG_COLOR,
-                                        relief=ltk.FLAT)
+        txt = scrolledtext.ScrolledText(
+                win,
+                font=("Consolas", 9),
+                bg=DEBUG_BG_COLOR,
+                fg=DEBUG_FG_COLOR,
+                relief=ltk.FLAT,
+        )
         txt.pack(fill=ltk.BOTH, expand=True, padx=8, pady=8)
         
         def _write_section(title: str, attrs: list[str], obj: object = proto) -> None:
@@ -646,24 +765,45 @@ class DebugGUI(UIBase):
                     display = str(val)
                 txt.insert(tk.END, f"  {attr:<35} {display}\n")
         
-        _write_section("Chain Keys & Counters", [
-            "send_chain_key", "receive_chain_key",
-            "message_counter", "peer_counter",
-        ])
-        _write_section("Public Keys", [
-            "mlkem_public_key", "peer_mlkem_public_key",
-            "hqc_public_key", "peer_hqc_public_key",
-            "dh_public_key_bytes", "peer_dh_public_key_bytes",
-        ])
-        _write_section("Session Keys", [
-            "verification_key", "shared_key",
-        ])
-        _write_section("Rekey State", [
-            "_rekey_in_progress",
-            "messages_since_last_rekey", "rekey_interval",
-            "pending_message_counter", "pending_peer_counter",
-            "_rke_dh_pub_bytes",
-        ], obj=proto._rekey)
+        _write_section(
+                "Chain Keys & Counters",
+                [
+                    "send_chain_key",
+                    "receive_chain_key",
+                    "message_counter",
+                    "peer_counter",
+                ],
+        )
+        _write_section(
+                "Public Keys",
+                [
+                    "mlkem_public_key",
+                    "peer_mlkem_public_key",
+                    "hqc_public_key",
+                    "peer_hqc_public_key",
+                    "dh_public_key_bytes",
+                    "peer_dh_public_key_bytes",
+                ],
+        )
+        _write_section(
+                "Session Keys",
+                [
+                    "verification_key",
+                    "shared_key",
+                ],
+        )
+        _write_section(
+                "Rekey State",
+                [
+                    "_rekey_in_progress",
+                    "messages_since_last_rekey",
+                    "rekey_interval",
+                    "pending_message_counter",
+                    "pending_peer_counter",
+                    "_rke_dh_pub_bytes",
+                ],
+                obj=proto._rekey,
+        )
         
         txt.config(state=ltk.DISABLED)
     
@@ -675,7 +815,13 @@ class DebugGUI(UIBase):
         ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         self._message_log.append((ts, direction, kind, content))
     
-    def log_raw_bytes(self, direction: str, context: str, data: bytes, decrypted_text: str | None = None) -> None:
+    def log_raw_bytes(
+            self,
+            direction: str,
+            context: str,
+            data: bytes,
+            decrypted_text: str | None = None,
+    ) -> None:
         ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         self._raw_bytes_log.append((ts, direction, context, data.hex(), decrypted_text))
     
@@ -702,7 +848,7 @@ class DebugGUI(UIBase):
         lines.append("SECTION 1: MESSAGE LOG")
         lines.append(f"{'─' * 70}")
         if self._message_log:
-            for (entry_ts, direction, kind, content) in self._message_log:
+            for entry_ts, direction, kind, content in self._message_log:
                 lines.append(f"[{entry_ts}] [{direction:<4}] [{kind:<6}] {content}")
         else:
             lines.append("  (no messages recorded)")
@@ -713,7 +859,13 @@ class DebugGUI(UIBase):
         lines.append("SECTION 1b: RAW BYTES LOG (dropped / failed messages)")
         lines.append(f"{'─' * 70}")
         if self._raw_bytes_log:
-            for (entry_ts, direction, context, hex_data, decrypted_text) in self._raw_bytes_log:
+            for (
+                    entry_ts,
+                    direction,
+                    context,
+                    hex_data,
+                    decrypted_text,
+            ) in self._raw_bytes_log:
                 lines.append(f"[{entry_ts}] [{direction:<4}] [{context}]")
                 lines.append(f"  hex: {hex_data}")
                 if decrypted_text is not None:
@@ -733,10 +885,18 @@ class DebugGUI(UIBase):
         if c is None:
             summary_lines.append("  No client attached")
         else:
-            summary_lines.append(f"  Connected:          {'Yes' if c.connected else 'No'}")
-            summary_lines.append(f"  Key exchange done:  {'Yes' if c.key_exchange_complete else 'No'}")
-            summary_lines.append(f"  Verification done:  {'Yes' if c.verification_complete else 'No'}")
-            summary_lines.append(f"  Peer key verified:  {'Yes' if c.peer_key_verified else 'No'}")
+            summary_lines.append(
+                    f"  Connected:          {'Yes' if c.connected else 'No'}",
+            )
+            summary_lines.append(
+                    f"  Key exchange done:  {'Yes' if c.key_exchange_complete else 'No'}",
+            )
+            summary_lines.append(
+                    f"  Verification done:  {'Yes' if c.verification_complete else 'No'}",
+            )
+            summary_lines.append(
+                    f"  Peer key verified:  {'Yes' if c.peer_key_verified else 'No'}",
+            )
             summary_lines.append(f"  Own nickname:       {c.own_nickname}")
             summary_lines.append(f"  Peer nickname:      {self.peer_nickname}")
             srv_ver = getattr(c, "server_protocol_version", None)
@@ -747,12 +907,24 @@ class DebugGUI(UIBase):
                 summary_lines.append(f"  Server identifier:  {srv_id}")
             proto = getattr(c, "_protocol", None)
             if proto is not None:
-                summary_lines.append(f"  Send chain key:     {_hex_preview(getattr(proto, 'send_chain_key', b''))}")
-                summary_lines.append(f"  Recv chain key:     {_hex_preview(getattr(proto, 'receive_chain_key', b''))}")
-                summary_lines.append(f"  Msg counter (out):  {getattr(proto, 'message_counter', '?')}")
-                summary_lines.append(f"  Peer counter (in):  {getattr(proto, 'peer_counter', '?')}")
-                summary_lines.append(f"  Rekey in progress:  {'Yes' if getattr(proto, 'rekey_in_progress', False) else 'No'}")
-                summary_lines.append(f"  Msgs since rekey:   {getattr(proto, 'messages_since_last_rekey', '?')} / {getattr(proto, 'rekey_interval', '?')}")
+                summary_lines.append(
+                        f"  Send chain key:     {_hex_preview(getattr(proto, 'send_chain_key', b''))}",
+                )
+                summary_lines.append(
+                        f"  Recv chain key:     {_hex_preview(getattr(proto, 'receive_chain_key', b''))}",
+                )
+                summary_lines.append(
+                        f"  Msg counter (out):  {getattr(proto, 'message_counter', '?')}",
+                )
+                summary_lines.append(
+                        f"  Peer counter (in):  {getattr(proto, 'peer_counter', '?')}",
+                )
+                summary_lines.append(
+                        f"  Rekey in progress:  {'Yes' if getattr(proto, 'rekey_in_progress', False) else 'No'}",
+                )
+                summary_lines.append(
+                        f"  Msgs since rekey:   {getattr(proto, 'messages_since_last_rekey', '?')} / {getattr(proto, 'rekey_interval', '?')}",
+                )
         lines.extend(summary_lines)
         lines.append("")
         
@@ -767,6 +939,7 @@ class DebugGUI(UIBase):
             if proto is None:
                 lines.append("  Client has no _protocol attribute")
             else:
+                
                 def _section(title: str, attrs: list[str], obj: object = proto) -> None:
                     lines.append(f"\n  [{title}]")
                     for attr in attrs:
@@ -777,24 +950,45 @@ class DebugGUI(UIBase):
                             display = str(val)
                         lines.append(f"    {attr:<35} {display}")
                 
-                _section("Chain Keys & Counters", [
-                    "send_chain_key", "receive_chain_key",
-                    "message_counter", "peer_counter",
-                ])
-                _section("Public Keys", [
-                    "mlkem_public_key", "peer_mlkem_public_key",
-                    "hqc_public_key", "peer_hqc_public_key",
-                    "dh_public_key_bytes", "peer_dh_public_key_bytes",
-                ])
-                _section("Session Keys", [
-                    "verification_key", "shared_key",
-                ])
-                _section("Rekey State", [
-                    "_rekey_in_progress",
-                    "messages_since_last_rekey", "rekey_interval",
-                    "pending_message_counter", "pending_peer_counter",
-                    "_rke_dh_pub_bytes",
-                ], obj=proto._rekey)
+                _section(
+                        "Chain Keys & Counters",
+                        [
+                            "send_chain_key",
+                            "receive_chain_key",
+                            "message_counter",
+                            "peer_counter",
+                        ],
+                )
+                _section(
+                        "Public Keys",
+                        [
+                            "mlkem_public_key",
+                            "peer_mlkem_public_key",
+                            "hqc_public_key",
+                            "peer_hqc_public_key",
+                            "dh_public_key_bytes",
+                            "peer_dh_public_key_bytes",
+                        ],
+                )
+                _section(
+                        "Session Keys",
+                        [
+                            "verification_key",
+                            "shared_key",
+                        ],
+                )
+                _section(
+                        "Rekey State",
+                        [
+                            "_rekey_in_progress",
+                            "messages_since_last_rekey",
+                            "rekey_interval",
+                            "pending_message_counter",
+                            "pending_peer_counter",
+                            "_rke_dh_pub_bytes",
+                        ],
+                        obj=proto._rekey,
+                )
         lines.append("")
         lines.append(f"{'=' * 70}")
         lines.append("END OF EXPORT")
@@ -802,7 +996,9 @@ class DebugGUI(UIBase):
         
         try:
             path.write_text("\n".join(lines), encoding="utf-8")
-            messagebox.showinfo("Export Successful", f"Debug log exported to:\n{path.resolve()}")
+            messagebox.showinfo(
+                    "Export Successful", f"Debug log exported to:\n{path.resolve()}",
+            )
         except Exception as exc:
             messagebox.showerror("Export Failed", str(exc))
     
@@ -822,6 +1018,7 @@ class DebugGUI(UIBase):
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
 
 def run(client_class: type[ClientBase]) -> None:
     root = tk.Tk()

@@ -4,6 +4,7 @@ These exercise the inner state transitions and the inner-message handlers
 without standing up an actual server. The handshake-derived ``shared_secret``
 is set directly when the test needs a session.
 """
+
 from __future__ import annotations
 
 import base64
@@ -27,7 +28,7 @@ def _make_client() -> SecureChatClient:
     ui = MagicMock()
     ui.has_capability = MagicMock(return_value=False)
     c = SecureChatClient(ui)
-    c.server_identifier = "unit-test-server"
+    c._connection.server_identifier = "unit-test-server"
     return c
 
 
@@ -62,25 +63,24 @@ class TestSessionLifecycle:
 class TestStartHandshake:
     def test_disconnected_errors(self) -> None:
         c = _make_client()
-        c._connected = False
+        c._connection._connected = False
         c._deaddrop.start_handshake()
         c.ui.display_error_message.assert_called_once()
     
     def test_in_progress_errors(self) -> None:
         c = _make_client()
-        c._connected = True
+        c._connection._connected = True
         c._deaddrop._in_progress = True
         c._deaddrop.start_handshake()
         c.ui.display_error_message.assert_called_once()
     
     def test_sends_start_frame(self) -> None:
         c = _make_client()
-        c._connected = True
-        c._socket = MagicMock()
-        with patch("client.deaddrop_manager.encode_send_message") as enc:
+        c._connection._connected = True
+        with patch.object(c, "send_encoded") as enc:
             c._deaddrop.start_handshake()
             enc.assert_called_once()
-            payload = enc.call_args.args[1]
+            payload = enc.call_args.args[0]
             assert payload == {"type": MessageType.DEADDROP_START}
         assert c._deaddrop._started is True
 
@@ -88,20 +88,20 @@ class TestStartHandshake:
 class TestWaitForHandshake:
     def test_not_started_errors(self) -> None:
         c = _make_client()
-        c._connected = True
+        c._connection._connected = True
         assert c._deaddrop.wait_for_handshake(timeout=0.01) is False
         c.ui.display_error_message.assert_called_once()
     
     def test_timeout_returns_false(self) -> None:
         c = _make_client()
-        c._connected = True
+        c._connection._connected = True
         c._deaddrop._started = True
         c._deaddrop._handshake_event.clear()
         assert c._deaddrop.wait_for_handshake(timeout=0.05) is False
     
     def test_completion_returns_true(self) -> None:
         c = _make_client()
-        c._connected = True
+        c._connection._connected = True
         c._deaddrop._started = True
         c._deaddrop.shared_secret = b"\x01" * 32
         c._deaddrop._handshake_event.set()
@@ -150,10 +150,12 @@ class TestEncryptedInputGuards:
         c = _make_client()
         _seed_session(c)
         # well-formed b64 but garbage ciphertext
-        c._deaddrop.handle_encrypted_message({
-            "nonce":      base64.b64encode(b"\x00" * 12).decode(),
-            "ciphertext": base64.b64encode(b"\x00" * 32).decode(),
-        })
+        c._deaddrop.handle_encrypted_message(
+                {
+                    "nonce":      base64.b64encode(b"\x00" * 12).decode(),
+                    "ciphertext": base64.b64encode(b"\x00" * 32).decode(),
+                },
+        )
         c.ui.display_error_message.assert_called_once()
 
 
@@ -167,11 +169,14 @@ class TestInnerMessageRoundtrip:
         c = _make_client()
         _seed_session(c)
         c._deaddrop._name = "alice"
-        frame = self._wrap(c, {
-            "type":   MessageType.DEADDROP_CHECK_RESPONSE,
-            "exists": True,
-            "name":   "alice",
-        })
+        frame = self._wrap(
+                c,
+                {
+                    "type":   MessageType.DEADDROP_CHECK_RESPONSE,
+                    "exists": True,
+                    "name":   "alice",
+                },
+        )
         c._deaddrop.handle_encrypted_message(frame)
         c.ui.on_deaddrop_check_result.assert_called_once_with("alice", True)
     
@@ -181,10 +186,13 @@ class TestInnerMessageRoundtrip:
         c._deaddrop._in_progress = True
         c._deaddrop.download_in_progress = True
         c._deaddrop._upload_accept_event.clear()
-        frame = self._wrap(c, {
-            "type":   MessageType.DEADDROP_DENY,
-            "reason": "nope",
-        })
+        frame = self._wrap(
+                c,
+                {
+                    "type":   MessageType.DEADDROP_DENY,
+                    "reason": "nope",
+                },
+        )
         c._deaddrop.handle_encrypted_message(frame)
         assert c._deaddrop._in_progress is False
         assert c._deaddrop.download_in_progress is False
@@ -223,8 +231,10 @@ class TestCryptoHelpers:
     def test_derive_file_key_length(self) -> None:
         c = _make_client()
         # Argon2id is slow; keep small
-        with patch("client.deaddrop_manager.Argon2id") as argon, \
-                patch("client.deaddrop_manager.HKDF") as hkdf:
+        with (
+            patch("client.deaddrop_manager.Argon2id") as argon,
+            patch("client.deaddrop_manager.HKDF") as hkdf,
+        ):
             argon.return_value.derive.return_value = b"\x00" * DOUBLE_KEY_SIZE
             hkdf.return_value.derive.return_value = b"\x01" * DOUBLE_KEY_SIZE
             out = c._deaddrop._derive_file_key("pw", b"\x00" * 16)
@@ -241,7 +251,7 @@ class TestCryptoHelpers:
 class TestGuardsRequiringSession:
     def test_upload_requires_session(self, tmp_path: Path) -> None:
         c = _make_client()
-        p = tmp_path / "x";
+        p = tmp_path / "x"
         p.write_bytes(b"y")
         c._deaddrop.upload("name", "pw", p)
         c.ui.display_error_message.assert_called_once()

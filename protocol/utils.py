@@ -8,8 +8,10 @@ from typing import Generator
 import numpy as np
 
 from protocol.constants import (
-    INCOMPRESSIBLE_EXTENSIONS, SEND_CHUNK_SIZE,
-    FINGERPRINT_HASH_SIZE, FINGERPRINT_WORD_COUNT, HASH_TO_WORDS_DEFAULT,
+    INCOMPRESSIBLE_EXTENSIONS,
+    SEND_CHUNK_SIZE,
+    FINGERPRINT_HASH_SIZE,
+    FINGERPRINT_WORD_COUNT,
     MAX_SANITIZED_STR_LENGTH,
 )
 
@@ -66,7 +68,9 @@ class StreamingGzipCompressor:
     
     def __init__(self) -> None:
         self.buffer: io.BytesIO = io.BytesIO()
-        self.compressor: gzip.GzipFile = gzip.GzipFile(fileobj=self.buffer, mode='wb', compresslevel=9)
+        self.compressor: gzip.GzipFile = gzip.GzipFile(
+                fileobj=self.buffer, mode="wb", compresslevel=9,
+        )
     
     def compress_chunk(self, data: bytes) -> bytes:
         """
@@ -120,7 +124,7 @@ def bytes_to_human_readable(size: int) -> str:
     
     Args:
         size (int): The number of bytes to convert.
-        
+    
     Returns:
         str: A formatted string with the size and the appropriate unit (B, KiB, MiB, or GiB).
     """
@@ -148,10 +152,10 @@ def xor_bytes(a: bytes, b: bytes) -> bytes:
         pass
     elif len(a) < len(b):
         diff = len(b) - len(a)
-        a = b'\x00' * diff + a
+        a = b"\x00" * diff + a
     else:
         diff = len(a) - len(b)
-        b = b'\x00' * diff + b
+        b = b"\x00" * diff + b
     
     return np.bitwise_xor(np.frombuffer(a, dtype=np.uint8), np.frombuffer(b, dtype=np.uint8)).tobytes()
 
@@ -159,17 +163,15 @@ def xor_bytes(a: bytes, b: bytes) -> bytes:
 def load_wordlist(wordlist_file: Path) -> list[str]:
     """Load the wordlist from the given file path."""
     try:
-        with open(wordlist_file.resolve(), 'r', encoding='utf-8') as f:
+        with open(wordlist_file.resolve(), "r", encoding="utf-8") as f:
             return [line.strip() for line in f if line.strip()]
     except FileNotFoundError:
-        raise FileNotFoundError(
-                f"{wordlist_file} not found. Please ensure the wordlist file is in the same directory as "
-                "shared.py")
+        raise FileNotFoundError(f"{wordlist_file} not found. Please ensure the wordlist file is in the same directory as shared.py")
 
 
-def hash_to_words(hash_bytes: bytes, wordlist: list[str], num_words: int = HASH_TO_WORDS_DEFAULT) -> list[str]:
+def hash_to_words(hash_bytes: bytes, wordlist: list[str], num_words: int = FINGERPRINT_WORD_COUNT) -> list[str]:
     """Convert hash bytes to a list of words from the wordlist."""
-    hash_int = int.from_bytes(hash_bytes, byteorder='big')
+    hash_int = int.from_bytes(hash_bytes, byteorder="big")
     
     words = []
     for i in range(num_words):
@@ -189,17 +191,21 @@ def generate_key_fingerprint(key: bytes, wordlist_file: Path) -> str:
 
 def sanitize_str(s: str) -> str:
     """Return ASCII-only str truncated to MAX_SANITIZED_STR_LENGTH chars; fallback to '?' if empty."""
-    s = s.encode('ascii', errors='ignore').decode('ascii', errors='ignore')
+    s = s.encode("ascii", errors="ignore").decode("ascii", errors="ignore")
     return s[:MAX_SANITIZED_STR_LENGTH] or "?"
 
 
-def chunk_file(file_path: Path | str, compress: bool = True, chunk_size: int = SEND_CHUNK_SIZE) -> Generator[bytes, None, None]:
+def chunk_file(
+        file_path: Path | str,
+        compress: bool = True,
+        chunk_size: int = SEND_CHUNK_SIZE,
+    ) -> Generator[bytes, None, None]:
     """Generate file chunks for transmission one at a time.
-    
+
     This is a streaming generator function that optionally compresses and yields chunks
     without loading the entire file into memory. This approach is memory-efficient
     for large files and provides a steady stream of data for network transmission.
-    
+
     Args:
         file_path: Path to the file to chunk
         compress: Whether to compress the chunks (default: True)
@@ -208,7 +214,7 @@ def chunk_file(file_path: Path | str, compress: bool = True, chunk_size: int = S
     
     if not compress:
         # Send uncompressed chunks directly
-        with open(file_path, 'rb') as original_file:
+        with open(file_path, "rb") as original_file:
             while True:
                 # Read a chunk from the original file
                 file_chunk = original_file.read(chunk_size)
@@ -222,7 +228,7 @@ def chunk_file(file_path: Path | str, compress: bool = True, chunk_size: int = S
     pending_data: bytes = b""
     
     try:
-        with open(file_path, 'rb') as original_file:
+        with open(file_path, "rb") as original_file:
             while True:
                 # Read a chunk from the original file
                 file_chunk = original_file.read(chunk_size)

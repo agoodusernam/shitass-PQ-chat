@@ -18,13 +18,14 @@ from protocol.types import FileMetadata
 
 class UnsupportedError(Exception):
     """Raised when a client does not support a requested feature."""
+    
     pass
 
 
 class ClientBase(ABC):
     """
     Abstract base that every chat-client implementation must satisfy.
-    
+
     The client is responsible for calling the appropriate methods on the UI,
     networking, and message handling.
     The client calls the Protocol layer to handle the actual protocol logic,
@@ -32,8 +33,7 @@ class ClientBase(ABC):
     """
     
     @abstractmethod
-    def __init__(self, ui: UIBase | None = None) -> None:
-        ...
+    def __init__(self, ui: UIBase | None = None) -> None: ...
     
     @abstractmethod
     def connect(self, host: str, port: int) -> bool:
@@ -48,7 +48,7 @@ class ClientBase(ABC):
         """Gracefully disconnect from the server."""
         ...
     
-    # session state 
+    # session state
     
     @property
     @abstractmethod
@@ -92,8 +92,7 @@ class ClientBase(ABC):
         return False
     
     @voice_muted.setter
-    def voice_muted(self, value: bool) -> None:
-        ...
+    def voice_muted(self, value: bool) -> None: ...
     
     @property
     def file_transfer_active(self) -> bool:
@@ -106,10 +105,9 @@ class ClientBase(ABC):
         return -1
     
     @file_transfer_update_interval.setter
-    def file_transfer_update_interval(self, value: int) -> None:
-        ...
+    def file_transfer_update_interval(self, value: int) -> None: ...
     
-    # preferences 
+    # preferences
     # Whether incoming file transfers are accepted
     allow_file_transfers: bool = False
     
@@ -139,6 +137,16 @@ class ClientBase(ABC):
 
         Returns ``True`` if the message was queued/sent successfully.
         """
+        ...
+    
+    @abstractmethod
+    def send_raw(self, data: bytes) -> str | None:
+        """Send a raw frame over the socket. Returns None on success, an error string otherwise."""
+        ...
+    
+    @abstractmethod
+    def send_encoded(self, obj: object) -> str | None:
+        """JSON-encode and send a frame over the socket. Returns None on success, an error string otherwise."""
         ...
     
     # file transfer

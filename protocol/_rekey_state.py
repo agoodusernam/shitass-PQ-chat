@@ -6,14 +6,28 @@ from typing import TYPE_CHECKING
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
-from cryptography.hazmat.primitives.asymmetric.mlkem import MLKEM1024PrivateKey, MLKEM1024PublicKey
-from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA87PrivateKey, MLDSA87PublicKey
+from cryptography.hazmat.primitives.asymmetric.x25519 import (
+    X25519PrivateKey,
+    X25519PublicKey,
+)
+from cryptography.hazmat.primitives.asymmetric.mlkem import (
+    MLKEM1024PrivateKey,
+    MLKEM1024PublicKey,
+)
+from cryptography.hazmat.primitives.asymmetric.mldsa import (
+    MLDSA87PrivateKey,
+    MLDSA87PublicKey,
+)
 from cryptography.hazmat.primitives.constant_time import bytes_eq
 from cryptography.hazmat.primitives.hmac import HMAC
 from pqcrypto.kem import hqc_256
 
-from protocol.constants import CLIENT_RANDOM_SIZE, ML_DSA_CONTEXT, MessageType, NONCE_SIZE
+from protocol.constants import (
+    CLIENT_RANDOM_SIZE,
+    ML_DSA_CONTEXT,
+    MessageType,
+    NONCE_SIZE,
+)
 from protocol.crypto_classes import KeyExchangeDoubleEncryptor, _KeyDerivation
 from protocol.utils import LRUCache
 
@@ -162,43 +176,70 @@ class _RekeyState:
     
     def _derive_combined_random(self) -> bytes:
         return _KeyDerivation.derive_combined_random(
-                self._rke_client_random, self._rke_peer_client_random,
-                self._server_id(), rekey=True,
+                self._rke_client_random,
+                self._rke_peer_client_random,
+                self._server_id(),
+                rekey=True,
         )
     
     def _derive_intermediary_key_1(self, mlkem_shared_secret: bytes) -> bytes:
         return _KeyDerivation.derive_intermediary_key_1(
-                mlkem_shared_secret, self._rke_combined_random,
-                self._server_id(), rekey=True,
+                mlkem_shared_secret,
+                self._rke_combined_random,
+                self._server_id(),
+                rekey=True,
         )
     
-    def _derive_intermediary_key_2(self, int_key_1: bytes, dh_shared_secret: bytes) -> bytes:
+    def _derive_intermediary_key_2(
+            self, int_key_1: bytes, dh_shared_secret: bytes,
+    ) -> bytes:
         return _KeyDerivation.derive_intermediary_key_2(
-                int_key_1, dh_shared_secret, self._server_id(), rekey=True,
+                int_key_1,
+                dh_shared_secret,
+                self._server_id(),
+                rekey=True,
         )
     
-    def _finalize(self, dh_shared_secret: bytes, hqc_secret: bytes,
-                  mlkem_shared_secret: bytes,
-                  own_dh_priv: X25519PrivateKey, peer_dh_pub_bytes: bytes,
-                  ) -> None:
+    def _finalize(
+            self,
+            dh_shared_secret: bytes,
+            hqc_secret: bytes,
+            mlkem_shared_secret: bytes,
+            own_dh_priv: X25519PrivateKey,
+            peer_dh_pub_bytes: bytes,
+    ) -> None:
         """
         Derive and store pending session keys.
         """
         server_id = self._server_id()
         
         pending_otp = _KeyDerivation.derive_otp_material(
-                hqc_secret, self._rke_combined_random, server_id, rekey=True,
+                hqc_secret,
+                self._rke_combined_random,
+                server_id,
+                rekey=True,
         )
         own_chain_key = _KeyDerivation.derive_chain_key_root(
-                mlkem_shared_secret, dh_shared_secret,
-                self._rke_client_random, server_id, rekey=True,
+                mlkem_shared_secret,
+                dh_shared_secret,
+                self._rke_client_random,
+                server_id,
+                rekey=True,
         )
         peer_chain_key = _KeyDerivation.derive_chain_key_root(
-                mlkem_shared_secret, dh_shared_secret,
-                self._rke_peer_client_random, server_id, rekey=True,
+                mlkem_shared_secret,
+                dh_shared_secret,
+                self._rke_peer_client_random,
+                server_id,
+                rekey=True,
         )
-        verification_hash, key_verification_material = _KeyDerivation.compute_verification_pair(
-                pending_otp, own_chain_key, peer_chain_key, self._rke_combined_random,
+        verification_hash, key_verification_material = (
+            _KeyDerivation.compute_verification_pair(
+                    pending_otp,
+                    own_chain_key,
+                    peer_chain_key,
+                    self._rke_combined_random,
+            )
         )
         
         self._pending_otp_material = pending_otp
@@ -276,6 +317,8 @@ class _RekeyState:
     
     def _create_mlkem_pubkey(self) -> dict:
         """(A) Generate ML-KEM-1024 and X25519 keypairs; return signed mlkem_pubkey payload."""
+        if self._rke_mldsa_priv is None:
+            raise ValueError("ML-DSA private key not available")
         mlkem_priv = MLKEM1024PrivateKey.generate()
         mlkem_pub = mlkem_priv.public_key().public_bytes_raw()
         self._rke_mlkem_priv = mlkem_priv
@@ -292,6 +335,8 @@ class _RekeyState:
     
     def process_mlkem_pubkey(self, inner: dict) -> dict:
         """(B) Process A's mlkem_pubkey; generate B's keys, encapsulate, return mlkem_ct_keys payload."""
+        if self._rke_mldsa_priv is None:
+            raise ValueError("ML-DSA private key not available")
         try:
             mlkem_pub = base64.b64decode(inner["mlkem_public_key"], validate=True)
             mldsa_sig = base64.b64decode(inner["mldsa_signature"], validate=True)
@@ -342,6 +387,10 @@ class _RekeyState:
     
     def process_mlkem_ct_keys(self, inner: dict) -> dict:
         """(A) Process B's mlkem_ct_keys; decapsulate, decrypt, finalize pending keys; return x25519_hqc_ct."""
+        if self._rke_dh_priv is None:
+            raise ValueError("DH private key not available")
+        if self._rke_mldsa_priv is None:
+            raise ValueError("ML-DSA private key not available")
         try:
             mlkem_ct = base64.b64decode(inner["mlkem_ciphertext"], validate=True)
             enc_hqc_pub = base64.b64decode(inner["encrypted_hqc_pubkey"], validate=True)
@@ -355,7 +404,9 @@ class _RekeyState:
         signed_payload = mlkem_ct + enc_hqc_pub + enc_x25519_pub + nonce1 + nonce2
         try:
             MLDSA87PublicKey.from_public_bytes(self._rke_peer_mldsa_pub).verify(
-                    mldsa_sig, signed_payload, context=ML_DSA_CONTEXT,
+                    mldsa_sig,
+                    signed_payload,
+                    context=ML_DSA_CONTEXT,
             )
         except InvalidSignature as exc:
             raise ValueError("ML-DSA signature verification failed on rekey mlkem_ct_keys") from exc
@@ -390,8 +441,13 @@ class _RekeyState:
         out_signed_payload = encrypted_x25519_pubkey + encrypted_hqc_ciphertext + out_nonce1 + out_nonce2
         signature = self._rke_mldsa_priv.sign(out_signed_payload, context=ML_DSA_CONTEXT)
         
-        self._finalize(dh_shared_secret, hqc_secret, mlkem_shared_secret,
-                       self._rke_dh_priv, peer_x25519_pub_bytes)
+        self._finalize(
+                dh_shared_secret,
+                hqc_secret,
+                mlkem_shared_secret,
+                self._rke_dh_priv,
+                peer_x25519_pub_bytes,
+        )
         
         return {
             "type":                     MessageType.REKEY,
@@ -405,6 +461,8 @@ class _RekeyState:
     
     def process_x25519_hqc_ct(self, inner: dict) -> None:
         """(B) Process A's x25519_hqc_ct; derive and store pending session keys."""
+        if self._rke_b_dh_priv is None:
+            raise ValueError("DH private key not available")
         try:
             enc_x25519_pub = base64.b64decode(inner["encrypted_x25519_pubkey"], validate=True)
             enc_hqc_ct = base64.b64decode(inner["encrypted_hqc_ciphertext"], validate=True)
@@ -417,7 +475,9 @@ class _RekeyState:
         signed_payload = enc_x25519_pub + enc_hqc_ct + nonce1 + nonce2
         try:
             MLDSA87PublicKey.from_public_bytes(self._rke_peer_mldsa_pub).verify(
-                    mldsa_sig, signed_payload, context=ML_DSA_CONTEXT,
+                    mldsa_sig,
+                    signed_payload,
+                    context=ML_DSA_CONTEXT,
             )
         except InvalidSignature as exc:
             raise ValueError("ML-DSA signature verification failed on rekey x25519_hqc_ct") from exc
@@ -434,8 +494,13 @@ class _RekeyState:
         hqc_ciphertext = dec2.decrypt(nonce2, enc_hqc_ct)
         hqc_secret = hqc_256.decrypt(self._rke_hqc_priv, hqc_ciphertext)
         
-        self._finalize(dh_shared_secret, hqc_secret, self._rke_mlkem_shared_secret,
-                       self._rke_b_dh_priv, peer_x25519_pub_bytes)
+        self._finalize(
+                dh_shared_secret,
+                hqc_secret,
+                self._rke_mlkem_shared_secret,
+                self._rke_b_dh_priv,
+                peer_x25519_pub_bytes,
+        )
     
     def create_verification(self) -> dict:
         h = HMAC(self._pending_key_verification_material, hashes.SHA3_512())

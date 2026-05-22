@@ -8,7 +8,7 @@ if TYPE_CHECKING:
 class ProtocolBase(ABC):
     """
     Abstract base class defining the interface for the SecureChatProtocol.
-    
+
     This class defines the methods that the client core expects from the protocol implementation.
     The protocol is responsible for handling the actual cryptographic operations,
     like key exchange and message en- and decryption.
@@ -53,8 +53,8 @@ class ProtocolBase(ABC):
     # Transport
     
     @abstractmethod
-    def start_sender_thread(self, sock) -> None:
-        """Start the background sender thread for message queuing."""
+    def start_sender_thread(self) -> None:
+        """Start the background sender thread, transmitting via the client's ``send_raw``."""
     
     @abstractmethod
     def stop_sender_thread(self) -> None:
@@ -151,7 +151,9 @@ class ProtocolBase(ABC):
         """Decrypt and authenticate a message."""
     
     @abstractmethod
-    def encrypt_file_chunk(self, transfer_id: str, chunk_index: int, chunk_data: bytes) -> bytes:
+    def encrypt_file_chunk(
+            self, transfer_id: str, chunk_index: int, chunk_data: bytes,
+    ) -> bytes:
         """Encrypt a file chunk using the Double Ratchet."""
     
     @abstractmethod

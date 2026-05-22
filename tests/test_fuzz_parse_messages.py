@@ -5,6 +5,7 @@ Two kinds of properties:
     2. Robustness: parse_*(arbitrary bytes) raises only declared exceptions
        (DecodeError for parse_ke_*, KeyError for process_file_metadata).
 """
+
 from __future__ import annotations
 
 import base64
@@ -13,7 +14,10 @@ import os
 
 import pytest
 from hypothesis import given, strategies as st
-from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA87PrivateKey, MLDSA87PublicKey
+from cryptography.hazmat.primitives.asymmetric.mldsa import (
+    MLDSA87PrivateKey,
+    MLDSA87PublicKey,
+)
 
 from protocol import create_messages as cm
 from protocol import parse_messages as pm
@@ -33,7 +37,9 @@ def _verify_mldsa(message: bytes, signature: bytes) -> bool:
     
     try:
         MLDSA87PublicKey.from_public_bytes(_MLDSA_PUB).verify(
-                signature, message, context=ML_DSA_CONTEXT,
+                signature,
+                message,
+                context=ML_DSA_CONTEXT,
         )
     except InvalidSignature:
         return False
@@ -52,8 +58,9 @@ client_random = st.binary(min_size=32, max_size=32)
 garbage_bytes = st.one_of(
         st.binary(min_size=0, max_size=4096),
         st.text(max_size=512).map(lambda s: s.encode("utf-8", errors="replace")),
-        st.dictionaries(st.text(max_size=16), st.text(max_size=64), max_size=8)
-        .map(lambda d: json.dumps(d).encode("utf-8")),
+        st.dictionaries(st.text(max_size=16), st.text(max_size=64), max_size=8).map(
+                lambda d: json.dumps(d).encode("utf-8"),
+        ),
 )
 
 # Dicts that decode as JSON but have the wrong shape for the target parser.
@@ -93,7 +100,9 @@ def test_roundtrip_ke_mlkem_pubkey(pub: bytes) -> None:
 
 
 @given(ct=small_blob, hqc=small_blob, x=small_blob, n1=nonce12, n2=nonce12)
-def test_roundtrip_ke_mlkem_ct_keys(ct: bytes, hqc: bytes, x: bytes, n1: bytes, n2: bytes) -> None:
+def test_roundtrip_ke_mlkem_ct_keys(
+        ct: bytes, hqc: bytes, x: bytes, n1: bytes, n2: bytes,
+) -> None:
     wire = cm.create_ke_mlkem_ct_keys(ct, hqc, x, n1, n2, _MLDSA_PRIV)
     out = pm.parse_ke_mlkem_ct_keys(wire)
     assert out["mlkem_ciphertext"] == ct
@@ -106,7 +115,9 @@ def test_roundtrip_ke_mlkem_ct_keys(ct: bytes, hqc: bytes, x: bytes, n1: bytes, 
 
 
 @given(x=small_blob, hqc_ct=small_blob, n1=nonce12, n2=nonce12)
-def test_roundtrip_ke_x25519_hqc_ct(x: bytes, hqc_ct: bytes, n1: bytes, n2: bytes) -> None:
+def test_roundtrip_ke_x25519_hqc_ct(
+        x: bytes, hqc_ct: bytes, n1: bytes, n2: bytes,
+) -> None:
     wire = cm.create_ke_x25519_hqc_ct(x, hqc_ct, n1, n2, _MLDSA_PRIV)
     out = pm.parse_ke_x25519_hqc_ct(wire)
     assert out["encrypted_x25519_pubkey"] == x
@@ -128,7 +139,9 @@ def test_roundtrip_ke_verification_match(verification_key: bytes) -> None:
     assert len(out_raw["verification_key"]) == 64  # SHA3-512 output
 
 
-@given(key_a=st.binary(min_size=16, max_size=64), key_b=st.binary(min_size=16, max_size=64))
+@given(
+        key_a=st.binary(min_size=16, max_size=64), key_b=st.binary(min_size=16, max_size=64),
+)
 def test_roundtrip_ke_verification_mismatch(key_a: bytes, key_b: bytes) -> None:
     """Different keys → parse returns empty bytes (constant-time mismatch signal)."""
     if key_a == key_b:
@@ -146,7 +159,9 @@ def test_roundtrip_key_verification_message(verified: bool) -> None:
 
 @given(
         transfer_id=st.text(min_size=1, max_size=32),
-        filename=st.text(min_size=1, max_size=64).filter(lambda s: "\x00" not in s and "/" not in s and s not in (".", "..")),
+        filename=st.text(min_size=1, max_size=64).filter(
+                lambda s: "\x00" not in s and "/" not in s and s not in (".", ".."),
+        ),
         file_size=st.integers(min_value=0, max_value=2 ** 40),
         file_hash=st.text(alphabet="0123456789abcdef", min_size=1, max_size=128),
         total_chunks=st.integers(min_value=0, max_value=2 ** 32),
@@ -198,7 +213,11 @@ def test_file_metadata_compressed_size_defaults_to_file_size() -> None:
 # ---------------------------------------------------------------------------
 # Version warning behaviour
 # ---------------------------------------------------------------------------
-@given(peer_version=st.text(min_size=1, max_size=16).filter(lambda s: s != PROTOCOL_VERSION))
+@given(
+        peer_version=st.text(min_size=1, max_size=16).filter(
+                lambda s: s != PROTOCOL_VERSION,
+        ),
+)
 def test_ke_dsa_random_emits_version_warning(peer_version: str) -> None:
     payload = {
         "type":             1,
@@ -232,7 +251,9 @@ def test_parse_ke_raises_only_decode_error(parser, data: bytes) -> None:
     except DecodeError:
         pass  # expected
     except Exception as exc:  # noqa: BLE001 — we are asserting the *type*
-        pytest.fail(f"{parser} raised unexpected {type(exc).__name__}: {exc!r} on {data!r}")
+        pytest.fail(
+                f"{parser} raised unexpected {type(exc).__name__}: {exc!r} on {data!r}",
+        )
 
 
 @pytest.mark.parametrize("parser", PARSE_BYTES_FUNCS)
@@ -244,7 +265,9 @@ def test_parse_ke_malformed_json_raises_decode_error(parser, data: bytes) -> Non
     except DecodeError:
         pass
     except Exception as exc:  # noqa: BLE001
-        pytest.fail(f"{parser} raised unexpected {type(exc).__name__}: {exc!r} on {data!r}")
+        pytest.fail(
+                f"{parser} raised unexpected {type(exc).__name__}: {exc!r} on {data!r}",
+        )
 
 
 @given(data=garbage_bytes)

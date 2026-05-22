@@ -1,8 +1,10 @@
 import threading
-from typing import TypeVar, Iterator, MutableMapping
+from typing import TypeVar, overload
+from collections.abc import MutableMapping, Iterator
 
 K = TypeVar("K")
 V = TypeVar("V")
+T = TypeVar("T")
 
 
 class ThreadSafeDict(MutableMapping[K, V]):
@@ -14,7 +16,7 @@ class ThreadSafeDict(MutableMapping[K, V]):
     """
     
     def __init__(self, *args, **kwargs) -> None:
-        self._data: dict[K, V] = dict(*args, **kwargs)
+        self._data: dict[K, V] = dict(*args, **kwargs)  # ty:ignore[invalid-assignment]
         self.lock = threading.RLock()  # RLock so the same thread can re-enter
     
     def __getitem__(self, key: K) -> V:
@@ -45,7 +47,13 @@ class ThreadSafeDict(MutableMapping[K, V]):
         with self.lock:
             self._data.clear()
     
-    def get(self, key: K, default=None):
+    @overload
+    def get(self, key: K, default: None = None) -> V | None: ...
+    
+    @overload
+    def get(self, key: K, default: T) -> T | V: ...
+    
+    def get(self, key: K, default: T | None = None) -> V | T | None:
         with self.lock:
             return self._data.get(key, default)
     

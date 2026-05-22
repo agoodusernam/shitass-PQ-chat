@@ -14,7 +14,7 @@ Covers:
 - Static key-derivation helpers
 - Queue / sender-thread helpers
 - reset_key_exchange
-- send_emergency_close (no socket → False)
+- send_emergency_close (no client → False)
 """
 
 import json
@@ -703,29 +703,20 @@ class TestKeyDerivationHelpers:
 # noinspection PyMissingTypeHints
 class TestSenderThread:
     def test_start_stop_sender_thread(self):
-        import socket as _socket
-        
         p = _make_protocol()
-        # Use a mock socket-like object
-        sock = _socket.socket()
-        p.start_sender_thread(sock)
+        p.start_sender_thread()
         assert p._sender_running is True
         assert p._sender_thread is not None
         p.stop_sender_thread()
         assert p._sender_running is False
-        sock.close()
     
     def test_start_sender_thread_idempotent(self):
-        import socket as _socket
-        
         p = _make_protocol()
-        sock = _socket.socket()
-        p.start_sender_thread(sock)
+        p.start_sender_thread()
         thread_before = p._sender_thread
-        p.start_sender_thread(sock)  # second call should be a no-op
+        p.start_sender_thread()  # second call should be a no-op
         assert p._sender_thread is thread_before
         p.stop_sender_thread()
-        sock.close()
 
 
 # ---------------------------------------------------------------------------

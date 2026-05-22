@@ -4,10 +4,10 @@ Drives the 16-step hybrid PQC key exchange (ML-KEM + HQC + X25519 + ML-DSA),
 interactive key-fingerprint verification, the rekey state machine, and
 handles server-issued KEY_EXCHANGE_RESET frames.
 """
+
 from __future__ import annotations
 
 import json
-from socket import socket
 from typing import TYPE_CHECKING, Any
 
 from protocol import parse_messages, types
@@ -35,10 +35,6 @@ class KeyExchangeManager:
         return self._client._protocol
     
     @property
-    def _socket(self) -> socket:
-        return self._client._socket
-    
-    @property
     def _file_handler(self) -> ProtocolFileHandler:
         return self._client.file_handler
     
@@ -48,7 +44,7 @@ class KeyExchangeManager:
         """Step 3: Client A sends KE_DSA_RANDOM (DSA pubkey + random)."""
         msg = self._protocol.create_ke_dsa_random()
         self._protocol.ke_step = 1
-        self._client._send_raw(msg)
+        self._client.send_raw(msg)
     
     def handle_dsa_random(self, message_data: bytes) -> None:
         """Handle receiving KE_DSA_RANDOM from peer."""
@@ -60,29 +56,29 @@ class KeyExchangeManager:
             # Client B — receiving Client A's DSA random (step 3), respond with our own (step 6)
             self._protocol.ke_step = 2
             msg = self._protocol.create_ke_dsa_random()
-            self._client._send_raw(msg)
+            self._client.send_raw(msg)
         elif self._protocol.ke_step == 1:
             # Client A — receiving Client B's DSA random (step 6), send ML-KEM pubkey (step 8)
             msg = self._protocol.create_ke_mlkem_pubkey()
-            self._client._send_raw(msg)
+            self._client.send_raw(msg)
     
     def handle_mlkem_pubkey(self, message_data: bytes) -> None:
         """Handle KE_MLKEM_PUBKEY (step 8) — only Client B receives this."""
         self._protocol.process_ke_mlkem_pubkey(message_data)
         msg = self._protocol.create_ke_mlkem_ct_keys()
-        self._client._send_raw(msg)
+        self._client.send_raw(msg)
     
     def handle_mlkem_ct_keys(self, message_data: bytes) -> None:
         """Handle KE_MLKEM_CT_KEYS (step 10) — only Client A receives this."""
         self._protocol.process_ke_mlkem_ct_keys(message_data)
         msg = self._protocol.create_ke_x25519_hqc_ct()
-        self._client._send_raw(msg)
+        self._client.send_raw(msg)
     
     def handle_x25519_hqc_ct(self, message_data: bytes) -> None:
         """Handle KE_X25519_HQC_CT (step 13) — only Client B receives this."""
         self._protocol.process_ke_x25519_hqc_ct(message_data)
         msg = self._protocol.create_ke_verification()
-        self._client._send_raw(msg)
+        self._client.send_raw(msg)
     
     def handle_verification(self, message_data: bytes) -> None:
         """Handle receiving KE_VERIFICATION from peer."""
@@ -92,7 +88,7 @@ class KeyExchangeManager:
                 self._ui.display_error_message("Key exchange verification failed!")
                 return
             msg = self._protocol.create_ke_verification()
-            self._client._send_raw(msg)
+            self._client.send_raw(msg)
             self._ui.display_system_message("Key exchange completed successfully.")
             self._on_complete()
         elif self._protocol.ke_step == 2:
@@ -120,10 +116,10 @@ class KeyExchangeManager:
         """Record local verification decision, send to peer, start sender thread."""
         self._client._peer_key_verified = verified
         verification_message = create_messages.create_key_verification_message(verified)
-        self._client._send_raw(verification_message)
+        self._client.send_raw(verification_message)
         
         self._client._verification_complete = True
-        self._protocol.start_sender_thread(self._socket)
+        self._protocol.start_sender_thread()
     
     def get_own_key_fingerprint(self) -> str:
         return self._protocol.get_own_key_fingerprint()
@@ -261,7 +257,7 @@ class KeyExchangeManager:
     
     def handle_reset(self, message_data: bytes) -> None:
         """Handle KEY_EXCHANGE_RESET from server: tear down current session, prep for fresh KE."""
-        message = json.loads(message_data.decode('utf-8'))
+        message = json.loads(message_data.decode("utf-8"))
         reset_message = message.get("message", "Key exchange reset")
         
         self._client._key_exchange_complete = False

@@ -37,6 +37,7 @@ from protocol.shared import SecureChatProtocol
 # Helpers / fixtures
 # ---------------------------------------------------------------------------
 
+
 def _make_ui() -> MagicMock:
     """Return a MagicMock that satisfies the UIBase interface."""
     ui = MagicMock()
@@ -54,14 +55,18 @@ def _make_client(ui=None) -> SecureChatClient:
     return SecureChatClient(ui)
 
 
-def _full_ke_protocol_pair(server_id: str = "test") -> tuple[SecureChatProtocol, SecureChatProtocol]:
+def _full_ke_protocol_pair(
+        server_id: str = "test",
+) -> tuple[SecureChatProtocol, SecureChatProtocol]:
     """Return two SecureChatProtocol instances that have completed key exchange."""
     from tests.test_protocol_shared import _full_key_exchange
     
     return _full_key_exchange(server_id)
 
 
-def _inject_ready_protocol(client: SecureChatClient, protocol: SecureChatProtocol) -> None:
+def _inject_ready_protocol(
+        client: SecureChatClient, protocol: SecureChatProtocol,
+) -> None:
     """Replace the client's internal protocol with a ready one and mark KE complete."""
     client._protocol = protocol
     client._key_exchange_complete = True
@@ -204,8 +209,7 @@ class TestHandleMessageRouting:
     def test_routes_keepalive(self) -> None:
         c = _make_client()
         with patch.object(c._connection, "handle_keepalive") as mock_ka:
-            with patch("new_client.send_message"):
-                c.handle_message(self._make_json_msg(MessageType.KEEP_ALIVE))
+            c.handle_message(self._make_json_msg(MessageType.KEEP_ALIVE))
         mock_ka.assert_called_once()
     
     def test_routes_error_message(self) -> None:
@@ -226,23 +230,27 @@ class TestHandleMessageRouting:
     
     def test_invalid_json_tries_binary_chunk(self) -> None:
         c = _make_client()
-        with patch.object(c._connection, "handle_maybe_binary_chunk", return_value=True) as mock_bin:
+        with patch.object(
+                c, "handle_maybe_binary_chunk", return_value=True,
+        ) as mock_bin:
             c.handle_message(b"\xff\xfe not json at all")
         mock_bin.assert_called_once()
     
     def test_invalid_json_not_binary_shows_error(self) -> None:
         c = _make_client()
-        with patch.object(c._connection, "handle_maybe_binary_chunk", return_value=False):
+        with patch.object(c, "handle_maybe_binary_chunk", return_value=False):
             c.handle_message(b"not json")
         c.ui.display_error_message.assert_called()
     
     def test_unexpected_outer_field_drops_message(self) -> None:
         c = _make_client()
         # Inject an unexpected field into a KE_DSA_RANDOM message
-        msg = json.dumps({
-            "type":       int(MessageType.KE_DSA_RANDOM),
-            "evil_field": "bad",
-        }).encode()
+        msg = json.dumps(
+                {
+                    "type":       int(MessageType.KE_DSA_RANDOM),
+                    "evil_field": "bad",
+                },
+        ).encode()
         with patch.object(c._key_exchange, "handle_dsa_random") as mock_ke:
             c.handle_message(msg)
         mock_ke.assert_not_called()
@@ -257,8 +265,11 @@ class TestHandleMessageRouting:
     def test_routes_key_exchange_reset(self) -> None:
         c = _make_client()
         with patch.object(c._key_exchange, "handle_reset") as mock_ker:
-            c.handle_message(self._make_json_msg(MessageType.KEY_EXCHANGE_RESET,
-                                                 {"message": "reset"}))
+            c.handle_message(
+                    self._make_json_msg(
+                            MessageType.KEY_EXCHANGE_RESET, {"message": "reset"},
+                    ),
+            )
         mock_ker.assert_called_once()
 
 
@@ -276,9 +287,8 @@ class TestRateLimiting:
         assert c.bypass_rate_limits is False
         # Send 6 keepalives (allowed)
         with patch.object(c._connection, "handle_keepalive"):
-            with patch("new_client.send_message"):
-                for _ in range(6):
-                    c.handle_message(self._make_json_msg(MessageType.KEEP_ALIVE))
+            for _ in range(6):
+                c.handle_message(self._make_json_msg(MessageType.KEEP_ALIVE))
         # 7th should be rate-limited
         c.handle_message(self._make_json_msg(MessageType.KEEP_ALIVE))
         c.ui.display_error_message.assert_called()
@@ -288,9 +298,8 @@ class TestRateLimiting:
         # bypass_rate_limits is True when file_transfer_active is True (pending_file_transfers non-empty)
         c.pending_file_transfers["dummy"] = object()
         with patch.object(c._connection, "handle_keepalive") as mock_ka:
-            with patch("new_client.send_message"):
-                for _ in range(10):
-                    c.handle_message(self._make_json_msg(MessageType.KEEP_ALIVE))
+            for _ in range(10):
+                c.handle_message(self._make_json_msg(MessageType.KEEP_ALIVE))
         assert mock_ka.call_count == 10
 
 
@@ -330,20 +339,24 @@ class TestHandleEncryptedMessage:
     
     def test_delivery_confirmation_calls_ui(self) -> None:
         proto_a, c = self._setup_pair()
-        inner = json.dumps({
-            "type":              int(MessageType.DELIVERY_CONFIRMATION),
-            "confirmed_counter": 5,
-        })
+        inner = json.dumps(
+                {
+                    "type":              int(MessageType.DELIVERY_CONFIRMATION),
+                    "confirmed_counter": 5,
+                },
+        )
         ct = proto_a.encrypt_message(inner)
         c.handle_encrypted_message(ct)
         c.ui.on_delivery_confirmation.assert_called_once_with(5)
     
     def test_nickname_change_updates_peer_nickname(self) -> None:
         proto_a, c = self._setup_pair()
-        inner = json.dumps({
-            "type":     int(MessageType.NICKNAME_CHANGE),
-            "nickname": "Bob",
-        })
+        inner = json.dumps(
+                {
+                    "type":     int(MessageType.NICKNAME_CHANGE),
+                    "nickname": "Bob",
+                },
+        )
         ct = proto_a.encrypt_message(inner)
         c.handle_encrypted_message(ct)
         assert c.peer_nickname == "Bob"
@@ -351,11 +364,13 @@ class TestHandleEncryptedMessage:
     def test_unverified_peer_unexpected_inner_field_drops(self) -> None:
         proto_a, c = self._setup_pair()
         c._peer_key_verified = False
-        inner = json.dumps({
-            "type": int(MessageType.TEXT_MESSAGE),
-            "text": "hi",
-            "evil": "bad",
-        })
+        inner = json.dumps(
+                {
+                    "type": int(MessageType.TEXT_MESSAGE),
+                    "text": "hi",
+                    "evil": "bad",
+                },
+        )
         ct = proto_a.encrypt_message(inner)
         c.handle_encrypted_message(ct)
         c.ui.display_error_message.assert_called()
@@ -366,6 +381,7 @@ class TestHandleEncryptedMessage:
 
 # handle_message_types
 # ---------------------------------------------------------------------------
+
 
 class TestHandleMessageTypes:
     def _make_client_with_proto(self) -> tuple[SecureChatProtocol, SecureChatClient]:
@@ -429,12 +445,11 @@ class TestHandleMessageTypes:
 class TestHandleKeepalive:
     def test_keepalive_sends_response(self) -> None:
         c = _make_client()
-        with patch("new_client.send_message") as mock_send:
+        with patch.object(c._connection, "send_encoded") as mock_send:
             c.handle_keepalive()
         mock_send.assert_called_once()
-        sent_data = mock_send.call_args[0][1]
-        msg = json.loads(sent_data)
-        assert msg["type"] == int(MessageType.KEEP_ALIVE_RESPONSE)
+        sent_data = mock_send.call_args[0][0]
+        assert sent_data["type"] == int(MessageType.KEEP_ALIVE_RESPONSE)
 
 
 # ---------------------------------------------------------------------------
@@ -467,19 +482,23 @@ class TestHandleKeyExchangeReset:
         _inject_ready_protocol(c, proto_a)
         assert c._protocol.shared_key is True
         
-        reset_msg = json.dumps({
-            "type":    int(MessageType.KEY_EXCHANGE_RESET),
-            "message": "reset",
-        }).encode()
+        reset_msg = json.dumps(
+                {
+                    "type":    int(MessageType.KEY_EXCHANGE_RESET),
+                    "message": "reset",
+                },
+        ).encode()
         c.handle_key_exchange_reset(reset_msg)
         assert c._key_exchange_complete is False
     
     def test_shows_system_message(self) -> None:
         c = _make_client()
-        reset_msg = json.dumps({
-            "type":    int(MessageType.KEY_EXCHANGE_RESET),
-            "message": "reset",
-        }).encode()
+        reset_msg = json.dumps(
+                {
+                    "type":    int(MessageType.KEY_EXCHANGE_RESET),
+                    "message": "reset",
+                },
+        ).encode()
         c.handle_key_exchange_reset(reset_msg)
         c.ui.display_system_message.assert_called()  # type: ignore[attr-defined]
 
@@ -492,9 +511,9 @@ class TestHandleKeyExchangeReset:
 class TestHandleEmergencyClose:
     def test_sets_connected_false(self) -> None:
         c = _make_client()
-        c._connected = True
+        c._connection._connected = True
         c.handle_emergency_close()
-        assert c._connected is False
+        assert c._connection._connected is False
     
     def test_calls_ui_on_emergency_close(self) -> None:
         c = _make_client()
@@ -520,7 +539,7 @@ class TestHandleMaybeBinaryChunk:
     
     def test_unknown_magic_returns_false(self) -> None:
         c = _make_client()
-        data = b"\xAB" + b"\x00" * 60
+        data = b"\xab" + b"\x00" * 60
         assert c.handle_maybe_binary_chunk(data) is False
     
     def test_file_transfer_magic_decrypts_and_handles(self) -> None:
@@ -581,10 +600,16 @@ class TestHandleRekey:
         # (skip sending x25519_hqc_ct to proto_b for this test — we just need pending keys on proto_a)
         
         # Manually set pending keys on proto_b to create a valid verification
-        msg5 = proto_a.process_rekey_mlkem_ct_keys(msg4) if not proto_a._rekey._pending_send_chain_key else None
+        msg5 = (
+            proto_a.process_rekey_mlkem_ct_keys(msg4)
+            if not proto_a._rekey._pending_send_chain_key
+            else None
+        )
         # At this point proto_a has pending keys. Fabricate a matching verification from proto_b.
         # We do this by copying proto_a's pending material to proto_b so it produces the same proof.
-        proto_b._rekey._pending_key_verification_material = proto_a._rekey._pending_key_verification_material
+        proto_b._rekey._pending_key_verification_material = (
+            proto_a._rekey._pending_key_verification_material
+        )
         
         b_verif = proto_b.create_rekey_verification()
         with patch.object(c._protocol, "queue_json"):
@@ -608,7 +633,7 @@ class TestHandleKeDsaRandom:
         sender.set_server_identifier("test")
         msg = sender.create_ke_dsa_random()
         
-        with patch("new_client.send_message") as mock_send:
+        with patch.object(c._connection, "send_raw") as mock_send:
             c.handle_ke_dsa_random(msg)
         
         # Client B should have sent its own DSA random
@@ -618,7 +643,7 @@ class TestHandleKeDsaRandom:
     def test_client_a_sends_mlkem_pubkey(self) -> None:
         c = _make_client()
         # Client A must have already generated DSA keys (done during initiate_key_exchange)
-        with patch("new_client.send_message"):
+        with patch.object(c._connection, "send_raw"):
             c.initiate_key_exchange()
         assert c._protocol.ke_step == 1
         
@@ -626,7 +651,7 @@ class TestHandleKeDsaRandom:
         sender.set_server_identifier("test")
         msg = sender.create_ke_dsa_random()
         
-        with patch("new_client.send_message") as mock_send:
+        with patch.object(c._connection, "send_raw") as mock_send:
             c.handle_ke_dsa_random(msg)
         
         mock_send.assert_called_once()
@@ -681,6 +706,7 @@ class TestRejectFileTransfer:
 # End-to-end: two clients exchange keys and messages via in-memory bytes
 # ---------------------------------------------------------------------------
 
+
 class TestEndToEnd:
     """
     Simulate two clients performing a full key exchange and messaging
@@ -698,54 +724,46 @@ class TestEndToEnd:
         return alice, bob
     
     def _do_ke(self, alice: SecureChatClient, bob: SecureChatClient):
-        """Drive the full key exchange by intercepting send_message calls.
+        """Drive the full key exchange by intercepting send_raw calls.
 
-        Uses a shared queue per side. A single global patch captures all
-        send_message calls (including those from confirm_key_verification).
+        Each side's ``send_raw`` is patched to capture outbound frames
+        (including those from confirm_key_verification).
         """
         sent_by_alice: list[bytes] = []
         sent_by_bob: list[bytes] = []
-        _current_sender: list = [None]  # mutable cell
         
-        def _send(sock: object, data: object) -> None:
-            if _current_sender[0] == "alice":
-                sent_by_alice.append(data)
-            else:
-                sent_by_bob.append(data)
-        
-        with patch("new_client.send_message", side_effect=_send):
+        with (
+            patch.object(
+                    alice, "send_raw", side_effect=lambda data: sent_by_alice.append(data),
+            ),
+            patch.object(
+                    bob, "send_raw", side_effect=lambda data: sent_by_bob.append(data),
+            ),
+        ):
             # Step 3: Alice initiates
-            _current_sender[0] = "alice"
             alice.initiate_key_exchange()
             
             # Step 6: Bob receives Alice's DSA random, sends his own
-            _current_sender[0] = "bob"
             bob.handle_message(sent_by_alice.pop(0))
             
             # Step 8: Alice receives Bob's DSA random, sends ML-KEM pubkey
-            _current_sender[0] = "alice"
             alice.handle_message(sent_by_bob.pop(0))
             
             # Step 10: Bob receives ML-KEM pubkey, sends CT+keys
-            _current_sender[0] = "bob"
             bob.handle_message(sent_by_alice.pop(0))
             
             # Step 13: Alice receives CT+keys, sends X25519+HQC CT
-            _current_sender[0] = "alice"
             alice.handle_message(sent_by_bob.pop(0))
             
             # Step 15: Bob receives X25519+HQC CT, sends verification
             # (Bob also calls confirm_key_verification → more sends captured)
-            _current_sender[0] = "bob"
             bob.handle_message(sent_by_alice.pop(0))
             
             # Step 16: Alice receives Bob's verification, sends her own
             # (Alice also calls confirm_key_verification → more sends captured)
-            _current_sender[0] = "alice"
             alice.handle_message(sent_by_bob.pop(0))
             
             # Bob receives Alice's verification (KEY_VERIFICATION message)
-            _current_sender[0] = "bob"
             bob.handle_message(sent_by_alice.pop(0))
         
         return alice, bob
@@ -778,7 +796,11 @@ class TestEndToEnd:
         queue = proto._message_queue
         while queue:
             item = queue.popleft()
-            if isinstance(item, tuple) and item[0].value == "encrypt_text" and item[1] == text:
+            if (
+                    isinstance(item, tuple)
+                    and item[0].value == "encrypt_text"
+                    and item[1] == text
+            ):
                 assert isinstance(item[1], str)
                 return proto._encrypt_text_message(item[1])
         raise AssertionError(f"encrypt_text item for {text!r} not found in queue")
@@ -805,7 +827,10 @@ class TestEndToEnd:
         alice, bob = self._make_pair()
         alice, bob = self._do_ke(alice, bob)
         # Both sides derive the same verification material (order-independent)
-        assert alice._protocol._key_verification_material == bob._protocol._key_verification_material
+        assert (
+                alice._protocol._key_verification_material
+                == bob._protocol._key_verification_material
+        )
         # Both sides have shared_key set
         assert alice._protocol.shared_key is True
         assert bob._protocol.shared_key is True

@@ -2,11 +2,22 @@ import hashlib
 from typing import Never
 
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.ciphers import Cipher, CipherContext, algorithms, modes
+from cryptography.hazmat.primitives.ciphers import (
+    Cipher,
+    CipherContext,
+    algorithms,
+    modes,
+)
 from cryptography.hazmat.primitives.ciphers.aead import AESGCMSIV, ChaCha20Poly1305
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-from protocol.constants import DOUBLE_KEY_SIZE, HKDF_KEY_LENGTH, PAD_SIZE, SINGLE_KEY_SIZE, NONCE_SIZE
+from protocol.constants import (
+    DOUBLE_KEY_SIZE,
+    HKDF_KEY_LENGTH,
+    PAD_SIZE,
+    SINGLE_KEY_SIZE,
+    NONCE_SIZE,
+)
 from protocol.utils import xor_bytes
 
 
@@ -80,7 +91,7 @@ class DoubleEncryptor:
     
     @property
     def key(self) -> Never:
-        raise AttributeError('You cannot get the key once it has been set')
+        raise AttributeError("You cannot get the key once it has been set")
     
     @key.setter
     def key(self, value: bytes) -> None:
@@ -90,7 +101,13 @@ class DoubleEncryptor:
         self._aes: AESGCMSIV = AESGCMSIV(value[:SINGLE_KEY_SIZE])
         self._chacha: ChaCha20Poly1305 = ChaCha20Poly1305(value[SINGLE_KEY_SIZE:])
     
-    def encrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None, pad: bool = True) -> bytes:
+    def encrypt(
+            self,
+            nonce: bytes,
+            data: bytes,
+            associated_data: bytes | None = None,
+            pad: bool = True,
+    ) -> bytes:
         if pad:
             new_data = _iso7816_pad(data, PAD_SIZE)
         else:
@@ -103,7 +120,13 @@ class DoubleEncryptor:
         layer2 = self._chacha.encrypt(chacha_nonce, layer1, associated_data)
         return layer2
     
-    def decrypt(self, nonce: bytes, data: bytes, associated_data: bytes | None = None, pad: bool = True) -> bytes:
+    def decrypt(
+            self,
+            nonce: bytes,
+            data: bytes,
+            associated_data: bytes | None = None,
+            pad: bool = True,
+    ) -> bytes:
         aes_nonce, chacha_nonce = _derive_nonces(nonce, self._key)
         
         layer2 = self._chacha.decrypt(chacha_nonce, data, associated_data)
@@ -139,7 +162,7 @@ class ChunkIndependentDoubleEncryptor:
     
     @property
     def key(self) -> Never:
-        raise AttributeError('You cannot get the key once it has been set')
+        raise AttributeError("You cannot get the key once it has been set")
     
     @key.setter
     def key(self, value: bytes) -> None:
@@ -190,7 +213,7 @@ class KeyExchangeDoubleEncryptor:
 class _KeyDerivation:
     """
     Stateless namespace of HKDF / hash-based key-derivation helpers.
-    
+
     Every method is a pure function of its arguments: no instance state, no class
     attributes, no hidden globals. Used by :class:`SecureChatProtocol` for both the
     initial hybrid key exchange and the rekey exchange. The ``rekey`` keyword flag on
@@ -203,9 +226,13 @@ class _KeyDerivation:
         return server_id + (b"rekey_" + tag if rekey else tag)
     
     @staticmethod
-    def derive_combined_random(own_random: bytes, peer_random: bytes, server_id: bytes,
-                               *, rekey: bool = False,
-                               ) -> bytes:
+    def derive_combined_random(
+            own_random: bytes,
+            peer_random: bytes,
+            server_id: bytes,
+            *,
+            rekey: bool = False,
+    ) -> bytes:
         """HKDF-SHA-512 over the larger random, salted with the smaller, yielding the
         session-scoped combined random used in subsequent derivations."""
         smaller, larger = sorted([own_random, peer_random])
@@ -218,9 +245,13 @@ class _KeyDerivation:
         return hkdf.derive(larger)
     
     @staticmethod
-    def derive_intermediary_key_1(mlkem_secret: bytes, combined_random: bytes,
-                                  server_id: bytes, *, rekey: bool = False,
-                                  ) -> bytes:
+    def derive_intermediary_key_1(
+            mlkem_secret: bytes,
+            combined_random: bytes,
+            server_id: bytes,
+            *,
+            rekey: bool = False,
+    ) -> bytes:
         """HKDF-SHA3-512(ML-KEM secret, salt=combined_random)."""
         hkdf = HKDF(
                 algorithm=hashes.SHA3_512(),
@@ -231,9 +262,13 @@ class _KeyDerivation:
         return hkdf.derive(mlkem_secret)
     
     @staticmethod
-    def derive_intermediary_key_2(int_key_1: bytes, dh_secret: bytes, server_id: bytes,
-                                  *, rekey: bool = False,
-                                  ) -> bytes:
+    def derive_intermediary_key_2(
+            int_key_1: bytes,
+            dh_secret: bytes,
+            server_id: bytes,
+            *,
+            rekey: bool = False,
+    ) -> bytes:
         """HKDF-SHA3-512(int_key_1, salt=X25519_secret)."""
         hkdf = HKDF(
                 algorithm=hashes.SHA3_512(),
@@ -244,9 +279,13 @@ class _KeyDerivation:
         return hkdf.derive(int_key_1)
     
     @staticmethod
-    def derive_otp_material(hqc_secret: bytes, combined_random: bytes, server_id: bytes,
-                            *, rekey: bool = False,
-                            ) -> bytes:
+    def derive_otp_material(
+            hqc_secret: bytes,
+            combined_random: bytes,
+            server_id: bytes,
+            *,
+            rekey: bool = False,
+    ) -> bytes:
         """HKDF-SHA3-512(HQC secret, salt=combined_random) → OTP keystream seed."""
         hkdf = HKDF(
                 algorithm=hashes.SHA3_512(),
@@ -257,10 +296,14 @@ class _KeyDerivation:
         return hkdf.derive(hqc_secret)
     
     @staticmethod
-    def derive_chain_key_root(mlkem_secret: bytes, dh_secret: bytes,
-                              client_random: bytes, server_id: bytes,
-                              *, rekey: bool = False,
-                              ) -> bytes:
+    def derive_chain_key_root(
+            mlkem_secret: bytes,
+            dh_secret: bytes,
+            client_random: bytes,
+            server_id: bytes,
+            *,
+            rekey: bool = False,
+    ) -> bytes:
         """HKDF-SHA3-512(ML-KEM||X25519, salt=client_random) → chain key root."""
         hkdf = HKDF(
                 algorithm=hashes.SHA3_512(),
@@ -271,9 +314,12 @@ class _KeyDerivation:
         return hkdf.derive(mlkem_secret + dh_secret)
     
     @staticmethod
-    def compute_verification_pair(otp: bytes, own_chain_root: bytes, peer_chain_root: bytes,
-                                  combined_random: bytes,
-                                  ) -> tuple[bytes, bytes]:
+    def compute_verification_pair(
+            otp: bytes,
+            own_chain_root: bytes,
+            peer_chain_root: bytes,
+            combined_random: bytes,
+    ) -> tuple[bytes, bytes]:
         """Derive `(verification_key, key_verification_material)` from the three session
         roots, order-independent via sorting. Matches the logic shared by the initial
         KE finalizer and the rekey finalizer."""

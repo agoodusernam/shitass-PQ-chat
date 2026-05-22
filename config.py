@@ -15,6 +15,7 @@ Usage::
     server_cfg["max_unexpected_msgs"]
     server_cfg.save()
 """
+
 import json
 from pathlib import Path
 from typing import Any, Literal, TypeAlias, TypedDict, get_type_hints, overload
@@ -459,6 +460,7 @@ class ServerConfigHandler(_BaseConfigHandler):
     stored as plain strings in JSON but returned as :class:`pathlib.Path`
     objects.
     """
+    
     instance = None
     
     def __new__(cls) -> "ServerConfigHandler":

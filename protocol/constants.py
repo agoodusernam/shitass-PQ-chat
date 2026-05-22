@@ -1,3 +1,4 @@
+from typing import Any
 from enum import IntEnum, unique
 from typing import Final
 
@@ -31,7 +32,6 @@ BLAKE2B_DIGEST_SIZE: Final[int] = 32  # bytes, digest size for BLAKE2b file hash
 TRANSFER_ID_LENGTH: Final[int] = 32  # characters, hex transfer ID truncation length
 FINGERPRINT_HASH_SIZE: Final[int] = 32  # bytes, truncated hash for key fingerprint generation
 FINGERPRINT_WORD_COUNT: Final[int] = 8  # number of words in a key fingerprint
-HASH_TO_WORDS_DEFAULT: Final[int] = 16  # default number of words for hash_to_words
 DEFAULT_MAX_RATCHET_FORWARD: Final[int] = 100000
 ML_DSA_CONTEXT: Final[bytes] = b"Secure_Chat_Protocol_ml-dsa_KE"
 
@@ -150,5 +150,6 @@ class MessageType(IntEnum):
     DEADDROP_PROVE = 82
     
     @classmethod
-    def _missing_(cls, value) -> "MessageType":
+    def _missing_(cls, value: Any) -> "MessageType":
+        _ = value
         return cls.NONE
