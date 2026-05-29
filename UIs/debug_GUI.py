@@ -22,6 +22,7 @@ from typing import Any, Literal
 from SecureChatABCs.client_base import ClientBase
 from SecureChatABCs.ui_base import UIBase, UICapability
 from debug_client import DebugClient
+from protocol.errors import ErrorCode, Severity, describe, format_code
 
 
 # ---------------------------------------------------------------------------
@@ -322,9 +323,17 @@ class DebugGUI(UIBase):
         self._log_message("RECV", "TEXT", f"{nick}: {message}")
         self._on_tk(self._append_chat, f"{nick}: {message}")
     
-    def display_error_message(self, message: str) -> None:
-        self._log_message("RECV", "ERROR", message)
-        self._on_tk(self._append_chat, f"ERROR: {message}", tag="error")
+    def on_error(
+            self,
+            code: int,
+            severity: Severity,
+            context: dict[str, Any] | None = None,
+    ) -> None:
+        desc = describe(code)
+        ctx = f" {context}" if context else ""
+        line = f"[{severity.name}] {format_code(code)}: {desc}{ctx}"
+        self._log_message("RECV", "ERROR", line)
+        self._on_tk(self._append_chat, line, tag="error")
     
     def display_system_message(self, message: str) -> None:
         self._log_message("SYS", "SYSTEM", message)

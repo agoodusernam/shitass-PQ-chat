@@ -24,5 +24,3 @@ class FileTransfer(TypedDict):
     compress: bool
 
 
-class DecodeError(Exception):
-    pass

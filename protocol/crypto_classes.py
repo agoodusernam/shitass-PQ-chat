@@ -18,6 +18,7 @@ from protocol.constants import (
     SINGLE_KEY_SIZE,
     NONCE_SIZE,
 )
+from protocol.errors import ErrorCode, CryptoError
 from protocol.utils import xor_bytes
 
 
@@ -31,7 +32,7 @@ def _iso7816_unpad(data: bytes) -> bytes:
     while i >= 0 and data[i] == 0:
         i -= 1
     if i < 0 or data[i] != 0x80:
-        raise ValueError("Invalid ISO/IEC 7816-4 padding")
+        raise CryptoError(code=ErrorCode.PADDING, context={"length": len(data)})
     return data[:i]
 
 
@@ -81,7 +82,7 @@ class DoubleEncryptor:
                              uniqueness.
         """
         if len(key) != DOUBLE_KEY_SIZE:
-            raise ValueError(f"Key must be {DOUBLE_KEY_SIZE} bytes")
+            raise CryptoError(code=ErrorCode.KEY_SIZE, context={"expected": DOUBLE_KEY_SIZE})
         
         self._key: bytes = key
         self._aes: AESGCMSIV = AESGCMSIV(key[:SINGLE_KEY_SIZE])
@@ -91,12 +92,12 @@ class DoubleEncryptor:
     
     @property
     def key(self) -> Never:
-        raise AttributeError("You cannot get the key once it has been set")
+        raise CryptoError(code=ErrorCode.KEY_NOT_READABLE)
     
     @key.setter
     def key(self, value: bytes) -> None:
         if len(value) != DOUBLE_KEY_SIZE:
-            raise ValueError(f"Key must be {DOUBLE_KEY_SIZE} bytes")
+            raise CryptoError(code=ErrorCode.KEY_SIZE, context={"expected": DOUBLE_KEY_SIZE})
         self._key: bytes = value
         self._aes: AESGCMSIV = AESGCMSIV(value[:SINGLE_KEY_SIZE])
         self._chacha: ChaCha20Poly1305 = ChaCha20Poly1305(value[SINGLE_KEY_SIZE:])
@@ -157,17 +158,17 @@ class ChunkIndependentDoubleEncryptor:
     
     def __init__(self, key: bytes):
         if len(key) != DOUBLE_KEY_SIZE:
-            raise ValueError(f"Key must be {DOUBLE_KEY_SIZE} bytes")
+            raise CryptoError(code=ErrorCode.KEY_SIZE, context={"expected": DOUBLE_KEY_SIZE})
         self._key = key
     
     @property
     def key(self) -> Never:
-        raise AttributeError("You cannot get the key once it has been set")
+        raise CryptoError(code=ErrorCode.KEY_NOT_READABLE)
     
     @key.setter
     def key(self, value: bytes) -> None:
         if len(value) != DOUBLE_KEY_SIZE:
-            raise ValueError(f"Key must be {DOUBLE_KEY_SIZE} bytes")
+            raise CryptoError(code=ErrorCode.KEY_SIZE, context={"expected": DOUBLE_KEY_SIZE})
         self._key = value
     
     def encrypt(self, nonce: bytes, data: bytes) -> bytes:
@@ -190,7 +191,7 @@ class ChunkIndependentDoubleEncryptor:
 class KeyExchangeDoubleEncryptor:
     def __init__(self, key: bytes):
         if len(key) != DOUBLE_KEY_SIZE:
-            raise ValueError(f"Key must be {DOUBLE_KEY_SIZE} bytes")
+            raise CryptoError(code=ErrorCode.KEY_SIZE, context={"expected": DOUBLE_KEY_SIZE})
         self._key = key
         self._aes: AESGCMSIV = AESGCMSIV(key[:SINGLE_KEY_SIZE])
         self._chacha: ChaCha20Poly1305 = ChaCha20Poly1305(key[SINGLE_KEY_SIZE:])
@@ -223,7 +224,7 @@ class _KeyDerivation:
     
     @staticmethod
     def _info(tag: bytes, server_id: bytes, rekey: bool) -> bytes:
-        return server_id + (b"rekey_" + tag if rekey else tag)
+        return server_id + ((b"rekey_" + tag) if rekey else tag)
     
     @staticmethod
     def derive_combined_random(

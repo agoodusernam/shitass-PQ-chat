@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from protocol.errors import ErrorCode, ChatError
 
 from new_client import SecureChatClient
 from protocol.constants import (
@@ -65,14 +66,14 @@ class TestStartHandshake:
         c = _make_client()
         c._connection._connected = False
         c._deaddrop.start_handshake()
-        c.ui.display_error_message.assert_called_once()
+        c.ui.on_error.assert_called_once()
     
     def test_in_progress_errors(self) -> None:
         c = _make_client()
         c._connection._connected = True
         c._deaddrop._in_progress = True
         c._deaddrop.start_handshake()
-        c.ui.display_error_message.assert_called_once()
+        c.ui.on_error.assert_called_once()
     
     def test_sends_start_frame(self) -> None:
         c = _make_client()
@@ -90,7 +91,7 @@ class TestWaitForHandshake:
         c = _make_client()
         c._connection._connected = True
         assert c._deaddrop.wait_for_handshake(timeout=0.01) is False
-        c.ui.display_error_message.assert_called_once()
+        c.ui.on_error.assert_called_once()
     
     def test_timeout_returns_false(self) -> None:
         c = _make_client()
@@ -115,36 +116,36 @@ class TestStartResponseHandler:
         c._deaddrop.handle_start_response({"supported": False, "reason": "no"})
         assert c._deaddrop.shared_secret is None
         assert c._deaddrop.supported is False
-        c.ui.display_error_message.assert_called_once()
+        c.ui.on_error.assert_called_once()
     
     def test_missing_mlkem_public_errors(self) -> None:
         c = _make_client()
         c._deaddrop.handle_start_response({"supported": True})
-        c.ui.display_error_message.assert_called_once()
+        c.ui.on_error.assert_called_once()
     
     def test_bad_base64_errors(self) -> None:
         c = _make_client()
         c._deaddrop.handle_start_response({"supported": True, "mlkem_public": "!!!"})
-        c.ui.display_error_message.assert_called_once()
+        c.ui.on_error.assert_called_once()
 
 
 class TestEncryptedInputGuards:
     def test_no_session_errors(self) -> None:
         c = _make_client()
         c._deaddrop.handle_encrypted_message({"nonce": "x", "ciphertext": "y"})
-        c.ui.display_error_message.assert_called_once()
+        c.ui.on_error.assert_called_once()
     
     def test_malformed_fields_error(self) -> None:
         c = _make_client()
         _seed_session(c)
         c._deaddrop.handle_encrypted_message({"nonce": "x"})  # missing ciphertext
-        c.ui.display_error_message.assert_called_once()
+        c.ui.on_error.assert_called_once()
     
     def test_bad_base64_error(self) -> None:
         c = _make_client()
         _seed_session(c)
         c._deaddrop.handle_encrypted_message({"nonce": "!!!", "ciphertext": "!!!"})
-        c.ui.display_error_message.assert_called_once()
+        c.ui.on_error.assert_called_once()
     
     def test_decryption_failure_reports(self) -> None:
         c = _make_client()
@@ -156,7 +157,7 @@ class TestEncryptedInputGuards:
                     "ciphertext": base64.b64encode(b"\x00" * 32).decode(),
                 },
         )
-        c.ui.display_error_message.assert_called_once()
+        c.ui.on_error.assert_called_once()
 
 
 class TestInnerMessageRoundtrip:
@@ -212,13 +213,13 @@ class TestInnerMessageRoundtrip:
         _seed_session(c)
         frame = self._wrap(c, {"type": 9999})
         c._deaddrop.handle_encrypted_message(frame)
-        c.ui.display_error_message.assert_called_once()
+        c.ui.on_error.assert_called_once()
 
 
 class TestCryptoHelpers:
     def test_encrypt_inner_requires_session(self) -> None:
         c = _make_client()
-        with pytest.raises(ValueError):
+        with pytest.raises(ChatError):
             c._deaddrop._encrypt_inner(b"x")
     
     def test_encrypt_inner_roundtrip(self) -> None:
@@ -254,23 +255,23 @@ class TestGuardsRequiringSession:
         p = tmp_path / "x"
         p.write_bytes(b"y")
         c._deaddrop.upload("name", "pw", p)
-        c.ui.display_error_message.assert_called_once()
+        c.ui.on_error.assert_called_once()
     
     def test_upload_missing_file_errors(self, tmp_path: Path) -> None:
         c = _make_client()
         _seed_session(c)
         c._deaddrop.upload("name", "pw", tmp_path / "missing")
-        c.ui.display_error_message.assert_called_once()
+        c.ui.on_error.assert_called_once()
     
     def test_check_requires_session(self) -> None:
         c = _make_client()
         c._deaddrop.check("name")
-        c.ui.display_error_message.assert_called_once()
+        c.ui.on_error.assert_called_once()
     
     def test_download_requires_session(self) -> None:
         c = _make_client()
         c._deaddrop.download("name", "pw")
-        c.ui.display_error_message.assert_called_once()
+        c.ui.on_error.assert_called_once()
 
 
 class TestStreamingDownload:
@@ -278,11 +279,11 @@ class TestStreamingDownload:
         c = _make_client()
         c._deaddrop._dl_expected_index = 0
         c._deaddrop._process_data_streaming(7, b"x")
-        c.ui.display_error_message.assert_called_once()
+        c.ui.on_error.assert_called_once()
     
     def test_missing_key_errors(self) -> None:
         c = _make_client()
         c._deaddrop._dl_expected_index = 0
         c._deaddrop._download_key = None
         c._deaddrop._process_data_streaming(0, b"x")
-        c.ui.display_error_message.assert_called_once()
+        c.ui.on_error.assert_called_once()

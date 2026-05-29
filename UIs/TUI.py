@@ -10,6 +10,7 @@ from typing import Any
 
 from SecureChatABCs.client_base import ClientBase
 from SecureChatABCs.ui_base import UIBase, UICapability
+from protocol.errors import ErrorCode, Severity, describe, format_code
 
 
 class TUI(UIBase):
@@ -40,8 +41,15 @@ class TUI(UIBase):
         else:
             print(f"\n{message}")
     
-    def display_error_message(self, message: str) -> None:
-        print(f"[ERROR]: {message}")
+    def on_error(
+            self,
+            code: int,
+            severity: Severity,
+            context: dict[str, Any] | None = None,
+    ) -> None:
+        desc = describe(code)
+        ctx = f" ({context})" if context else ""
+        print(f"[{severity.name}] {format_code(code)}: {desc}{ctx}")
     
     def display_system_message(self, message: str) -> None:
         print(f"[SYSTEM]: {message}")

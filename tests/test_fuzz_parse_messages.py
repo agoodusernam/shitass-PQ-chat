@@ -22,7 +22,7 @@ from cryptography.hazmat.primitives.asymmetric.mldsa import (
 from protocol import create_messages as cm
 from protocol import parse_messages as pm
 from protocol.constants import ML_DSA_CONTEXT, PROTOCOL_VERSION
-from protocol.types import DecodeError
+from protocol.errors import CryptoError as DecodeError
 
 # ---------------------------------------------------------------------------
 # Shared fixtures — expensive crypto material generated once per session.

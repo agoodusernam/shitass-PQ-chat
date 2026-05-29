@@ -23,6 +23,15 @@ from client.voice_call_manager import VoiceCallManager
 from config import ClientConfigHandler
 from protocol import constants
 from protocol.constants import FILE_CHUNK_CIPHERTEXT_OFFSET, MAGIC_SIZE, MessageType
+from protocol.errors import (
+    ErrorCode,
+    ChatError,
+    RatchetError,
+    KeyExchangeError,
+    MessageError,
+    UIError,
+    dispatch_error,
+)
 from protocol.file_handler import ProtocolFileHandler
 from protocol.shared import SecureChatProtocol
 from protocol.types import FileMetadata, FileTransfer
@@ -242,11 +251,11 @@ class SecureChatClient(ClientBase):
         Also triggers an auto-rekey check after queuing.
         """
         if not self.key_exchange_complete:
-            self.ui.display_error_message("Cannot send messages - key exchange not complete")
+            self.raise_to_ui(KeyExchangeError(code=ErrorCode.KE_STATE, context={"reason": "ke_not_complete", "op": "send_message"}))
             return False
         
         if not self._protocol.encryption_ready:
-            self.ui.display_error_message("Cannot send message, encryption isn't ready")
+            self.raise_to_ui(RatchetError(code=ErrorCode.CHAIN_KEY_MISSING, context={"op": "send_message"}))
             return False
         
         if not self.peer_key_verified:
@@ -345,9 +354,13 @@ class SecureChatClient(ClientBase):
         """
         return self._connection.send_encoded(obj)
     
-    def on_error(self, message: str) -> None:
-        """Handle an error reported by the protocol layer."""
-        self.ui.display_error_message(message)
+    def raise_to_ui(self, exc: BaseException) -> None:
+        """Forward *exc* to the UI via the unified ``on_error`` callback.
+
+        Non-:class:`ChatError` exceptions are wrapped as the generic
+        ``0xFFF`` code so the UI contract stays uniform.
+        """
+        dispatch_error(self.ui, exc)
     
     def emergency_close(self) -> None:
         """Immediately disconnect and wipe all session state, including keys and file transfers."""
@@ -377,17 +390,17 @@ class SecureChatClient(ClientBase):
             message_type = MessageType(int(message_json.get("type")))  # type: ignore
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
             if not self.handle_maybe_binary_chunk(message_data):
-                self.ui.display_error_message("Received message that could not be decoded.")
+                self.raise_to_ui(MessageError(code=ErrorCode.MESSAGE_DECODE))
                 self.ui.log_raw_bytes("RECV", "dropped:decode_error", message_data)
             return
         
         if message_type == MessageType.NONE:
-            self.ui.display_error_message("Received message with invalid type.")
+            self.raise_to_ui(MessageError(code=ErrorCode.MESSAGE_TYPE, context={"value": message_json.get("type")}))
             return
         
         unexpected = first_unexpected_field(message_json, allowed_outer_fields(message_type))
         if unexpected:
-            self.ui.display_error_message(f"Dropped message from unverified peer due to unexpected field '{unexpected}'.")
+            self.raise_to_ui(UIError(code=ErrorCode.UNKNOWN_FIELD, context={"field": unexpected, "scope": "outer"}))
             return
         
         match message_type:
@@ -405,9 +418,9 @@ class SecureChatClient(ClientBase):
                 if self.key_exchange_complete:
                     self.handle_encrypted_message(message_data)
                 else:
-                    self.ui.display_error_message("\nReceived encrypted message before key exchange complete")
+                    self.raise_to_ui(KeyExchangeError(code=ErrorCode.KE_STATE, context={"reason": "ke_not_complete", "frame": "ENCRYPTED_MESSAGE"}))
             case MessageType.ERROR:
-                self.ui.display_error_message(f"{message_json.get('error', 'Unknown error')}")
+                self.raise_to_ui(ChatError(str(message_json.get("error", "Unknown error")), context={"frame": "ERROR", "server_error": str(message_json.get("error", ""))}))
             case MessageType.KEY_VERIFICATION:
                 self._key_exchange.handle_verification_message(message_data)
             case MessageType.KEY_EXCHANGE_RESET:
@@ -428,7 +441,7 @@ class SecureChatClient(ClientBase):
             case MessageType.DEADDROP_MESSAGE:
                 self._deaddrop.handle_encrypted_message(message_json)
             case _:
-                self.ui.display_error_message(f"Unknown message type: {message_type}")
+                self.raise_to_ui(MessageError(code=ErrorCode.MESSAGE_TYPE, context={"type": int(message_type)}))
     
     def handle_maybe_binary_chunk(self, message_data: bytes) -> bool:
         """Try to interpret a non-JSON frame as an encrypted binary chunk (file transfer or deaddrop)."""
@@ -440,13 +453,13 @@ class SecureChatClient(ClientBase):
                 result = self._protocol.decrypt_file_chunk(message_data)
                 self._file_transfer.handle_chunk_binary(result)
                 return True
-            except ValueError:
+            except (ValueError, ChatError):
                 return False
         elif magic == constants.MAGIC_NUMBER_DEADDROPS:
             try:
                 self._deaddrop.handle_binary_chunk(message_data)
                 return True
-            except ValueError:
+            except (ValueError, ChatError):
                 return False
         return False
     
@@ -466,8 +479,12 @@ class SecureChatClient(ClientBase):
         """
         try:
             decrypted_text = self._protocol.decrypt_message(message_data)
+        except ChatError as e:
+            self.raise_to_ui(e)
+            self.ui.log_raw_bytes("RECV", "dropped:decrypt_fail", message_data)
+            return
         except ValueError as e:
-            self.ui.display_error_message(str(e))
+            self.raise_to_ui(MessageError(code=ErrorCode.MESSAGE_DECRYPT, context={"error": str(e)}, cause=e))
             self.ui.log_raw_bytes("RECV", "dropped:decrypt_fail", message_data)
             return
         
@@ -476,20 +493,19 @@ class SecureChatClient(ClientBase):
         try:
             message_json: dict[str, Any] = json.loads(decrypted_text)
         except (binascii.Error, json.JSONDecodeError, UnicodeDecodeError):
-            self.ui.display_error_message("Received message that could not be decoded.")
+            self.raise_to_ui(MessageError(code=ErrorCode.MESSAGE_DECODE))
             return
         
         if not self.peer_key_verified:
             allowed_inner = allowed_unverified_inner_fields()
             unexpected_inner = first_unexpected_field(message_json, allowed_inner)
             if unexpected_inner:
-                self.ui.display_error_message(f"Dropped decrypted message from unverified peer due " +
-                                              f"to unexpected field '{unexpected_inner}'.")
+                self.raise_to_ui(UIError(code=ErrorCode.UNKNOWN_FIELD, context={"field": unexpected_inner, "scope": "inner"}))
                 return
         
         message_type = MessageType(message_json.get("type", -1))
         if message_type == MessageType.NONE:
-            self.ui.display_error_message("Received message with invalid type.")
+            self.raise_to_ui(MessageError(code=ErrorCode.MESSAGE_TYPE, context={"value": message_json.get("type")}))
             return
         
         try:
@@ -497,7 +513,7 @@ class SecureChatClient(ClientBase):
                     message_type, message_json, received_message_counter,
             )
         except Exception as e:
-            self.ui.display_error_message(f"Error handling a message: {e}")
+            self.raise_to_ui(ChatError(f"Error handling a message: {e}", cause=e))
             return
         
         self.check_and_initiate_auto_rekey()
@@ -567,7 +583,7 @@ class SecureChatClient(ClientBase):
                 self.handle_nickname_change(message_json)
             
             case _:
-                self.ui.display_error_message(f"Dropped message with unknown inside type: {message_type}")
+                self.raise_to_ui(MessageError(code=ErrorCode.MESSAGE_TYPE, context={"inside_type": int(message_type)}))
                 return False
         
         return True
@@ -603,7 +619,7 @@ class SecureChatClient(ClientBase):
         if owner_id == self.server_identifier:
             self.ui.on_ephemeral_mode_change(mode, owner_id)
         else:
-            self.ui.display_error_message(f"Ignored ephemeral mode change: invalid owner '{owner_id}'")
+            self.raise_to_ui(UIError(code=ErrorCode.UNKNOWN_FIELD, context={"reason": "invalid_owner", "owner_id": str(owner_id)}))
     
     def handle_nickname_change(self, message: dict[str, Any]) -> None:
         """Apply a peer nickname change, subject to verification and configuration checks."""

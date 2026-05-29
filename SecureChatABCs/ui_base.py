@@ -13,6 +13,8 @@ from enum import Flag, auto
 from pathlib import Path
 from typing import Any
 
+from protocol.errors import ErrorCode, Severity
+
 
 # ---------------------------------------------------------------------------
 # Capability flags
@@ -76,8 +78,20 @@ class UIBase(ABC):
         ...
     
     @abstractmethod
-    def display_error_message(self, message: str) -> None:
-        """Display an error message."""
+    def on_error(
+            self,
+            code: int,
+            severity: Severity,
+            context: dict[str, Any] | None = None,
+    ) -> None:
+        """Handle an error reported by the client/protocol layer.
+
+        *code* is a 12-bit error code (system | subsystem | subsubsystem).
+        UI implementations should resolve the human-readable description via
+        :func:`protocol.errors.describe` and render it with *severity*.
+        *context* contains optional, non-identifying runtime state that the
+        UI MAY display but MUST NOT use to pick a description.
+        """
         ...
     
     @abstractmethod

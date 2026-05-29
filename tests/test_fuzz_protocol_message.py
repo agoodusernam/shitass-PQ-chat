@@ -16,6 +16,7 @@ import json
 import random
 
 import pytest
+from protocol.errors import ErrorCode, ChatError
 from hypothesis import given, strategies as st
 
 from tests.test_protocol_shared import _full_key_exchange
@@ -76,7 +77,7 @@ def test_replay_same_frame_rejected() -> None:
     a, b = _full_key_exchange("replay")
     wire = a.encrypt_message("hello")
     assert b.decrypt_message(wire) == "hello"
-    with pytest.raises(ValueError):
+    with pytest.raises(ChatError):
         b.decrypt_message(wire)
 
 
@@ -99,7 +100,7 @@ def test_bitflip_detected(flip_byte_index: int, flip_bit: int, msg: str) -> None
     raw[idx] ^= 1 << flip_bit
     parsed[field] = base64.b64encode(bytes(raw)).decode()
     tampered = json.dumps(parsed).encode()
-    with pytest.raises(ValueError):
+    with pytest.raises(ChatError):
         b.decrypt_message(tampered)
 
 
@@ -122,7 +123,7 @@ def test_decrypt_message_garbage_only_valueerror(data: bytes) -> None:
     a, _ = _full_key_exchange("garbage")
     try:
         a.decrypt_message(data)
-    except ValueError:
+    except ChatError:
         return
     except Exception as exc:  # noqa: BLE001
         pytest.fail(f"decrypt_message raised unexpected {type(exc).__name__}: {exc!r}")

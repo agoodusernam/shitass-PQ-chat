@@ -32,6 +32,13 @@ from cryptography.hazmat.primitives.asymmetric.mlkem import MLKEM1024PublicKey
 from SecureChatABCs.ui_base import UIBase
 from config import ClientConfigHandler
 from protocol import constants, utils
+from protocol.errors import (
+    ErrorCode,
+    ChunkError,
+    DeaddropError,
+    MessageError,
+    TransportError,
+)
 from protocol.constants import (
     CTR_NONCE_SIZE,
     DEADDROP_CIPHERTEXT_OFFSET,
@@ -137,10 +144,10 @@ class DeaddropManager:
     def start_handshake(self) -> None:
         """Send a DEADDROP_START frame to the server to begin the key-exchange handshake."""
         if not self._client.connected:
-            self._ui.display_error_message("Cannot start deaddrop - not connected")
+            self._client.raise_to_ui(TransportError(context={"reason": "not_connected", "op": "deaddrop_start"}))
             return
         if self._in_progress:
-            self._ui.display_error_message("Deaddrop already in progress")
+            self._client.raise_to_ui(DeaddropError(context={"reason": "in_progress"}))
             return
         
         self.shared_secret = None
@@ -154,28 +161,24 @@ class DeaddropManager:
     def wait_for_handshake(self, timeout: float = 3.0) -> bool:
         """Block until the handshake completes or *timeout* seconds elapse."""
         if not self._client.connected:
-            self._ui.display_error_message(
-                    "Cannot wait for deaddrop handshake - not connected",
-            )
+            self._client.raise_to_ui(TransportError(context={"reason": "not_connected", "op": "wait_handshake"}))
             return False
         if not self._started:
-            self._ui.display_error_message("Deaddrop handshake has not been started")
+            self._client.raise_to_ui(DeaddropError(code=ErrorCode.DD_KE_FAILED, context={"reason": "not_started"}))
             return False
         if not self._handshake_event.wait(timeout):
-            self._ui.display_error_message("Deaddrop handshake timed out")
+            self._client.raise_to_ui(DeaddropError(code=ErrorCode.DD_KE_FAILED, context={"reason": "timeout"}))
             return False
         return bool(self.shared_secret)
     
     def upload(self, name: str, password: str, file_path: Path) -> None:
         """Encrypt and upload a file to the server's deaddrop store."""
         if not self.shared_secret:
-            self._ui.display_error_message(
-                    "Deaddrop not initialised - handshake required",
-            )
+            self._client.raise_to_ui(DeaddropError(code=ErrorCode.DD_KE_FAILED, context={"reason": "no_shared_secret"}))
             return
         
         if not file_path.is_file():
-            self._ui.display_error_message(f"File not found: {file_path}")
+            self._client.raise_to_ui(DeaddropError(context={"reason": "file_not_found", "path": str(file_path)}))
             return
         
         file_size = file_path.resolve().stat().st_size
@@ -207,9 +210,7 @@ class DeaddropManager:
         self._client.send_encoded(outer_meta)
         
         if not self._upload_accept_event.wait(timeout=10.0):
-            self._ui.display_error_message(
-                    "Deaddrop upload timed out waiting for server acceptance",
-            )
+            self._client.raise_to_ui(DeaddropError(context={"reason": "accept_timeout"}))
             return
         if not self._upload_accepted:
             return
@@ -245,7 +246,7 @@ class DeaddropManager:
                 
                 result = self._client.send_raw(frame)
                 if result is not None:
-                    self._ui.display_error_message(f"Failed to send chunk: {result}")
+                    self._client.raise_to_ui(TransportError(code=ErrorCode.SOCKET_SEND, context={"reason": str(result), "kind": "deaddrop_chunk"}))
                     chunk_index += 1
                     continue
                 
@@ -265,9 +266,7 @@ class DeaddropManager:
     def check(self, name: str) -> None:
         """Ask the server whether a deaddrop entry with the given *name* exists."""
         if not self.shared_secret:
-            self._ui.display_error_message(
-                    "Deaddrop not initialised - handshake required",
-            )
+            self._client.raise_to_ui(DeaddropError(code=ErrorCode.DD_KE_FAILED, context={"reason": "no_shared_secret"}))
             return
         self._name = name
         outer = self._encrypt_inner(
@@ -283,9 +282,7 @@ class DeaddropManager:
     def download(self, name: str, password: str) -> None:
         """Request a deaddrop file download from the server."""
         if not self.shared_secret:
-            self._ui.display_error_message(
-                    "Deaddrop not initialised - handshake required",
-            )
+            self._client.raise_to_ui(DeaddropError(code=ErrorCode.DD_KE_FAILED, context={"reason": "no_shared_secret"}))
             return
         
         self._name = name
@@ -324,7 +321,7 @@ class DeaddropManager:
         supported = bool(message.get("supported", False))
         if not supported:
             reason = message.get("reason", "Server does not support deaddrop")
-            self._ui.display_error_message(reason)
+            self._client.raise_to_ui(DeaddropError(code=ErrorCode.DD_KE_FAILED, context={"reason": reason}))
             self.shared_secret = None
             self.supported = False
             self._in_progress = False
@@ -336,12 +333,12 @@ class DeaddropManager:
             mlkem_public_b64 = str(message["mlkem_public"])
             mlkem_public = base64.b64decode(mlkem_public_b64, validate=True)
         except KeyError:
-            self._ui.display_error_message("Invalid deaddrop start response: missing mlkem_public")
+            self._client.raise_to_ui(MessageError(code=ErrorCode.MESSAGE_FIELD_MISSING, context={"frame": "DEADDROP_START_RESPONSE", "field": "mlkem_public"}))
             self._handshake_event.set()
             self._started = False
             return
         except binascii.Error:
-            self._ui.display_error_message("Invalid deaddrop start response: bad mlkem_public encoding")
+            self._client.raise_to_ui(MessageError(code=ErrorCode.MESSAGE_DECODE, context={"frame": "DEADDROP_START_RESPONSE", "field": "mlkem_public"}))
             self._handshake_event.set()
             self._started = False
             return
@@ -367,7 +364,7 @@ class DeaddropManager:
     def handle_encrypted_message(self, outer: dict[str, Any]) -> None:
         """Decrypt and dispatch an incoming DEADDROP_MESSAGE frame from the server."""
         if not self.shared_secret:
-            self._ui.display_error_message("Received deaddrop message before handshake was complete")
+            self._client.raise_to_ui(DeaddropError(code=ErrorCode.DD_KE_FAILED, context={"reason": "message_before_handshake"}))
             return
         
         try:
@@ -376,10 +373,10 @@ class DeaddropManager:
             nonce = base64.b64decode(nonce_b64, validate=True)
             ciphertext = base64.b64decode(ct_b64, validate=True)
         except KeyError:
-            self._ui.display_error_message("Malformed deaddrop message from server")
+            self._client.raise_to_ui(MessageError(code=ErrorCode.MESSAGE_FIELD_MISSING, context={"frame": "DEADDROP_MESSAGE"}))
             return
         except binascii.Error:
-            self._ui.display_error_message("Invalid base64 in deaddrop message from server")
+            self._client.raise_to_ui(MessageError(code=ErrorCode.MESSAGE_DECODE, context={"frame": "DEADDROP_MESSAGE"}))
             return
         
         aad_raw = json.dumps({
@@ -392,7 +389,7 @@ class DeaddropManager:
             inner_bytes = aead.decrypt(nonce, ciphertext, aad_raw)
             inner = json.loads(inner_bytes.decode("utf-8"))
         except Exception:
-            self._ui.display_error_message("Failed to decrypt deaddrop message from server")
+            self._client.raise_to_ui(DeaddropError(code=ErrorCode.DD_DECRYPT, context={"frame": "DEADDROP_MESSAGE"}))
             return
         
         inner_type = MessageType(int(inner.get("type", MessageType.NONE)))
@@ -403,7 +400,7 @@ class DeaddropManager:
                 self._on_accept(inner)
             case MessageType.DEADDROP_DENY:
                 reason = inner.get("reason", "Deaddrop request denied")
-                self._ui.display_error_message(reason)
+                self._client.raise_to_ui(DeaddropError(code=ErrorCode.DD_UPLOAD_REJECTED, context={"reason": reason}))
                 self._in_progress = False
                 self.download_in_progress = False
                 self._upload_accepted = False
@@ -422,7 +419,7 @@ class DeaddropManager:
                 self._in_progress = False
                 self.download_in_progress = False
             case _:
-                self._ui.display_error_message(f"Received unknown deaddrop message type {inner_type}")
+                self._client.raise_to_ui(MessageError(code=ErrorCode.MESSAGE_TYPE, context={"scope": "deaddrop", "inner_type": int(inner_type)}))
     
     def handle_binary_chunk(self, message_data: bytes) -> None:
         """Decrypt a raw binary deaddrop chunk frame and forward it to the streaming processor.
@@ -438,7 +435,7 @@ class DeaddropManager:
         try:
             decrypted = aead.decrypt(nonce, ct, nonce)
         except InvalidTag as exc:
-            raise ValueError("Deaddrop chunk decryption failed") from exc
+            raise DeaddropError(code=ErrorCode.DD_DECRYPT, context={"reason": "chunk"}, cause=exc) from exc
         self._process_data_streaming(
                 int.from_bytes(decrypted[:DEADDROP_LENGTH_PREFIX_SIZE], "big"),
                 decrypted[DEADDROP_LENGTH_PREFIX_SIZE:],
@@ -453,7 +450,7 @@ class DeaddropManager:
         if exists:
             self._ui.display_system_message(f"Deaddrop '{name}' exists on server.")
         else:
-            self._ui.display_error_message(f"Deaddrop '{name}' does not exist on server.")
+            self._client.raise_to_ui(DeaddropError(code=ErrorCode.DD_NOT_FOUND, context={"name": name}))
     
     def _on_accept(self, inner: dict[str, Any]) -> None:
         self._in_progress = True
@@ -482,16 +479,16 @@ class DeaddropManager:
     def _on_prove(self, inner: dict[str, Any]) -> None:
         salt_b64 = inner.get("salt")
         if not isinstance(salt_b64, str):
-            self._ui.display_error_message("Invalid deaddrop prove message from server")
+            self._client.raise_to_ui(MessageError(code=ErrorCode.MESSAGE_FIELD_MISSING, context={"frame": "DEADDROP_PROVE", "field": "salt"}))
             return
         try:
             download_salt = base64.b64decode(salt_b64, validate=True)
         except binascii.Error:
-            self._ui.display_error_message("Invalid base64 salt in deaddrop prove message")
+            self._client.raise_to_ui(MessageError(code=ErrorCode.MESSAGE_DECODE, context={"frame": "DEADDROP_PROVE", "field": "salt"}))
             return
         
         if not self._password_hash:
-            self._ui.display_error_message("No stored deaddrop password hash for download")
+            self._client.raise_to_ui(DeaddropError(code=ErrorCode.DD_AUTH, context={"reason": "no_password_hash"}))
             return
         
         pbk = PBKDF2HMAC(
@@ -515,7 +512,7 @@ class DeaddropManager:
             ct_b64_data = str(inner["ct"])
             chunk_data = base64.b64decode(ct_b64_data, validate=True)
         except (KeyError, ValueError, TypeError, binascii.Error):
-            self._ui.display_error_message("Malformed deaddrop data from server")
+            self._client.raise_to_ui(MessageError(code=ErrorCode.MESSAGE_FIELD_MISSING, context={"frame": "DEADDROP_DATA"}))
             return
         self._process_data_streaming(chunk_index, chunk_data)
     
@@ -561,7 +558,7 @@ class DeaddropManager:
     def _encrypt_inner(self, inner: bytes) -> dict[str, Any]:
         """Encrypt *inner* with ChaCha20-Poly1305 using the deaddrop shared secret."""
         if not self.shared_secret:
-            raise ValueError("Deaddrop shared secret not established")
+            raise DeaddropError(code=ErrorCode.DD_KE_FAILED, context={"reason": "no_shared_secret"})
         nonce = os.urandom(NONCE_SIZE)
         aad_raw = json.dumps({
             "type":  MessageType.DEADDROP_MESSAGE,
@@ -578,7 +575,7 @@ class DeaddropManager:
     def _encrypt_chunk(self, chunk: bytes, nonce: bytes) -> bytes:
         """Encrypt a raw binary deaddrop chunk and prepend the magic number and nonce for framing."""
         if not self.shared_secret:
-            raise ValueError("Deaddrop shared secret not established")
+            raise DeaddropError(code=ErrorCode.DD_KE_FAILED, context={"reason": "no_shared_secret"})
         aead = ChaCha20Poly1305(self.shared_secret)
         ciphertext = aead.encrypt(nonce, chunk, nonce)
         return constants.MAGIC_NUMBER_DEADDROPS + nonce + ciphertext
@@ -593,7 +590,7 @@ class DeaddropManager:
             try:
                 os.replace(path, new_path)
             except OSError:
-                self._ui.display_error_message(f"Failed to rename corrupt file: {path}")
+                self._client.raise_to_ui(DeaddropError(context={"reason": "rename_failed", "path": str(path)}))
             return
         
         if new_path.is_dir():
@@ -601,7 +598,7 @@ class DeaddropManager:
             try:
                 os.replace(path, new_path)
             except OSError:
-                self._ui.display_error_message(f"Failed to rename corrupt file: {path}")
+                self._client.raise_to_ui(DeaddropError(context={"reason": "rename_failed", "path": str(path)}))
             return
         
         if new_path.is_file():
@@ -610,13 +607,13 @@ class DeaddropManager:
             try:
                 os.replace(new_path, corrupt_folder_path / new_path.name)
             except OSError:
-                self._ui.display_error_message(f"Failed to rename corrupt file: {path}")
+                self._client.raise_to_ui(DeaddropError(context={"reason": "rename_failed", "path": str(path)}))
                 return
             new_path = new_path.with_name(path.stem + str(int(time.time())) + "".join(path.suffixes) + ".corrupt")
             try:
                 os.replace(path, new_path)
             except OSError:
-                self._ui.display_error_message(f"Failed to rename corrupt file: {path}")
+                self._client.raise_to_ui(DeaddropError(context={"reason": "rename_failed", "path": str(path)}))
     
     def _finalise_download(self) -> None:
         """Close the partial download file, rename it to its final name, and verify its HMAC."""
@@ -632,7 +629,7 @@ class DeaddropManager:
                 self._dl_file = None
         
         if not self._dl_part_path:
-            self._ui.display_error_message("No deaddrop partial file to finalise")
+            self._client.raise_to_ui(DeaddropError(context={"reason": "no_partial_file"}))
             return
         
         part_path = self._dl_part_path
@@ -640,7 +637,7 @@ class DeaddropManager:
         try:
             os.replace(part_path, final_path)
         except Exception as exc:
-            self._ui.display_error_message(f"Failed to finalise deaddrop file: {exc}")
+            self._client.raise_to_ui(DeaddropError(context={"reason": "finalise_failed", "error": str(exc)}, cause=exc))
             return
         
         expected_b64 = self._download_expected_hash or ""
@@ -651,7 +648,7 @@ class DeaddropManager:
             self._dl_part_path = None
             return
         if key is None:
-            self._ui.display_error_message("Deaddrop: missing key for HMAC verification; file kept as-is.")
+            self._client.raise_to_ui(DeaddropError(code=ErrorCode.DD_AUTH, context={"reason": "no_hmac_key"}))
             self._rename_invalid(final_path)
             self._dl_part_path = None
             return
@@ -661,7 +658,7 @@ class DeaddropManager:
         try:
             expected_hmac = base64.b64decode(expected_b64, validate=True)
         except binascii.Error:
-            self._ui.display_error_message("Deaddrop: invalid base64 expected HMAC provided by server.")
+            self._client.raise_to_ui(MessageError(code=ErrorCode.MESSAGE_DECODE, context={"frame": "DEADDROP_HMAC", "field": "expected_hmac"}))
             self._rename_invalid(final_path)
             self._dl_part_path = None
             return
@@ -675,11 +672,7 @@ class DeaddropManager:
         if bytes_eq(computed_hmac, expected_hmac):
             self._ui.display_system_message("Deaddrop file integrity verified (HMAC OK).")
         else:
-            self._ui.display_error_message(
-                    "Deaddrop file HMAC verification failed, file will be kept as-is."
-                    f"Computed HMAC: {base64.b64encode(computed_hmac).decode('utf-8')},"
-                    f"Expected HMAC: {base64.b64encode(expected_hmac).decode('utf-8')}",
-            )
+            self._client.raise_to_ui(DeaddropError(code=ErrorCode.DD_DECRYPT, context={"reason": "hmac_mismatch", "computed": base64.b64encode(computed_hmac).decode("utf-8"), "expected": base64.b64encode(expected_hmac).decode("utf-8")}))
             self._rename_invalid(final_path)
             self._dl_part_path = None
             return
@@ -691,9 +684,7 @@ class DeaddropManager:
     def _process_data_streaming(self, chunk_index: int, chunk_data: bytes) -> None:
         """Decrypt and stream-write a single deaddrop download chunk to the partial output file."""
         if chunk_index != self._dl_expected_index:
-            self._ui.display_error_message(
-                    f"Unexpected deaddrop chunk index {chunk_index}, expected {self._dl_expected_index}",
-            )
+            self._client.raise_to_ui(ChunkError(code=ErrorCode.CHUNK_COUNTER, context={"scope": "deaddrop", "got": chunk_index, "expected": self._dl_expected_index}))
             return
         
         if (chunk_index + 1) % 100 == 0:
@@ -701,7 +692,7 @@ class DeaddropManager:
             self._ui.display_system_message(f"Received {size_so_far} so far")
         
         if self._download_key is None:
-            self._ui.display_error_message("Deaddrop key not initialised")
+            self._client.raise_to_ui(DeaddropError(code=ErrorCode.DD_KE_FAILED, context={"reason": "no_download_key"}))
             return
         
         if self._dl_encryptor is None:
@@ -714,7 +705,7 @@ class DeaddropManager:
             if chunk_index == 0:
                 pt = self._dl_encryptor.decrypt(nonce, chunk_data)
                 if len(pt) < DEADDROP_FILE_EXT_HEADER_SIZE:
-                    self._ui.display_error_message("First deaddrop chunk too small to contain header")
+                    self._client.raise_to_ui(ChunkError(code=ErrorCode.CHUNK_HEADER, context={"scope": "deaddrop", "reason": "first_chunk_too_small"}))
                     return
                 ext_header = pt[:DEADDROP_FILE_EXT_HEADER_SIZE]
                 body = pt[DEADDROP_FILE_EXT_HEADER_SIZE:]
@@ -732,7 +723,7 @@ class DeaddropManager:
                 try:
                     f = open(part_path, "wb")
                 except Exception as exc:
-                    self._ui.display_error_message(f"Failed to open deaddrop output file: {exc}")
+                    self._client.raise_to_ui(DeaddropError(context={"reason": "open_output_failed", "error": str(exc)}, cause=exc))
                     return
                 self._dl_file = f
                 self._dl_part_path = part_path
@@ -741,7 +732,7 @@ class DeaddropManager:
                     try:
                         f.write(body)
                     except Exception as exc:
-                        self._ui.display_error_message(f"Failed to write to deaddrop file: {exc}")
+                        self._client.raise_to_ui(DeaddropError(context={"reason": "write_failed", "error": str(exc)}, cause=exc))
                         try:
                             f.close()
                         except OSError:
@@ -754,17 +745,17 @@ class DeaddropManager:
                         return
             else:
                 if not self._dl_file:
-                    self._ui.display_error_message("Deaddrop output file not open")
+                    self._client.raise_to_ui(DeaddropError(context={"reason": "output_file_not_open"}))
                     return
                 pt = self._dl_encryptor.decrypt(nonce, chunk_data)
                 self._dl_bytes_downloaded += len(pt)
                 try:
                     self._dl_file.write(pt)
                 except Exception as exc:
-                    self._ui.display_error_message(f"Failed to write to deaddrop file: {exc}")
+                    self._client.raise_to_ui(DeaddropError(context={"reason": "write_failed", "error": str(exc)}, cause=exc))
                     return
         except Exception as exc:
-            self._ui.display_error_message(f"Failed to process deaddrop chunk: {exc}")
+            self._client.raise_to_ui(DeaddropError(code=ErrorCode.DD_DECRYPT, context={"reason": "chunk_processing_failed", "error": str(exc)}, cause=exc))
             return
         finally:
             if chunk_index == self._dl_expected_index:

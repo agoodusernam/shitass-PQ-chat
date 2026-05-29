@@ -21,6 +21,7 @@ import json
 import os
 
 import pytest
+from protocol.errors import ErrorCode, ChatError
 
 from protocol import create_messages, parse_messages
 from protocol.constants import MAGIC_NUMBER_FILE_TRANSFER
@@ -206,7 +207,7 @@ class TestKeyExchange:
         parsed["mldsa_signature"] = base64.b64encode(corrupted).decode()
         corrupted_msg = json.dumps(parsed).encode()
         
-        with pytest.raises(ValueError, match="ML-DSA"):
+        with pytest.raises(ChatError):
             alice.process_ke_mlkem_pubkey(corrupted_msg)
     
     def test_reset_key_exchange_clears_state(self):
@@ -268,14 +269,14 @@ class TestEncryptDecrypt:
     
     def test_encrypt_without_shared_key_raises(self):
         p = _make_protocol()
-        with pytest.raises(ValueError):
+        with pytest.raises(ChatError):
             p.encrypt_message("test")
     
     def test_decrypt_without_shared_key_raises(self):
         alice, bob = _full_key_exchange()
         ct = alice.encrypt_message("test")
         fresh = _make_protocol()
-        with pytest.raises(ValueError):
+        with pytest.raises(ChatError):
             fresh.decrypt_message(ct)
     
     def test_tampered_ciphertext_raises(self):
@@ -286,7 +287,7 @@ class TestEncryptDecrypt:
         
         raw = base64.b64decode(msg["ciphertext"])
         msg["ciphertext"] = base64.b64encode(bytes([raw[0] ^ 0xFF]) + raw[1:]).decode()
-        with pytest.raises(ValueError):
+        with pytest.raises(ChatError):
             bob.decrypt_message(json.dumps(msg).encode())
     
     def test_tampered_verification_raises(self):
@@ -297,7 +298,7 @@ class TestEncryptDecrypt:
         
         raw = base64.b64decode(msg["verification"])
         msg["verification"] = base64.b64encode(bytes([raw[0] ^ 0xFF]) + raw[1:]).decode()
-        with pytest.raises(ValueError, match="verification"):
+        with pytest.raises(ChatError):
             bob.decrypt_message(json.dumps(msg).encode())
     
     def test_missing_field_raises(self):
@@ -305,7 +306,7 @@ class TestEncryptDecrypt:
         ct = alice.encrypt_message("test")
         msg = json.loads(ct)
         del msg["nonce"]
-        with pytest.raises(ValueError):
+        with pytest.raises(ChatError):
             bob.decrypt_message(json.dumps(msg).encode())
     
     def test_encrypt_unicode_message(self):
@@ -343,7 +344,7 @@ class TestReplayProtection:
         alice, bob = _full_key_exchange()
         ct = alice.encrypt_message("once")
         bob.decrypt_message(ct)
-        with pytest.raises(ValueError):
+        with pytest.raises(ChatError):
             bob.decrypt_message(ct)
     
     def test_old_counter_without_saved_state_raises(self):
@@ -353,7 +354,7 @@ class TestReplayProtection:
         bob.decrypt_message(ct1)
         bob.decrypt_message(ct2)
         # Replaying ct1 (counter already passed, not saved) should raise
-        with pytest.raises(ValueError):
+        with pytest.raises(ChatError):
             bob.decrypt_message(ct1)
 
 
@@ -413,19 +414,19 @@ class TestFileChunks:
     
     def test_file_chunk_without_shared_key_raises(self):
         p = _make_protocol()
-        with pytest.raises(ValueError):
+        with pytest.raises(ChatError):
             p.encrypt_file_chunk("t", 0, b"data")
     
     def test_file_chunk_too_short_raises(self):
         _, bob = _full_key_exchange()
-        with pytest.raises(ValueError):
+        with pytest.raises(ChatError):
             bob.decrypt_file_chunk(b"\x00" * 10)
     
     def test_file_chunk_tampered_raises(self):
         alice, bob = _full_key_exchange()
         frame = alice.encrypt_file_chunk("t", 0, b"secret")
         corrupted = frame[:-10] + bytes([frame[-10] ^ 0xFF]) + frame[-9:]
-        with pytest.raises(ValueError):
+        with pytest.raises(ChatError):
             bob.decrypt_file_chunk(corrupted)
     
     def test_multiple_file_chunks_sequential(self):
@@ -794,7 +795,7 @@ class TestDoubleEncryptor:
             enc2.decrypt(nonce, ct)
     
     def test_bad_key_length_raises(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(ChatError):
             DoubleEncryptor(b"short", b"otp", 1)
     
     def test_aad_mismatch_raises(self):
@@ -827,7 +828,7 @@ class TestKeyExchangeDoubleEncryptor:
         assert enc.decrypt(nonce, ct) == data
     
     def test_bad_key_length_raises(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(ChatError):
             KeyExchangeDoubleEncryptor(b"tooshort")
     
     def test_different_nonces_produce_different_ciphertexts(self):

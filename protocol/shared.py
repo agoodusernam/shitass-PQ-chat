@@ -1,5 +1,14 @@
 # shared.py - Shared cryptographic utilities and protocol definitions
 # pylint: disable=trailing-whitespace, line-too-long
+try:
+    import pqcrypto  # noqa: F401
+    import cryptography  # noqa: F401
+except ImportError as _exc:
+    print("Required cryptographic libraries not found.")
+    raise ImportError(
+            "Please install the required libraries with pip install -r requirements.txt",
+    )
+
 import base64
 import binascii
 import enum
@@ -54,16 +63,7 @@ from protocol.parse_messages import (
     parse_ke_verification,
 )
 
-try:
-    import pqcrypto  # noqa: F401
-    import cryptography  # noqa: F401
-except ImportError as _exc:
-    print("Required cryptographic libraries not found.")
-    raise ImportError(
-            "Please install the required libraries with pip install -r requirements.txt",
-    )
-
-from pqcrypto.kem import hqc_256  # type: ignore # Still not production ready, but better than before
+from pqcrypto.kem import hqc_256
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.x25519 import (
     X25519PrivateKey,
@@ -84,6 +84,15 @@ from cryptography.hazmat.primitives.hmac import HMAC
 from cryptography.hazmat.primitives.constant_time import bytes_eq
 
 from cryptography.exceptions import InvalidTag
+
+from protocol.errors import (
+    ErrorCode,
+    RatchetError,
+    ChatError,
+    ChunkError,
+    KeyExchangeError,
+    MessageError,
+)
 
 if TYPE_CHECKING:
     from SecureChatABCs.client_base import ClientBase
@@ -359,8 +368,6 @@ class SecureChatProtocol(ProtocolBase):
         self._sender_running = False
         if self._sender_thread is not None and self._sender_thread.is_alive():
             self._sender_thread.join(timeout=1.0)
-            if self._sender_thread.is_alive():
-                self._report_error("Sender thread still running. Ignoring.")
         self._sender_thread = None
     
     def queue_json(self, obj: dict[str, Any]) -> None:
@@ -468,19 +475,22 @@ class SecureChatProtocol(ProtocolBase):
             if kind is _QueueKind.ENCRYPT_JSON_THEN_SWITCH:
                 return self._encrypt_json_message(payload), True
             
-            raise ValueError(f"Unsupported queue kind: {kind}")
+            raise MessageError(code=ErrorCode.MESSAGE_TYPE, context={"queue_kind": str(kind)})
         
+        except ChatError as e:
+            self._forward_exc(e)
+            return None, False
         except (ValueError, TypeError) as e:
-            self._report_error(f"Message preparation error (dropped): {e}")
+            self._forward_exc(ChatError(f"Message preparation error (dropped): {e}", cause=e))
             return None, False
         except Exception as e:
-            self._report_error(f"Unexpected error preparing message (dropped): {e}")
+            self._forward_exc(ChatError(f"Unexpected error preparing message (dropped): {e}", cause=e))
             return None, False
     
     def _encrypt_text_message(self, text: str) -> bytes:
         """Encrypt a text message."""
         if not isinstance(text, str) or not (self.shared_key and self._send_chain_key):
-            raise ValueError("Invalid text encryption request or keys not ready")
+            raise RatchetError(code=ErrorCode.CHAIN_KEY_MISSING, context={"kind": "encrypt_text"})
         
         inner_obj = {"type": MessageType.TEXT_MESSAGE, "text": text}
         return self.encrypt_message(json.dumps(inner_obj))
@@ -488,7 +498,7 @@ class SecureChatProtocol(ProtocolBase):
     def _encrypt_json_message(self, obj: dict) -> bytes:
         """Encrypt a JSON message."""
         if not isinstance(obj, dict) or not (self.shared_key and self._send_chain_key):
-            raise ValueError("Invalid JSON encryption request or keys not ready")
+            raise RatchetError(code=ErrorCode.CHAIN_KEY_MISSING, context={"kind": "encrypt_json"})
         
         return self.encrypt_message(json.dumps(obj))
     
@@ -497,17 +507,17 @@ class SecureChatProtocol(ProtocolBase):
         assert self.client is not None
         result = self.client.send_raw(to_send)
         if result is not None:
-            self._report_error(f"Failed to send message: {result}")
+            self._forward_exc(ChatError(f"Failed to send message: {result}", context={"reason": str(result)}))
         
         if switch_keys_after:
             self.activate_pending_keys()
     
-    def _report_error(self, message: str) -> None:
-        """Report an error to the client, or fall back to print if no client is set."""
+    def _forward_exc(self, exc: BaseException) -> None:
+        """Report an exception to the client, or fall back to print if no client is set."""
         if self.client is not None:
-            self.client.on_error(message)
+            self.client.raise_to_ui(exc)
         else:
-            print(message)
+            print(exc)
     
     def _generate_dsa_keys(self) -> None:
         """Generate ML-DSA keypair for key exchange signing."""
@@ -543,7 +553,7 @@ class SecureChatProtocol(ProtocolBase):
         """Create KE_MLKEM_PUBKEY message (step 8): generate ML-KEM and X25519 keypairs, send signed ML-KEM pubkey.
         X25519 keypair is generated here (step 2) for use in step 12."""
         if self._mldsa_private_key is None:
-            raise ValueError("No ML-DSA private key available for signing")
+            raise KeyExchangeError(code=ErrorCode.KE_MISSING_PRIVATE_KEY, context={"algo": "ML-DSA"})
         self._mlkem_private_key = MLKEM1024PrivateKey.generate()
         self.mlkem_public_key = self._mlkem_private_key.public_key()
         self._dh_private_key = X25519PrivateKey.generate()
@@ -563,7 +573,7 @@ class SecureChatProtocol(ProtocolBase):
                     context=ML_DSA_CONTEXT,
             )
         except InvalidSignature as exc:
-            raise ValueError("ML-DSA signature verification failed on KE_MLKEM_PUBKEY") from exc
+            raise KeyExchangeError(code=ErrorCode.KE_MLKEM_SIG, cause=exc)
         
         self.peer_mlkem_public_key = MLKEM1024PublicKey.from_public_bytes(mlkem_public_key)
     
@@ -572,9 +582,9 @@ class SecureChatProtocol(ProtocolBase):
         encrypt our HQC and X25519 public keys with it."""
         # Generate HQC and X25519 keypairs
         if self._mldsa_private_key is None:
-            raise ValueError("No ML-DSA private key available for signing")
+            raise KeyExchangeError(code=ErrorCode.KE_MISSING_PRIVATE_KEY, context={"algo": "ML-DSA"})
         if self.peer_mlkem_public_key is None:
-            raise ValueError("Peer ML-KEM public key not set")
+            raise KeyExchangeError(code=ErrorCode.KE_MISSING_PEER_KEY, context={"algo": "ML-KEM"})
         self.hqc_public_key, self._hqc_private_key = hqc_256.generate_keypair()
         self._dh_private_key = X25519PrivateKey.generate()
         self.dh_public_key_bytes = self._dh_private_key.public_key().public_bytes_raw()
@@ -616,10 +626,10 @@ class SecureChatProtocol(ProtocolBase):
                     context=ML_DSA_CONTEXT,
             )
         except InvalidSignature as exc:
-            raise ValueError("ML-DSA signature verification failed on KE_MLKEM_CT_KEYS") from exc
+            raise KeyExchangeError(code=ErrorCode.KE_MLKEM_CT_SIG, cause=exc)
         
         if self._mlkem_private_key is None:
-            raise ValueError("No ML-KEM private key available for decapsulation")
+            raise KeyExchangeError(code=ErrorCode.KE_MISSING_PRIVATE_KEY, context={"algo": "ML-KEM"})
         
         # Decapsulate ML-KEM
         mlkem_shared_secret = self._mlkem_private_key.decapsulate(parsed["mlkem_ciphertext"])
@@ -640,9 +650,9 @@ class SecureChatProtocol(ProtocolBase):
         and HQC ciphertext with int_key_2, then derives final keys."""
         # Perform X25519 DH with peer's public key (from step 10)
         if self._dh_private_key is None:
-            raise ValueError("No DH private key available for X25519 DH")
+            raise KeyExchangeError(code=ErrorCode.KE_MISSING_PRIVATE_KEY, context={"algo": "X25519"})
         if self._mldsa_private_key is None:
-            raise ValueError("Peer ML-KEM public key not set")
+            raise KeyExchangeError(code=ErrorCode.KE_MISSING_PEER_KEY, context={"algo": "ML-KEM"})
         peer_dh_pub = X25519PublicKey.from_public_bytes(self.peer_dh_public_key_bytes)
         dh_shared_secret = self._dh_private_key.exchange(peer_dh_pub)
         
@@ -681,7 +691,7 @@ class SecureChatProtocol(ProtocolBase):
         perform DH, derive int_key_2, decrypt HQC ciphertext with int_key_2, decapsulate HQC,
         derive final keys."""
         if self._dh_private_key is None:
-            raise ValueError("No DH private key available for X25519 DH")
+            raise KeyExchangeError(code=ErrorCode.KE_MISSING_PRIVATE_KEY, context={"algo": "X25519"})
         parsed = parse_ke_x25519_hqc_ct(data)
         
         # Verify signature
@@ -692,7 +702,7 @@ class SecureChatProtocol(ProtocolBase):
                     context=ML_DSA_CONTEXT,
             )
         except InvalidSignature as exc:
-            raise ValueError("ML-DSA signature verification failed on KE_X25519_HQC_CT") from exc
+            raise KeyExchangeError(code=ErrorCode.KE_X25519_HQC_SIG, cause=exc)
         
         # Decrypt peer's X25519 pubkey with intermediary key 1
         decryptor_1 = KeyExchangeDoubleEncryptor(self._ke_intermediary_key_1)
@@ -812,7 +822,7 @@ class SecureChatProtocol(ProtocolBase):
         order-independent (derived from sorted key materials).
         """
         if not self._key_verification_material:
-            raise ValueError("Verification key not available - key exchange not completed")
+            raise KeyExchangeError(code=ErrorCode.KE_STATE, context={"reason": "verification_key_missing"})
         
         return generate_key_fingerprint(self._key_verification_material, self.config["wordlist_file"])
     
@@ -845,7 +855,7 @@ class SecureChatProtocol(ProtocolBase):
             that have been corrupted or manipulated in flight
         """
         if not self.shared_key or not self._send_chain_key:
-            raise ValueError("No shared key or send chain key established")
+            raise RatchetError(code=ErrorCode.CHAIN_KEY_MISSING, context={"direction": "send"})
         
         self.message_counter += 1
         self.messages_since_last_rekey += 1
@@ -875,9 +885,9 @@ class SecureChatProtocol(ProtocolBase):
             "counter":       encrypted_message["counter"],
             "nonce":         encrypted_message["nonce"],
             "dh_public_key": encrypted_message["dh_public_key"],
-        }).encode('utf-8'))
+        }).encode("utf-8"))
         
-        encrypted_message["verification"] = base64.b64encode(verif_hasher.finalize()).decode('utf-8')
+        encrypted_message["verification"] = base64.b64encode(verif_hasher.finalize()).decode("utf-8")
         
         return json.dumps(encrypted_message).encode("utf-8")
     
@@ -889,7 +899,7 @@ class SecureChatProtocol(ProtocolBase):
         Raises value error if message is invalid or verification fails.
         """
         if not self.shared_key or not self._receive_chain_key:
-            raise ValueError("No shared key or receive chain key established")
+            raise RatchetError(code=ErrorCode.CHAIN_KEY_MISSING, context={"direction": "recv"})
         try:
             message: dict[str, Any] = json.loads(data)
             nonce: bytes = base64.b64decode(message["nonce"])
@@ -899,19 +909,19 @@ class SecureChatProtocol(ProtocolBase):
             peer_dh_pub_bytes = base64.b64decode(peer_dh_pub_b64, validate=True)
             expected_verification: bytes = base64.b64decode(message["verification"], validate=True)
         except (UnicodeDecodeError, json.JSONDecodeError, binascii.Error, TypeError) as e:
-            raise ValueError("Message decoding failed, message dropped") from e
+            raise MessageError(code=ErrorCode.MESSAGE_DECODE, cause=e)
         except KeyError as e:
-            raise ValueError("Message missing field, message dropped") from e
+            raise MessageError(code=ErrorCode.MESSAGE_FIELD_MISSING, cause=e)
         
         verif_hasher = HMAC(self._verification_key, hashes.SHA512())
         verif_hasher.update(json.dumps({
             "counter":       counter,
             "nonce":         message["nonce"],
             "dh_public_key": peer_dh_pub_b64,
-        }).encode('utf-8'))
+        }).encode("utf-8"))
         actual_verification = verif_hasher.finalize()
         if not bytes_eq(expected_verification, actual_verification):
-            raise ValueError("Message verification failed, message dropped")
+            raise MessageError(code=ErrorCode.MESSAGE_VERIFY)
         
         message_key, new_chain_key, use_saved = self._advance_recv_ratchet(counter, peer_dh_pub_bytes)
         
@@ -921,12 +931,12 @@ class SecureChatProtocol(ProtocolBase):
         try:
             decrypted_data = decryptor.decrypt(nonce, ciphertext, aad)
         except InvalidTag:
-            raise ValueError("Message is probably legitimate but failed to decrypt, InvalidTag")
+            raise MessageError(code=ErrorCode.MESSAGE_DECRYPT, context={"reason": "invalid_tag"})
         
         try:
             decrypted_data_str = decrypted_data.decode("utf-8")
         except UnicodeDecodeError:
-            raise ValueError("Message is probably legitimate but failed to decode, UnicodeDecodeError")
+            raise MessageError(code=ErrorCode.MESSAGE_DECODE, context={"reason": "utf8"})
         
         self._commit_recv_state(counter, peer_dh_pub_bytes, new_chain_key, use_saved)
         if not use_saved and new_chain_key:
@@ -947,7 +957,7 @@ class SecureChatProtocol(ProtocolBase):
         :raises ValueError: If encryption state is not ready.
         """
         if not self.shared_key or not self._send_chain_key:
-            raise ValueError("No shared key or send chain key established")
+            raise RatchetError(code=ErrorCode.CHAIN_KEY_MISSING, context={"direction": "send"})
         
         self.message_counter += 1
         
@@ -979,16 +989,16 @@ class SecureChatProtocol(ProtocolBase):
         :raises ValueError: If decryption fails or the frame is malformed.
         """
         if not self.shared_key or not self._receive_chain_key:
-            raise ValueError("No shared key or receive chain key established")
+            raise RatchetError(code=ErrorCode.CHAIN_KEY_MISSING, context={"direction": "recv"})
         if len(encrypted_data) < FILE_CHUNK_CIPHERTEXT_OFFSET:
-            raise ValueError("Invalid chunk message format")
+            raise ChunkError(code=ErrorCode.CHUNK_FORMAT)
         
         try:
             counter = int(struct.unpack('!Q', encrypted_data[FILE_CHUNK_COUNTER_OFFSET:FILE_CHUNK_NONCE_OFFSET])[0])
         except struct.error:
-            raise ValueError("Invalid chunk message format")
+            raise ChunkError(code=ErrorCode.CHUNK_FORMAT)
         except ValueError:
-            raise ValueError("Invalid counter in chunk message")
+            raise ChunkError(code=ErrorCode.CHUNK_COUNTER)
         
         nonce = encrypted_data[FILE_CHUNK_NONCE_OFFSET:FILE_CHUNK_EPH_PUB_OFFSET]
         peer_eph_pub = encrypted_data[FILE_CHUNK_EPH_PUB_OFFSET:FILE_CHUNK_CIPHERTEXT_OFFSET]
@@ -1002,28 +1012,28 @@ class SecureChatProtocol(ProtocolBase):
         try:
             plaintext = decryptor.decrypt(nonce, ciphertext, aad)
         except InvalidTag:
-            raise ValueError("File chunk decryption failed: InvalidTag")
+            raise ChunkError(code=ErrorCode.CHUNK_DECRYPT, context={"reason": "invalid_tag"})
         
         if len(plaintext) < HEADER_LENGTH_SIZE:
-            raise ValueError("Invalid decrypted data: too short")
+            raise ChunkError(code=ErrorCode.CHUNK_HEADER, context={"reason": "too_short"})
         
         try:
             header_len = struct.unpack("!H", plaintext[:HEADER_LENGTH_SIZE])[0]
         except struct.error:
-            raise ValueError("Invalid decrypted data: header length")
+            raise ChunkError(code=ErrorCode.CHUNK_HEADER, context={"reason": "bad_header_length"})
         
         if len(plaintext) < HEADER_LENGTH_SIZE + header_len:
-            raise ValueError("Invalid decrypted data: header length mismatch")
+            raise ChunkError(code=ErrorCode.CHUNK_HEADER, context={"reason": "header_length_mismatch"})
         
         header_json = plaintext[HEADER_LENGTH_SIZE: HEADER_LENGTH_SIZE + header_len]
         chunk_data = plaintext[HEADER_LENGTH_SIZE + header_len:]
         try:
             header = json.loads(header_json)
         except (json.JSONDecodeError, UnicodeDecodeError):
-            raise ValueError("Invalid decrypted data: header JSON decode failed")
+            raise ChunkError(code=ErrorCode.CHUNK_JSON)
         
         if header["type"] != MessageType.FILE_CHUNK:
-            raise ValueError("Invalid message type in decrypted chunk")
+            raise MessageError(code=ErrorCode.MESSAGE_TYPE, context={"scope": "chunk"})
         
         self._commit_recv_state(counter, peer_eph_pub, new_chain_key, use_saved)
         
@@ -1049,7 +1059,7 @@ class SecureChatProtocol(ProtocolBase):
         """
         peer_pub_bytes = self.peer_dh_public_key_bytes
         if not peer_pub_bytes:
-            raise ValueError("Missing peer DH public key for encryption")
+            raise RatchetError(code=ErrorCode.DH_KEY_MISSING, context={"role": "peer"})
         
         eph_priv = X25519PrivateKey.generate()
         eph_pub_bytes = eph_priv.public_key().public_bytes_raw()
@@ -1088,7 +1098,7 @@ class SecureChatProtocol(ProtocolBase):
         :raises ValueError: If ``_msg_recv_private`` is not initialised.
         """
         if not self._msg_recv_private:
-            raise ValueError("Local DH private key not initialized for ratchet")
+            raise RatchetError(code=ErrorCode.DH_KEY_MISSING, context={"role": "local"})
         
         dh_shared = self._msg_recv_private.exchange(
                 X25519PublicKey.from_public_bytes(peer_eph_pub),
@@ -1109,14 +1119,17 @@ class SecureChatProtocol(ProtocolBase):
         if counter <= self.peer_counter:
             saved = self.skipped_counters[counter]
             if saved is None:
-                raise ValueError("Message is probably legitimate but counter has unexpected value: " +
-                                 f"higher than {self.peer_counter} got {counter}")
+                raise RatchetError(code=ErrorCode.COUNTER_UNEXPECTED, 
+                    context={"counter": counter, "peer_counter": self.peer_counter}
+                )
             message_key, _ = self._ratchet_recv_step(saved, peer_pub_bytes, counter)
             return message_key, b"", True
         
         if counter - (self.peer_counter + 1) > DEFAULT_MAX_RATCHET_FORWARD:
-            raise ValueError("Message is probably legitimate but we would have to ratchet " +
-                             "further than the configured maximum to attempt decryption.")
+            raise RatchetError(code=ErrorCode.COUNTER_TOO_FAR, 
+                context={"counter": counter, "peer_counter": self.peer_counter,
+                         "max_forward": DEFAULT_MAX_RATCHET_FORWARD}
+            )
         temp_chain_key = self._receive_chain_key
         for i in range(self.peer_counter + 1, counter):
             if self.skipped_counters[i] is None:

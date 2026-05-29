@@ -13,12 +13,13 @@ import wave
 from collections.abc import Iterable
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext
-from typing import Any, Callable, Literal, ParamSpec, TYPE_CHECKING
+from typing import Any, Callable, ParamSpec, TYPE_CHECKING
 from wave import Wave_read
 
 from SecureChatABCs.client_base import ClientBase
 from SecureChatABCs.ui_base import UIBase, UICapability
 from config import ClientConfigHandler
+from protocol.errors import ErrorCode, Severity, describe, format_code
 from protocol.utils import bytes_to_human_readable
 from utils.vc_utils import negotiate_audio_format
 
@@ -26,19 +27,17 @@ P = ParamSpec("P")
 
 # Check for optional dependencies
 try:
-    import PIL
     from PIL import Image, ImageGrab, ImageTk
     
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
-    Image = None  # type: ignore
-    ImageTk = None  # type: ignore
-    ImageGrab = None  # type: ignore
-    PIL = None  # type: ignore
+    Image = None
+    ImageTk = None
+    ImageGrab = None
 
 try:
-    from plyer import notification  # type: ignore
+    from plyer import notification
     
     PLYER_AVAILABLE = True
 except ImportError:
@@ -51,140 +50,24 @@ try:
     SPELLCHECKER_AVAILABLE = True
 except ImportError:
     SPELLCHECKER_AVAILABLE = False
-    SpellChecker = None  # type: ignore
+    SpellChecker = None
 
 try:
-    import pyaudio  # type: ignore[import-untyped]
+    import pyaudio
     
     PYAUDIO_AVAILABLE = True
 except ImportError:
     PYAUDIO_AVAILABLE = False
-    pyaudio = None  # type: ignore
+    pyaudio = None
 
 try:
-    from tkinterdnd2 import DND_FILES, TkinterDnD  # type: ignore[import-untyped]
+    from tkinterdnd2 import DND_FILES, TkinterDnD
     
     TKINTERDND2_AVAILABLE = True
 except ImportError:
     TKINTERDND2_AVAILABLE = False
-    TkinterDnD = None  # type: ignore
-    DND_FILES = None  # type: ignore
-
-
-class Ltk:
-    """
-    Literal types for Tkinter constants because type checking YAY
-    """
-    NO = FALSE = OFF = 0
-    YES = TRUE = ON = 1
-    
-    # -anchor and -sticky
-    N: Literal['n'] = 'n'
-    S: Literal['s'] = 's'
-    W: Literal['w'] = 'w'
-    E: Literal['e'] = 'e'
-    NW: Literal['nw'] = 'nw'
-    SW: Literal['sw'] = 'sw'
-    NE: Literal['ne'] = 'ne'
-    SE: Literal['se'] = 'se'
-    NS: Literal['ns'] = 'ns'
-    EW: Literal['ew'] = 'ew'
-    NSEW: Literal['nsew'] = 'nsew'
-    CENTER: Literal['center'] = 'center'
-    
-    # -fill
-    NONE: Literal['none'] = 'none'
-    X: Literal['x'] = 'x'
-    Y: Literal['y'] = 'y'
-    BOTH: Literal['both'] = 'both'
-    
-    # -side
-    LEFT: Literal['left'] = 'left'
-    TOP: Literal['top'] = 'top'
-    RIGHT: Literal['right'] = 'right'
-    BOTTOM: Literal['bottom'] = 'bottom'
-    
-    # -relief
-    RAISED: Literal['raised'] = 'raised'
-    SUNKEN: Literal['sunken'] = 'sunken'
-    FLAT: Literal['flat'] = 'flat'
-    RIDGE: Literal['ridge'] = 'ridge'
-    GROOVE: Literal['groove'] = 'groove'
-    SOLID: Literal['solid'] = 'solid'
-    
-    # -orient
-    HORIZONTAL: Literal['horizontal'] = 'horizontal'
-    VERTICAL: Literal['vertical'] = 'vertical'
-    
-    # -tabs
-    NUMERIC: Literal['numeric'] = 'numeric'
-    
-    # -wrap
-    CHAR: Literal['char'] = 'char'
-    WORD: Literal['word'] = 'word'
-    
-    # -align
-    BASELINE: Literal['baseline'] = 'baseline'
-    
-    # -bordermode
-    INSIDE: Literal['inside'] = 'inside'
-    OUTSIDE: Literal['outside'] = 'outside'
-    
-    # Special tags, marks and insert positions
-    SEL: Literal['sel'] = 'sel'
-    SEL_FIRST: Literal['sel.first'] = 'sel.first'
-    SEL_LAST: Literal['sel.last'] = 'sel.last'
-    END: Literal['end'] = 'end'
-    INSERT: Literal['insert'] = 'insert'
-    CURRENT: Literal['current'] = 'current'
-    ANCHOR: Literal['anchor'] = 'anchor'
-    ALL: Literal['all'] = 'all'  # e.g. Canvas.delete(ALL)
-    
-    # Text widget and button states
-    NORMAL: Literal['normal'] = 'normal'
-    DISABLED: Literal['disabled'] = 'disabled'
-    ACTIVE: Literal['active'] = 'active'
-    # Canvas state
-    HIDDEN: Literal['hidden'] = 'hidden'
-    
-    # Menu item types
-    CASCADE: Literal['cascade'] = 'cascade'
-    CHECKBUTTON: Literal['checkbutton'] = 'checkbutton'
-    COMMAND: Literal['command'] = 'command'
-    RADIOBUTTON: Literal['radiobutton'] = 'radiobutton'
-    SEPARATOR: Literal['separator'] = 'separator'
-    
-    # Selection modes for list boxes
-    SINGLE: Literal['single'] = 'single'
-    BROWSE: Literal['browse'] = 'browse'
-    MULTIPLE: Literal['multiple'] = 'multiple'
-    EXTENDED: Literal['extended'] = 'extended'
-    
-    # Activestyle for list boxes
-    # NONE='none' is also valid
-    DOTBOX: Literal['dotbox'] = 'dotbox'
-    UNDERLINE: Literal['underline'] = 'underline'
-    
-    # Various canvas styles
-    PIESLICE: Literal['pieslice'] = 'pieslice'
-    CHORD: Literal['chord'] = 'chord'
-    ARC: Literal['arc'] = 'arc'
-    FIRST: Literal['first'] = 'first'
-    LAST: Literal['last'] = 'last'
-    BUTT: Literal['butt'] = 'butt'
-    PROJECTING: Literal['projecting'] = 'projecting'
-    ROUND: Literal['round'] = 'round'
-    BEVEL: Literal['bevel'] = 'bevel'
-    MITER: Literal['miter'] = 'miter'
-    
-    # Arguments to xview/yview
-    MOVETO: Literal['moveto'] = 'moveto'
-    SCROLL: Literal['scroll'] = 'scroll'
-    UNITS: Literal['units'] = 'units'
-    PAGES: Literal['pages'] = 'pages'
-
-
-ltk: Ltk = Ltk()
+    TkinterDnD = None
+    DND_FILES = None
 
 
 class FileTransferWindow:
@@ -215,9 +98,9 @@ class FileTransferWindow:
             BUTTON_BG_COLOR (str): Background colour for button widgets.
         """
         if theme_colours is not None:
-            theme_colors = theme_colours
+            theme_colors: dict[str, str] = theme_colours
         if not isinstance(theme_colors, dict):
-            theme_colors: dict[str, str] = {}  # type: ignore
+            theme_colors = {}
         self.parent_root = parent_root
         self.window: tk.Toplevel = tk.Toplevel(self.parent_root)
         self.window.withdraw()
@@ -259,7 +142,7 @@ class FileTransferWindow:
             
             # Top frame for speed display
             top_frame = tk.Frame(self.window, bg=self.BG_COLOR)
-            top_frame.pack(fill=ltk.X, padx=10, pady=5)
+            top_frame.pack(fill=tk.X, padx=10, pady=5)
             
             # Speed label in top right
             self.speed_label = tk.Label(
@@ -269,7 +152,7 @@ class FileTransferWindow:
                     fg=self.SPEED_LABEL_COLOR,
                     font=("Consolas", 10, "bold"),
             )
-            self.speed_label.pack(side=ltk.RIGHT)
+            self.speed_label.pack(side=tk.RIGHT)
             
             # Title label
             title_label = tk.Label(
@@ -279,25 +162,25 @@ class FileTransferWindow:
                     fg=self.FG_COLOR,
                     font=("Consolas", 12, "bold"),
             )
-            title_label.pack(side=ltk.LEFT)
+            title_label.pack(side=tk.LEFT)
             
             # Main frame for transfer list
             main_frame = tk.Frame(self.window, bg=self.BG_COLOR)
-            main_frame.pack(fill=ltk.BOTH, expand=True, padx=10, pady=5)
+            main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
             
             # Scrollable text area for transfer updates
             self.transfer_list = scrolledtext.ScrolledText(
                     main_frame,
-                    state=ltk.DISABLED,
-                    wrap=ltk.WORD,
+                    state=tk.DISABLED,
+                    wrap=tk.WORD,
                     height=20,
                     font=("Consolas", 9),
                     bg=self.TEXT_BG_COLOR,
                     fg=self.FG_COLOR,
                     insertbackground=self.FG_COLOR,
-                    relief=ltk.FLAT,
+                    relief=tk.FLAT,
             )
-            self.transfer_list.pack(fill=ltk.BOTH, expand=True)
+            self.transfer_list.pack(fill=tk.BOTH, expand=True)
             
             # Handle window closing
             self.window.protocol("WM_DELETE_WINDOW", self.hide_window)
@@ -319,11 +202,11 @@ class FileTransferWindow:
         self.create_window()
         
         if self.transfer_list:
-            self.transfer_list.config(state=ltk.NORMAL)
+            self.transfer_list.config(state=tk.NORMAL)
             timestamp = time.strftime("%H:%M:%S")
             self.transfer_list.insert(tk.END, f"[{timestamp}] {message}\n")
             self.transfer_list.see(tk.END)
-            self.transfer_list.config(state=ltk.DISABLED)
+            self.transfer_list.config(state=tk.DISABLED)
         
         # Show window if not visible
         if self.window.state() == 'withdrawn':
@@ -409,94 +292,94 @@ class DeadDropWindow:
     # noinspection PyMissingTypeHints
     def _entry(self, parent, show="", **kw):
         return tk.Entry(parent, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR,
-                        insertbackground=self.FG_COLOR, relief=ltk.FLAT, show=show, **kw)
+                        insertbackground=self.FG_COLOR, relief=tk.FLAT, show=show, **kw)
     
     # noinspection PyMissingTypeHints
     def _button(self, parent, text, command, **kw):
         return tk.Button(parent, text=text, command=command,
-                         bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT, **kw)
+                         bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT, **kw)
     
     def _build_ui(self) -> None:
         pad = {"padx": 10, "pady": 4}
         
         # --- Tab bar (Upload / Check / Download) ---
         tab_frame = tk.Frame(self.window, bg=self.BG_COLOR)
-        tab_frame.pack(fill=ltk.X, padx=10, pady=(10, 0))
+        tab_frame.pack(fill=tk.X, padx=10, pady=(10, 0))
         
         self._tab_frames: dict[str, tk.Frame] = {}
         self._tab_buttons: dict[str, tk.Button] = {}
         
         for tab_name in ("Upload", "Check", "Download"):
             btn = self._button(tab_frame, tab_name, lambda n=tab_name: self._show_tab(n))
-            btn.pack(side=ltk.LEFT, padx=(0, 4))
+            btn.pack(side=tk.LEFT, padx=(0, 4))
             self._tab_buttons[tab_name] = btn
         
         # --- Content area ---
         content = tk.Frame(self.window, bg=self.BG_COLOR)
-        content.pack(fill=ltk.BOTH, expand=True, padx=10, pady=6)
+        content.pack(fill=tk.BOTH, expand=True, padx=10, pady=6)
         
         # Upload tab
         upload_frame = tk.Frame(content, bg=self.BG_COLOR)
         self._tab_frames["Upload"] = upload_frame
         
-        self._label(upload_frame, "Name:").grid(row=0, column=0, sticky=ltk.W, **pad)
+        self._label(upload_frame, "Name:").grid(row=0, column=0, sticky=tk.W, **pad)
         self.upload_name = self._entry(upload_frame, width=30)
-        self.upload_name.grid(row=0, column=1, sticky=ltk.W, **pad)
+        self.upload_name.grid(row=0, column=1, sticky=tk.W, **pad)
         
-        self._label(upload_frame, "Password:").grid(row=1, column=0, sticky=ltk.W, **pad)
+        self._label(upload_frame, "Password:").grid(row=1, column=0, sticky=tk.W, **pad)
         self.upload_password = self._entry(upload_frame, show="*", width=30)
-        self.upload_password.grid(row=1, column=1, sticky=ltk.W, **pad)
+        self.upload_password.grid(row=1, column=1, sticky=tk.W, **pad)
         
-        self._label(upload_frame, "File:").grid(row=2, column=0, sticky=ltk.W, **pad)
+        self._label(upload_frame, "File:").grid(row=2, column=0, sticky=tk.W, **pad)
         file_row: tk.Frame = tk.Frame(upload_frame, bg=self.BG_COLOR)
-        file_row.grid(row=2, column=1, sticky=ltk.W, **pad)  # type: ignore
+        file_row.grid(row=2, column=1, sticky=tk.W, **pad)  # type: ignore
         self.upload_file_var = tk.StringVar()
-        self._entry(upload_frame, width=22, textvariable=self.upload_file_var).grid(row=2, column=1, sticky=ltk.W, **pad)
+        self._entry(upload_frame, width=22, textvariable=self.upload_file_var).grid(row=2, column=1, sticky=tk.W, **pad)
         self._button(upload_frame, "Browse…", self._browse_upload_file).grid(row=2, column=2, **pad)
         
-        self._button(upload_frame, "Upload", self._do_upload).grid(row=3, column=1, sticky=ltk.W, **pad)
+        self._button(upload_frame, "Upload", self._do_upload).grid(row=3, column=1, sticky=tk.W, **pad)
         
         # Check tab
         check_frame = tk.Frame(content, bg=self.BG_COLOR)
         self._tab_frames["Check"] = check_frame
         
-        self._label(check_frame, "Name:").grid(row=0, column=0, sticky=ltk.W, **pad)
+        self._label(check_frame, "Name:").grid(row=0, column=0, sticky=tk.W, **pad)
         self.check_name = self._entry(check_frame, width=30)
-        self.check_name.grid(row=0, column=1, sticky=ltk.W, **pad)
+        self.check_name.grid(row=0, column=1, sticky=tk.W, **pad)
         
-        self._button(check_frame, "Check", self._do_check).grid(row=1, column=1, sticky=ltk.W, **pad)
+        self._button(check_frame, "Check", self._do_check).grid(row=1, column=1, sticky=tk.W, **pad)
         
         # Download tab
         download_frame = tk.Frame(content, bg=self.BG_COLOR)
         self._tab_frames["Download"] = download_frame
         
-        self._label(download_frame, "Name:").grid(row=0, column=0, sticky=ltk.W, **pad)
+        self._label(download_frame, "Name:").grid(row=0, column=0, sticky=tk.W, **pad)
         self.download_name = self._entry(download_frame, width=30)
-        self.download_name.grid(row=0, column=1, sticky=ltk.W, **pad)
+        self.download_name.grid(row=0, column=1, sticky=tk.W, **pad)
         
-        self._label(download_frame, "Password:").grid(row=1, column=0, sticky=ltk.W, **pad)
+        self._label(download_frame, "Password:").grid(row=1, column=0, sticky=tk.W, **pad)
         self.download_password = self._entry(download_frame, show="*", width=30)
-        self.download_password.grid(row=1, column=1, sticky=ltk.W, **pad)
+        self.download_password.grid(row=1, column=1, sticky=tk.W, **pad)
         
-        self._button(download_frame, "Download", self._do_download).grid(row=2, column=1, sticky=ltk.W, **pad)
+        self._button(download_frame, "Download", self._do_download).grid(row=2, column=1, sticky=tk.W, **pad)
         
         # --- Status / log area ---
-        self._label(self.window, "Status:").pack(anchor=ltk.W, padx=10)
+        self._label(self.window, "Status:").pack(anchor=tk.W, padx=10)
         self.status_text = scrolledtext.ScrolledText(
-                self.window, height=6, state=ltk.DISABLED, wrap=ltk.WORD,
+                self.window, height=6, state=tk.DISABLED, wrap=tk.WORD,
                 font=("Consolas", 9), bg=self.TEXT_BG_COLOR, fg=self.FG_COLOR,
-                relief=ltk.FLAT,
+                relief=tk.FLAT,
         )
-        self.status_text.pack(fill=ltk.X, padx=10, pady=(0, 10))
+        self.status_text.pack(fill=tk.X, padx=10, pady=(0, 10))
         
         self._show_tab("Upload")
     
     def _show_tab(self, name: str):
         for tab_name, frame in self._tab_frames.items():
             frame.pack_forget()
-        self._tab_frames[name].pack(fill=ltk.BOTH, expand=True)
+        self._tab_frames[name].pack(fill=tk.BOTH, expand=True)
         for tab_name, btn in self._tab_buttons.items():
-            btn.config(relief=ltk.FLAT if tab_name != name else ltk.SUNKEN)
+            btn.config(relief=tk.FLAT if tab_name != name else tk.SUNKEN)
     
     def _browse_upload_file(self) -> None:
         path = filedialog.askopenfilename()
@@ -504,11 +387,11 @@ class DeadDropWindow:
             self.upload_file_var.set(path)
     
     def log(self, message: str):
-        self.status_text.config(state=ltk.NORMAL)
+        self.status_text.config(state=tk.NORMAL)
         timestamp = time.strftime("%H:%M:%S")
         self.status_text.insert(tk.END, f"[{timestamp}] {message}\n")
         self.status_text.see(tk.END)
-        self.status_text.config(state=ltk.DISABLED)
+        self.status_text.config(state=tk.DISABLED)
     
     # --- Actions (run on background thread so UI stays responsive) ---
     
@@ -815,16 +698,16 @@ class GUI(UIBase):
                     widget.configure(bg=self.BG_COLOR, fg=self.FG_COLOR)  # type: ignore[call-arg]
                 elif cls == "Button":
                     widget.configure(bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR,  # type: ignore[call-arg]
-                                     activebackground=self.BUTTON_ACTIVE_BG)
+                                     activebackground=self.BUTTON_ACTIVE_BG)  # type: ignore[call-arg]
                 elif cls == "Entry":
                     widget.configure(bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR)  # type: ignore[call-arg]
                 elif cls in ("Text", "ScrolledText"):
                     widget.configure(bg=self.TEXT_BG_COLOR, fg=self.FG_COLOR)  # type: ignore[call-arg]
                 elif cls == "Checkbutton":
                     widget.configure(bg=self.BG_COLOR, fg=self.FG_COLOR,  # type: ignore[call-arg]
-                                     selectcolor=self.BUTTON_BG_COLOR,
-                                     activebackground=self.BUTTON_ACTIVE_BG,
-                                     activeforeground=self.FG_COLOR)
+                                     selectcolor=self.BUTTON_BG_COLOR,  # type: ignore[call-arg]
+                                     activebackground=self.BUTTON_ACTIVE_BG,  # type: ignore[call-arg]
+                                     activeforeground=self.FG_COLOR)  # type: ignore[call-arg]
             except tk.TclError:
                 pass
             for child in widget.winfo_children():
@@ -883,55 +766,55 @@ class GUI(UIBase):
     # noinspection PyAttributeOutsideInit
     def create_widgets(self) -> None:
         main_frame = tk.Frame(self.root, bg=self.BG_COLOR)
-        main_frame.pack(fill=ltk.BOTH, expand=True, padx=10, pady=10)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
         conn_frame = tk.Frame(main_frame, bg=self.BG_COLOR)
-        conn_frame.pack(fill=ltk.X, pady=(0, 10))
+        conn_frame.pack(fill=tk.X, pady=(0, 10))
         
-        tk.Label(conn_frame, text="Host:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=ltk.LEFT)
-        self.host_entry = tk.Entry(conn_frame, width=15, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT)
-        self.host_entry.pack(side=ltk.LEFT, padx=(5, 10))
+        tk.Label(conn_frame, text="Host:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=tk.LEFT)
+        self.host_entry = tk.Entry(conn_frame, width=15, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT)
+        self.host_entry.pack(side=tk.LEFT, padx=(5, 10))
         self.host_entry.insert(0, "localhost")
         
-        tk.Label(conn_frame, text="Port:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=ltk.LEFT)
-        self.port_entry = tk.Entry(conn_frame, width=8, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT)
-        self.port_entry.pack(side=ltk.LEFT, padx=(5, 10))
+        tk.Label(conn_frame, text="Port:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=tk.LEFT)
+        self.port_entry = tk.Entry(conn_frame, width=8, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT)
+        self.port_entry.pack(side=tk.LEFT, padx=(5, 10))
         self.port_entry.insert(0, "16384")
         
         self.connect_btn = tk.Button(conn_frame, text="Connect", command=self.toggle_connection,
-                                     bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT)
-        self.connect_btn.pack(side=ltk.LEFT, padx=(10, 0))
+                                     bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT)
+        self.connect_btn.pack(side=tk.LEFT, padx=(10, 0))
         
         self.config_btn = tk.Button(conn_frame, text="Config", command=self.open_config_dialog,
-                                    bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT)
-        self.config_btn.pack(side=ltk.LEFT, padx=(10, 0))
+                                    bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT)
+        self.config_btn.pack(side=tk.LEFT, padx=(10, 0))
         
         if PYAUDIO_AVAILABLE:
             self.voice_call_btn = tk.Button(conn_frame, text="Voice Call", command=self.start_call,
-                                            bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT)
-            self.voice_call_btn.pack(side=ltk.LEFT, padx=(10, 0))
+                                            bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT)
+            self.voice_call_btn.pack(side=tk.LEFT, padx=(10, 0))
             self.mute_btn = tk.Button(conn_frame, text="Mute", command=self.toggle_mute,
-                                      bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT)
+                                      bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT)
         
         self.status_label = tk.Label(conn_frame, text="Not Connected", bg=self.BG_COLOR,
                                      fg=self.theme_colors.get("STATUS_NOT_CONNECTED", "#ff6b6b"),
                                      font=("Consolas", 9, "bold"))
-        self.status_label.pack(side=ltk.RIGHT, padx=(10, 0))
+        self.status_label.pack(side=tk.RIGHT, padx=(10, 0))
         
-        self.chat_display = scrolledtext.ScrolledText(main_frame, state=ltk.DISABLED, wrap=ltk.WORD, height=20,
+        self.chat_display = scrolledtext.ScrolledText(main_frame, state=tk.DISABLED, wrap=tk.WORD, height=20,
                                                       font=("Consolas", 10), bg=self.TEXT_BG_COLOR, fg=self.FG_COLOR,
-                                                      relief=ltk.FLAT)
-        self.chat_display.pack(fill=ltk.BOTH, expand=True, pady=(0, 10))
+                                                      relief=tk.FLAT)
+        self.chat_display.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
         if TKINTERDND2_AVAILABLE:
             self.chat_display.drop_target_register(DND_FILES)  # type: ignore[attr-defined]
             self.chat_display.dnd_bind('<<Drop>>', self.handle_drop)  # type: ignore[attr-defined]
         
         self.input_frame = tk.Frame(main_frame, bg=self.BG_COLOR)
-        self.input_frame.pack(fill=ltk.X)
+        self.input_frame.pack(fill=tk.X)
         
         self.message_entry = tk.Text(self.input_frame, height=1, font=("Consolas", 10), bg=self.ENTRY_BG_COLOR,
-                                     fg=self.FG_COLOR, width=15, relief=ltk.FLAT, wrap=ltk.NONE)
-        self.message_entry.pack(side=ltk.LEFT, fill=ltk.X, expand=True, padx=(0, 10))
+                                     fg=self.FG_COLOR, width=15, relief=tk.FLAT, wrap=tk.NONE)
+        self.message_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         self.message_entry.tag_configure("misspelled", underline=True,
                                          underlinefg=self.theme_colors.get("SPELLCHECK_ERROR_COLOR", "red"))
         
@@ -942,16 +825,16 @@ class GUI(UIBase):
         self.message_entry.bind("<Button-3>", self.show_spellcheck_menu)
         
         self.send_btn = tk.Button(self.input_frame, text="Send", command=self.send_message,
-                                  bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT)
-        self.send_btn.pack(side=ltk.LEFT)
+                                  bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT)
+        self.send_btn.pack(side=tk.LEFT)
         
         self.send_file_btn = tk.Button(self.input_frame, text="📁", command=self.on_send_file_click,
-                                       bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT)
-        self.send_file_btn.pack(side=ltk.LEFT, padx=(5, 0))
+                                       bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT)
+        self.send_file_btn.pack(side=tk.LEFT, padx=(5, 0))
         
         self.deaddrop_btn = tk.Button(self.input_frame, text="Dead Drop", command=self.open_deaddrop_window,
-                                      bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT)
-        self.deaddrop_btn.pack(side=ltk.LEFT, padx=(5, 0))
+                                      bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT)
+        self.deaddrop_btn.pack(side=tk.LEFT, padx=(5, 0))
     
     # --- UIBase implementations ---
     def display_regular_message(self, message: str, nickname: str | None = None) -> None:
@@ -961,9 +844,20 @@ class GUI(UIBase):
             self.play_notification_sound()
             self.show_sys_notification(f"New message from {nick}")
     
-    def display_error_message(self, message: str) -> None:
-        self.on_tk_thread(self._append_to_chat, f"ERROR: {message}")
-        self.on_tk_thread(messagebox.showerror, "Error", message)
+    def on_error(
+            self,
+            code: int,
+            severity: Severity,
+            context: dict[str, Any] | None = None,
+    ) -> None:
+        desc = describe(code)
+        ctx = f"\n\n{context}" if context else ""
+        line = f"[{severity.name}] {format_code(code)}: {desc}"
+        self.on_tk_thread(self._append_to_chat, line)
+        if severity >= Severity.ERROR:
+            self.on_tk_thread(messagebox.showerror, f"Error {format_code(code)}", f"{desc}{ctx}")
+        elif severity == Severity.WARNING:
+            self.on_tk_thread(messagebox.showwarning, f"Warning {format_code(code)}", f"{desc}{ctx}")
     
     def display_system_message(self, message: str) -> None:
         self.on_tk_thread(self._append_to_chat, f"SYSTEM: {message}")
@@ -1103,22 +997,22 @@ class GUI(UIBase):
         self.on_tk_thread(self._append_to_chat, f"File transfer complete: {output_path}")
     
     def _append_to_chat(self, text: str, is_message: bool = False, show_time: bool = True) -> None:
-        self.chat_display.config(state=ltk.NORMAL)
+        self.chat_display.config(state=tk.NORMAL)
         timestamp = time.strftime("[%H:%M:%S] ") if show_time else ""
         
         if is_message:
             msg_id = f"msg_{int(time.time() * 1000)}"
-            self.chat_display.insert(ltk.END, timestamp, "time")
-            self.chat_display.insert(ltk.END, f"{text}\n", msg_id)
+            self.chat_display.insert(tk.END, timestamp, "time")
+            self.chat_display.insert(tk.END, f"{text}\n", msg_id)
             if self.ephemeral_mode != "OFF":
                 # Handle ephemeral timing if needed
                 pass
         else:
-            self.chat_display.insert(ltk.END, f"{timestamp}{text}\n")
+            self.chat_display.insert(tk.END, f"{timestamp}{text}\n")
         
         self.chat_display.tag_configure("time", foreground=self.theme_colors.get("MESSAGE_TIME_COLOR", "#888888"))
-        self.chat_display.see(ltk.END)
-        self.chat_display.config(state=ltk.DISABLED)
+        self.chat_display.see(tk.END)
+        self.chat_display.config(state=tk.DISABLED)
     
     def _update_status(self, status_text: str, color: str = "") -> None:
         self.status_label.config(text=status_text)
@@ -1146,7 +1040,7 @@ class GUI(UIBase):
             if isinstance(event.state, int) and event.state & 0x1:  # Shift pressed
                 return ""
         
-        text = self.message_entry.get("1.0", ltk.END).strip()
+        text = self.message_entry.get("1.0", tk.END).strip()
         if not text or not self.client:
             return "break"
         
@@ -1157,24 +1051,24 @@ class GUI(UIBase):
             counter = self.client.next_message_counter
             tag_id = f"sent_{counter}"
             
-            self.chat_display.config(state=ltk.NORMAL)
+            self.chat_display.config(state=tk.NORMAL)
             timestamp = time.strftime("[%H:%M:%S] ")
-            self.chat_display.insert(ltk.END, timestamp, "time")
+            self.chat_display.insert(tk.END, timestamp, "time")
             nick = self.client.own_nickname
-            self.chat_display.insert(ltk.END, f"{nick}: ", "own_nick")
-            self.chat_display.insert(ltk.END, f"{text} ", tag_id)
-            self.chat_display.insert(ltk.END, "○\n", f"status_{counter}")
+            self.chat_display.insert(tk.END, f"{nick}: ", "own_nick")
+            self.chat_display.insert(tk.END, f"{text} ", tag_id)
+            self.chat_display.insert(tk.END, "○\n", f"status_{counter}")
             
             self.chat_display.tag_configure("own_nick", foreground=self.theme_colors.get("MESSAGE_NICKNAME_COLOR", "#569cd6"))
             self.chat_display.tag_configure(f"status_{counter}", foreground=self.theme_colors.get("DELIVERY_PENDING_COLOR", "#888888"))
-            self.chat_display.see(ltk.END)
-            self.chat_display.config(state=ltk.DISABLED)
+            self.chat_display.see(tk.END)
+            self.chat_display.config(state=tk.DISABLED)
             
             self.sent_messages[counter] = f"status_{counter}"
             
             threading.Thread(target=self.client.send_message, args=(text,), daemon=True).start()
         
-        self.message_entry.delete("1.0", ltk.END)
+        self.message_entry.delete("1.0", tk.END)
         return "break"
     
     def handle_command(self, text: str) -> None:
@@ -1211,14 +1105,14 @@ class GUI(UIBase):
     def update_message_delivery_status(self, counter: int) -> None:
         tag = self.sent_messages.get(counter)
         if tag:
-            self.chat_display.config(state=ltk.NORMAL)
+            self.chat_display.config(state=tk.NORMAL)
             # Find the text of the tag
             ranges = self.chat_display.tag_ranges(tag)
             if ranges:
                 self.chat_display.delete(ranges[0], ranges[1])
                 self.chat_display.insert(ranges[0], "●\n", tag)
                 self.chat_display.tag_configure(tag, foreground=self.theme_colors.get("DELIVERY_CONFIRMED_COLOR", "#4CAF50"))
-            self.chat_display.config(state=ltk.DISABLED)
+            self.chat_display.config(state=tk.DISABLED)
     
     def on_send_file_click(self, event=None) -> None:
         file_path = filedialog.askopenfilename()
@@ -1255,7 +1149,7 @@ class GUI(UIBase):
         words = re.findall(r"\w+", text)
         
         # Remove old tags
-        self.message_entry.tag_remove("misspelled", "1.0", ltk.END)
+        self.message_entry.tag_remove("misspelled", "1.0", tk.END)
         self.misspelled_tags.clear()
         
         if not words:
@@ -1267,7 +1161,7 @@ class GUI(UIBase):
             start_pos = "1.0"
             while True:
                 # search for exact word
-                start_pos = self.message_entry.search(rf"\y{re.escape(word)}\y", start_pos, stopindex=ltk.END, regexp=True)
+                start_pos = self.message_entry.search(rf"\y{re.escape(word)}\y", start_pos, stopindex=tk.END, regexp=True)
                 if not start_pos:
                     break
                 
@@ -1298,7 +1192,7 @@ class GUI(UIBase):
         self.config_window.resizable(False, False)
         
         container = tk.Frame(self.config_window, bg=self.BG_COLOR)
-        container.pack(padx=10, pady=10, fill=ltk.BOTH, expand=True)
+        container.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
         
         # Tk variables reflecting current settings
         self.var_sound_notif = tk.BooleanVar(value=self.notification_enabled)
@@ -1330,8 +1224,8 @@ class GUI(UIBase):
         
         # Theme selector
         theme_frame = tk.Frame(container, bg=self.BG_COLOR)
-        theme_frame.pack(fill=ltk.X, pady=(8, 2))
-        tk.Label(theme_frame, text="Theme:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=ltk.LEFT)
+        theme_frame.pack(fill=tk.X, pady=(8, 2))
+        tk.Label(theme_frame, text="Theme:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=tk.LEFT)
         
         available_themes = get_available_themes()
         self.var_theme = tk.StringVar(value=self.current_theme_name if self.current_theme_name in available_themes else (available_themes[0] if available_themes else ""))
@@ -1341,16 +1235,16 @@ class GUI(UIBase):
                                        command=self._on_theme_selected)
             theme_menu.configure(bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR,
                                  activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
-                                 highlightthickness=0, relief=ltk.FLAT)
+                                 highlightthickness=0, relief=tk.FLAT)
             theme_menu["menu"].configure(bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR)
-            theme_menu.pack(side=ltk.LEFT, padx=(5, 0))
+            theme_menu.pack(side=tk.LEFT, padx=(5, 0))
         else:
             tk.Label(theme_frame, text="No themes found in /themes",
-                     bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=ltk.LEFT, padx=(5, 0))
+                     bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=tk.LEFT, padx=(5, 0))
         
         # Close button
         btn_close = tk.Button(container, text="Close", command=self.config_window.destroy,
-                              bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT)
+                              bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT)
         btn_close.pack(pady=(10, 0))
     
     def _on_theme_selected(self, theme_name: tk.StringVar) -> None:
@@ -1387,7 +1281,7 @@ class GUI(UIBase):
     def show_mute_button(self) -> None:
         """Pack the mute button into the toolbar."""
         if PYAUDIO_AVAILABLE and hasattr(self, "mute_btn"):
-            self.mute_btn.pack(side=ltk.LEFT, padx=(5, 0))
+            self.mute_btn.pack(side=tk.LEFT, padx=(5, 0))
     
     def hide_mute_button(self) -> None:
         """Remove the mute button from the toolbar."""

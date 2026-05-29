@@ -7,6 +7,7 @@ import struct
 from unittest.mock import MagicMock
 
 import pytest
+from protocol.errors import ErrorCode, ChatError
 
 from protocol.constants import MAX_MESSAGE_SIZE
 from utils.network_utils import encode_send_message, receive_message, send_message
@@ -54,14 +55,14 @@ class TestReceiveMessage:
     
     def test_too_large_raises(self) -> None:
         sock = _FakeSock(struct.pack("!I", MAX_MESSAGE_SIZE + 1))
-        with pytest.raises(ValueError):
+        with pytest.raises(ChatError):
             receive_message(sock)
     
     def test_closed_in_length(self) -> None:
-        with pytest.raises(ConnectionError):
+        with pytest.raises(ChatError):
             receive_message(_FakeSock(b""))
     
     def test_closed_mid_payload(self) -> None:
         sock = _FakeSock(struct.pack("!I", 10) + b"only5")
-        with pytest.raises(ConnectionError):
+        with pytest.raises(ChatError):
             receive_message(sock)

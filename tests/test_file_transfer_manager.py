@@ -48,7 +48,7 @@ class TestSend:
         c = _make_client()
         c._verification_complete = False
         c._file_transfer.send("/no/such/file")
-        c.ui.display_error_message.assert_called_once()
+        c.ui.on_error.assert_called_once()
         c._protocol.queue_json.assert_not_called()
     
     def test_missing_file_reports_error(self, tmp_path: Path) -> None:
@@ -56,7 +56,7 @@ class TestSend:
         c._verification_complete = True
         c._peer_key_verified = True
         c._file_transfer.send(tmp_path / "missing.txt")
-        c.ui.display_error_message.assert_called_once()
+        c.ui.on_error.assert_called_once()
     
     def test_happy_path_queues_metadata_and_tracks(self, tmp_path: Path) -> None:
         c = _make_client()
@@ -125,7 +125,7 @@ class TestHandleMetadata:
     def test_malformed_metadata_errors(self) -> None:
         c = _make_client()
         c._file_transfer.handle_metadata({"type": MessageType.FILE_METADATA})  # missing fields
-        c.ui.display_error_message.assert_called_once()
+        c.ui.on_error.assert_called_once()
 
 
 class TestHandleAcceptReject:
@@ -138,7 +138,7 @@ class TestHandleAcceptReject:
     def test_accept_missing_id(self) -> None:
         c = _make_client()
         c._file_transfer.handle_accept({})
-        c.ui.display_error_message.assert_called_once()
+        c.ui.on_error.assert_called_once()
     
     def test_accept_starts_sender_thread(self, tmp_path: Path, monkeypatch) -> None:
         c = _make_client()
@@ -177,12 +177,12 @@ class TestHandleAcceptReject:
     def test_reject_unknown_errors(self) -> None:
         c = _make_client()
         c._file_transfer.handle_reject({"transfer_id": "unknown"})
-        c.ui.display_error_message.assert_called_once()
+        c.ui.on_error.assert_called_once()
     
     def test_reject_missing_id(self) -> None:
         c = _make_client()
         c._file_transfer.handle_reject({})
-        c.ui.display_error_message.assert_called_once()
+        c.ui.on_error.assert_called_once()
 
 
 class TestHandleComplete:
@@ -201,12 +201,12 @@ class TestHandleComplete:
     def test_unknown_id_errors(self) -> None:
         c = _make_client()
         c._file_transfer.handle_complete({"transfer_id": "x"})
-        c.ui.display_error_message.assert_called_once()
+        c.ui.on_error.assert_called_once()
     
     def test_missing_id_errors(self) -> None:
         c = _make_client()
         c._file_transfer.handle_complete({})
-        c.ui.display_error_message.assert_called_once()
+        c.ui.on_error.assert_called_once()
 
 
 class TestHandleChunkBinary:
@@ -215,7 +215,7 @@ class TestHandleChunkBinary:
         c._file_transfer.handle_chunk_binary({
             "transfer_id": "missing", "chunk_index": 0, "chunk_data": b"x",
         })
-        c.ui.display_error_message.assert_called_once()
+        c.ui.on_error.assert_called_once()
     
     def test_single_chunk_reassembles_and_sends_complete(self, tmp_path: Path, monkeypatch) -> None:
         monkeypatch.chdir(tmp_path)

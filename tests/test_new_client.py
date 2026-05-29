@@ -161,7 +161,7 @@ class TestSendMessage:
         c = _make_client()
         result = c.send_message("hello")
         assert result is False
-        c.ui.display_error_message.assert_called()
+        c.ui.on_error.assert_called()
     
     def test_send_message_before_encryption_ready_returns_false(self) -> None:
         c = _make_client()
@@ -215,7 +215,7 @@ class TestHandleMessageRouting:
     def test_routes_error_message(self) -> None:
         c = _make_client()
         c.handle_message(self._make_json_msg(MessageType.ERROR, {"error": "oops"}))
-        c.ui.display_error_message.assert_called()
+        c.ui.on_error.assert_called()
     
     def test_routes_server_full(self) -> None:
         c = _make_client()
@@ -226,7 +226,7 @@ class TestHandleMessageRouting:
     def test_encrypted_before_ke_shows_error(self) -> None:
         c = _make_client()
         c.handle_message(self._make_json_msg(MessageType.ENCRYPTED_MESSAGE))
-        c.ui.display_error_message.assert_called()
+        c.ui.on_error.assert_called()
     
     def test_invalid_json_tries_binary_chunk(self) -> None:
         c = _make_client()
@@ -240,7 +240,7 @@ class TestHandleMessageRouting:
         c = _make_client()
         with patch.object(c, "handle_maybe_binary_chunk", return_value=False):
             c.handle_message(b"not json")
-        c.ui.display_error_message.assert_called()
+        c.ui.on_error.assert_called()
     
     def test_unexpected_outer_field_drops_message(self) -> None:
         c = _make_client()
@@ -254,7 +254,7 @@ class TestHandleMessageRouting:
         with patch.object(c._key_exchange, "handle_dsa_random") as mock_ke:
             c.handle_message(msg)
         mock_ke.assert_not_called()
-        c.ui.display_error_message.assert_called()
+        c.ui.on_error.assert_called()
     
     def test_routes_ke_verification(self) -> None:
         c = _make_client()
@@ -291,7 +291,7 @@ class TestRateLimiting:
                 c.handle_message(self._make_json_msg(MessageType.KEEP_ALIVE))
         # 7th should be rate-limited
         c.handle_message(self._make_json_msg(MessageType.KEEP_ALIVE))
-        c.ui.display_error_message.assert_called()
+        c.ui.on_error.assert_called()
     
     def test_bypass_rate_limits_skips_check(self) -> None:
         c = _make_client()
@@ -335,7 +335,7 @@ class TestHandleEncryptedMessage:
     def test_bad_ciphertext_shows_error(self) -> None:
         _, c = self._setup_pair()
         c.handle_encrypted_message(b"not valid ciphertext at all")
-        c.ui.display_error_message.assert_called()
+        c.ui.on_error.assert_called()
     
     def test_delivery_confirmation_calls_ui(self) -> None:
         proto_a, c = self._setup_pair()
@@ -373,7 +373,7 @@ class TestHandleEncryptedMessage:
         )
         ct = proto_a.encrypt_message(inner)
         c.handle_encrypted_message(ct)
-        c.ui.display_error_message.assert_called()
+        c.ui.on_error.assert_called()
         c.ui.display_regular_message.assert_not_called()
     
     # ---------------------------------------------------------------------------

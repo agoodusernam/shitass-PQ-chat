@@ -4,6 +4,7 @@ import struct
 from typing import Any
 
 from protocol.constants import MAX_MESSAGE_SIZE
+from protocol.errors import ErrorCode, ConnectionClosedError, TransportError
 
 
 def encode_send_message(sock: socket.socket, data: Any) -> str | None:
@@ -28,19 +29,19 @@ def receive_message(sock: Any, max_size: int = MAX_MESSAGE_SIZE) -> bytes:
     while len(length_data) < 4:
         chunk = sock.recv(4 - len(length_data))
         if not chunk:
-            raise ConnectionError("Connection closed")
+            raise ConnectionClosedError()
         length_data += chunk
     
     length = struct.unpack("!I", length_data)[0]
     if length > max_size:
-        raise ValueError(f"Message too large (max {max_size} bytes)")
+        raise TransportError(code=ErrorCode.FRAME_TOO_LARGE, context={"size": length, "max": max_size})
     
     # Then receive the message
     message_data = b""
     while len(message_data) < length:
         chunk = sock.recv(length - len(message_data))
         if not chunk:
-            raise ConnectionError("Connection closed")
+            raise ConnectionClosedError()
         message_data += chunk
     
     return message_data

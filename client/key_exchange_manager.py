@@ -10,8 +10,16 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from protocol import parse_messages, types
+from protocol import parse_messages
 from protocol import create_messages
+from protocol.errors import (
+    ErrorCode,
+    ChatError,
+    CryptoError,
+    KeyExchangeError,
+    MessageError,
+    RekeyError,
+)
 from protocol.file_handler import ProtocolFileHandler
 from SecureChatABCs.protocol_base import ProtocolBase
 from SecureChatABCs.ui_base import UIBase
@@ -85,7 +93,7 @@ class KeyExchangeManager:
         if self._protocol.ke_step == 1:
             # Client A — receiving Client B's verification (step 15)
             if not self._protocol.process_ke_verification(message_data):
-                self._ui.display_error_message("Key exchange verification failed!")
+                self._client.raise_to_ui(KeyExchangeError(code=ErrorCode.KE_VERIFICATION))
                 return
             msg = self._protocol.create_ke_verification()
             self._client.send_raw(msg)
@@ -94,7 +102,7 @@ class KeyExchangeManager:
         elif self._protocol.ke_step == 2:
             # Client B — receiving Client A's verification (step 16)
             if not self._protocol.process_ke_verification(message_data):
-                self._ui.display_error_message("Key exchange verification failed!")
+                self._client.raise_to_ui(KeyExchangeError(code=ErrorCode.KE_VERIFICATION))
                 return
             self._ui.display_system_message("Key exchange completed successfully.")
             self._on_complete()
@@ -128,8 +136,8 @@ class KeyExchangeManager:
         """Process peer's key verification result and notify UI."""
         try:
             peer_verified = parse_messages.process_key_verification_message(message_data)
-        except types.DecodeError as e:
-            self._ui.display_error_message(str(e))
+        except CryptoError as e:
+            self._client.raise_to_ui(MessageError(code=ErrorCode.MESSAGE_FIELD_MISSING, context={"frame": "key_verification"}, cause=e))
             return
         
         self._client._peer_verified_own_key = peer_verified
@@ -139,7 +147,7 @@ class KeyExchangeManager:
     
     def initiate_rekey(self) -> None:
         if not self._client.key_exchange_complete:
-            self._ui.display_error_message("Cannot rekey - key exchange not complete")
+            self._client.raise_to_ui(KeyExchangeError(code=ErrorCode.KE_STATE, context={"reason": "ke_not_complete", "op": "rekey"}))
             return
         if self._protocol.rekey_in_progress:
             self._ui.display_system_message("Rekey already in progress.")
@@ -176,7 +184,7 @@ class KeyExchangeManager:
         try:
             action = inner["action"]
         except KeyError:
-            self._ui.display_error_message("Dropped rekey message without action. Invalid JSON.")
+            self._client.raise_to_ui(MessageError(code=ErrorCode.MESSAGE_FIELD_MISSING, context={"frame": "rekey", "field": "action"}))
             return
         match action:
             case "dsa_random":
@@ -196,8 +204,9 @@ class KeyExchangeManager:
                     self._ui.display_system_message("Rekey initiated by peer.")
                 try:
                     response = self._protocol.process_rekey_dsa_random(inner)
-                except ValueError as e:
+                except ChatError as e:
                     self._protocol.reset_rekey(str(e))
+                    self._client.raise_to_ui(e)
                     return
                 if response is not None:
                     self._protocol.queue_json(response)
@@ -206,8 +215,9 @@ class KeyExchangeManager:
                 # B receives A's signed ML-KEM pubkey
                 try:
                     response = self._protocol.process_rekey_mlkem_pubkey(inner)
-                except ValueError as e:
+                except ChatError as e:
                     self._protocol.reset_rekey(str(e))
+                    self._client.raise_to_ui(e)
                     return
                 self._protocol.queue_json(response)
             
@@ -215,8 +225,9 @@ class KeyExchangeManager:
                 # A receives B's ML-KEM ciphertext + encrypted pubkeys
                 try:
                     response = self._protocol.process_rekey_mlkem_ct_keys(inner)
-                except ValueError as e:
+                except ChatError as e:
                     self._protocol.reset_rekey(str(e))
+                    self._client.raise_to_ui(e)
                     return
                 self._protocol.queue_json(response)  # x25519_hqc_ct
                 self._protocol.queue_json(self._protocol.create_rekey_verification())  # A's verification
@@ -225,8 +236,9 @@ class KeyExchangeManager:
                 # B receives A's X25519 pubkey + encrypted HQC ciphertext; pending keys computed
                 try:
                     self._protocol.process_rekey_x25519_hqc_ct(inner)
-                except ValueError as e:
+                except ChatError as e:
                     self._protocol.reset_rekey(str(e))
+                    self._client.raise_to_ui(e)
                     return
                 # Send verification under old keys, then activate — ensures A can decrypt B's proof.
                 # on_rekey_complete deferred until B also verifies A's proof (in "verification" case).
@@ -238,12 +250,13 @@ class KeyExchangeManager:
                 # process_rekey_verification falls back to active key material when pending is gone.
                 try:
                     ok = self._protocol.process_rekey_verification(inner)
-                except ValueError as e:
+                except ChatError as e:
                     self._protocol.reset_rekey(str(e))
+                    self._client.raise_to_ui(e)
                     return
                 if not ok:
                     self._protocol.reset_rekey("Rekey verification failed — possible MitM.")
-                    self._ui.display_error_message("Rekey verification failed — possible MitM. Rekey aborted.")
+                    self._client.raise_to_ui(RekeyError(code=ErrorCode.REKEY_VERIFY))
                     return
                 # A activates pending keys here; B already activated, so skip.
                 if self._protocol.rekey_pending_keys_exist:
@@ -251,7 +264,7 @@ class KeyExchangeManager:
                 self._ui.on_rekey_complete()
             
             case _:
-                self._ui.display_error_message("Received unknown rekey action")
+                self._client.raise_to_ui(MessageError(code=ErrorCode.MESSAGE_TYPE, context={"frame": "rekey", "action": action}))
     
     # server-issued reset
     

@@ -82,12 +82,12 @@ def create_ke_mlkem_ct_keys(
     signature = mldsa_private_key.sign(signed_payload, context=ML_DSA_CONTEXT)
     message = {
         "type":                    MessageType.KE_MLKEM_CT_KEYS,
-        "mlkem_ciphertext":        base64.b64encode(mlkem_ciphertext).decode('utf-8'),
-        "encrypted_hqc_pubkey":    base64.b64encode(encrypted_hqc_pubkey).decode('utf-8'),
-        "encrypted_x25519_pubkey": base64.b64encode(encrypted_x25519_pubkey).decode('utf-8'),
-        "nonce1":                  base64.b64encode(nonce1).decode('utf-8'),
-        "nonce2":                  base64.b64encode(nonce2).decode('utf-8'),
-        "mldsa_signature":         base64.b64encode(signature).decode('utf-8'),
+        "mlkem_ciphertext":        base64.b64encode(mlkem_ciphertext).decode("utf-8"),
+        "encrypted_hqc_pubkey":    base64.b64encode(encrypted_hqc_pubkey).decode("utf-8"),
+        "encrypted_x25519_pubkey": base64.b64encode(encrypted_x25519_pubkey).decode("utf-8"),
+        "nonce1":                  base64.b64encode(nonce1).decode("utf-8"),
+        "nonce2":                  base64.b64encode(nonce2).decode("utf-8"),
+        "mldsa_signature":         base64.b64encode(signature).decode("utf-8"),
     }
     return json.dumps(message).encode("utf-8")
 
@@ -105,12 +105,12 @@ def create_ke_x25519_hqc_ct(
     )
     signature = mldsa_private_key.sign(signed_payload, context=ML_DSA_CONTEXT)
     message = {
-        "type":                     MessageType.KE_X25519_HQC_CT,
-        "encrypted_x25519_pubkey":  base64.b64encode(encrypted_x25519_pubkey).decode('utf-8'),
-        "encrypted_hqc_ciphertext": base64.b64encode(encrypted_hqc_ciphertext).decode('utf-8'),
-        "nonce1":                   base64.b64encode(nonce1).decode('utf-8'),
-        "nonce2":                   base64.b64encode(nonce2).decode('utf-8'),
-        "mldsa_signature":          base64.b64encode(signature).decode('utf-8'),
+        "type":                     MessageType.KE_X25519_HQC_CT,""
+        "encrypted_x25519_pubkey":  base64.b64encode(encrypted_x25519_pubkey).decode("utf-8"),
+        "encrypted_hqc_ciphertext": base64.b64encode(encrypted_hqc_ciphertext).decode("utf-8"),
+        "nonce1":                   base64.b64encode(nonce1).decode("utf-8"),
+        "nonce2":                   base64.b64encode(nonce2).decode("utf-8"),
+        "mldsa_signature":          base64.b64encode(signature).decode("utf-8"),
     }
     return json.dumps(message).encode("utf-8")
 

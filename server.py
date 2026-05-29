@@ -26,7 +26,7 @@ import socket
 import socketserver
 import threading
 import time
-from collections.abc import Generator
+from collections.abc import Generator, Iterator
 from pathlib import Path
 from typing import Any, Final
 import warnings
@@ -54,6 +54,12 @@ from protocol.constants import (
     DEADDROP_LENGTH_PREFIX_SIZE,
 )
 from protocol.create_messages import create_reset_message
+from protocol.errors import (
+    ErrorCode,
+    ChatError,
+    ConnectionClosedError,
+    ServerError,
+)
 from utils.network_utils import encode_send_message, receive_message, send_message
 
 _config = ServerConfigHandler()
@@ -80,7 +86,7 @@ class DeadDropManager:
             return
         location: Path = _config["deaddrop_file_location"]
         if location.is_file():
-            raise FileExistsError("Deaddrop folder location already exists as a file")
+            raise ServerError(code=ErrorCode.SRV_DD_IO, context={"path": str(location), "reason": "folder_location_is_file"})
         if not location.exists():
             location.mkdir(mode=0o700, parents=True)
         location.chmod(mode=0o700)
@@ -120,7 +126,7 @@ class DeadDropManager:
             with open(self.deaddrop_files[name].with_suffix(".bin"), "ab") as f:
                 f.write(data)
         else:
-            raise FileNotFoundError(f"Deaddrop file '{name}' does not exist")
+            raise ServerError(code=ErrorCode.SRV_DD_IO, context={"name": name, "reason": "not_found"})
     
     def add_file(
             self, name: str, password: str, file_hash: str, file_key_salt: str = "",
@@ -140,12 +146,12 @@ class DeadDropManager:
             return
         
         if not name.isalnum():
-            raise ValueError(f"Invalid deaddrop name '{name}'")
+            raise ServerError(code=ErrorCode.SRV_DD_AUTH, context={"name": name, "reason": "invalid_name"})
         
         path = _config["deaddrop_file_location"] / name
         bin_path = path.with_suffix(".bin")
         if bin_path.exists():
-            raise FileExistsError(f"Deaddrop file '{name}' already exists")
+            raise ServerError(code=ErrorCode.SRV_DD_QUOTA, context={"name": name, "reason": "already_exists"})
         
         with open(bin_path, "wb"):
             pass
@@ -172,13 +178,13 @@ class DeadDropManager:
             return
         
         if name not in self.deaddrop_files:
-            raise FileNotFoundError(f"Deaddrop file '{name}' does not exist")
+            raise ServerError(code=ErrorCode.SRV_DD_IO, context={"name": name, "reason": "not_found"})
         
         if not os.path.exists(self.deaddrop_files[name]):
-            raise FileNotFoundError(f"Deaddrop file '{name}' does not exist")
+            raise ServerError(code=ErrorCode.SRV_DD_IO, context={"name": name, "reason": "not_found"})
         
         if os.path.isdir(self.deaddrop_files[name]):
-            raise IsADirectoryError(f"Deaddrop file '{name}' is a directory")
+            raise ServerError(code=ErrorCode.SRV_DD_IO, context={"name": name, "reason": "is_directory"})
         
         # Remove main file
         os.remove(self.deaddrop_files[name].with_suffix(".bin"))
@@ -192,7 +198,7 @@ class DeadDropManager:
     
     def get_file(self, name: str) -> io.BufferedReader:
         if not self.check_file(name):
-            raise FileNotFoundError(f"Deaddrop file '{name}' does not exist")
+            raise ServerError(code=ErrorCode.SRV_DD_IO, context={"name": name, "reason": "not_found"})
         
         return open(self.deaddrop_files[name].with_suffix(".bin"), "rb")
     
@@ -203,27 +209,27 @@ class DeadDropManager:
     
     def get_password_hash(self, name: str) -> str:
         if not self.check_file(name):
-            raise FileNotFoundError(f"Deaddrop file '{name}' does not exist")
+            raise ServerError(code=ErrorCode.SRV_DD_IO, context={"name": name, "reason": "not_found"})
         
         with open(self.deaddrop_files[name].with_suffix(".metadata"), "r") as f:
             lines = f.readlines()
             if len(lines) < 2:
-                raise ValueError(f"Deaddrop metadata for '{name}' is corrupted")
+                raise ServerError(code=ErrorCode.SRV_DD_IO, context={"name": name, "reason": "metadata_corrupted"})
             return lines[0].strip()
     
     def get_file_hash(self, name: str) -> str:
         if not self.check_file(name):
-            raise FileNotFoundError(f"Deaddrop file '{name}' does not exist")
+            raise ServerError(code=ErrorCode.SRV_DD_IO, context={"name": name, "reason": "not_found"})
         
         with open(self.deaddrop_files[name].with_suffix(".metadata"), "r") as f:
             lines = f.readlines()
             if len(lines) < 2:
-                raise ValueError(f"Deaddrop metadata for '{name}' is corrupted")
+                raise ServerError(code=ErrorCode.SRV_DD_IO, context={"name": name, "reason": "metadata_corrupted"})
             return lines[1].strip()
     
     def get_file_key_salt(self, name: str) -> str:
         if not self.check_file(name):
-            raise FileNotFoundError(f"Deaddrop file '{name}' does not exist")
+            raise ServerError(code=ErrorCode.SRV_DD_IO, context={"name": name, "reason": "not_found"})
         
         with open(self.deaddrop_files[name].with_suffix(".metadata"), "r") as f:
             lines = f.readlines()
@@ -239,7 +245,7 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
     Allows only two clients to connect simultaneously and facilitates key exchange
     and encrypted message routing between them.
     
-    Logging is intentionally very minimal since this is a security and privacy focused application.
+    Logging is intentionally very minimal.
     """
     
     def __init__(self, host: str = "0.0.0.0", port: int = 16384) -> None:
@@ -247,7 +253,7 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
         
         Args:
             host (str, optional): The hostname or IP address to bind the server to.
-                Defaults to 'localhost'.
+                Defaults to 0.0.0.0.
             port (int, optional): The port number to listen on. Defaults to 16384.
         """
         self.clients: dict[str, "SecureChatRequestHandler"] = {}
@@ -307,7 +313,7 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
         with open(wl_path, "r", encoding="utf-8") as f:
             words = [line.strip() for line in f if line.strip()]
         if not words:
-            raise ValueError("wordlist.txt is empty or not found")
+            raise ServerError(code=ErrorCode.SRV_IDENTIFIER_MISSING, context={"reason": "wordlist_empty_or_missing"})
         
         # Doesn't need to be cryptographically be secure, but we may as well do it anyway
         selected = [secrets.choice(words) for _ in range(4)]
@@ -490,7 +496,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             self._handle()
         except ConnectionResetError:
             self.disconnect("Connection reset", notify=False)
-        except ConnectionError:
+        except (ConnectionError, ConnectionClosedError):
             self.disconnect("Unexpected disconnect", notify=False)
         finally:
             if not self.announced_disconnect:
@@ -612,7 +618,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         :raises ValueError: If there is no shared key.
         """
         if not self.shared_secret:
-            raise ValueError("No shared secret for deaddrop decryption")
+            raise ServerError(code=ErrorCode.SRV_DD_AUTH, context={"reason": "no_shared_secret"})
         decryptor = ChaCha20Poly1305(self.shared_secret)
         data = decryptor.decrypt(nonce, ciphertext, associated_data=nonce)
         return data
@@ -876,7 +882,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         self.shared_secret = ConcatKDFHash(
                 algorithm=hashes.SHA3_512(),
                 length=DEADDROP_KDF_KEY_LENGTH,
-                otherinfo=b"deaddrop_key_exchange" + self.server.server_identifier.encode('utf-8'),
+                otherinfo=b"deaddrop_key_exchange" + self.server.server_identifier.encode("utf-8"),
         ).derive(shared_secret)
         
         print(f"Deaddrop key exchange completed with {self.client_id}")
@@ -1035,7 +1041,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         # Stream the requested deaddrop file to the client as DEADDROP_DATA
         # messages over the encrypted deaddrop channel.
         try:
-            chunks = self.server.deaddrop_manager.chunk_file(self.pending_deaddrop_download)
+            chunks: Iterator[bytes] = self.server.deaddrop_manager.chunk_file(self.pending_deaddrop_download)
         except Exception:
             # If we cannot open/chunk the file, abort the download cleanly.
             self.send_deaddrop_message({
@@ -1164,7 +1170,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             return
     
     def _find_missing_chunks(self, expected_last_index: int) -> list[int] | None:
-        missing = []
+        missing: list[int] = []
         for i in range(expected_last_index + 1):
             if i not in self.pending_deaddrop_received_chunks:
                 missing.append(i)
@@ -1260,8 +1266,8 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         aad_raw = json.dumps(aad).encode("utf-8")
         to_send = {
             "type":       MessageType.DEADDROP_MESSAGE,
-            "nonce":      base64.b64encode(nonce).decode('utf-8'),
-            "ciphertext": base64.b64encode(encryptor.encrypt(nonce, msg, aad_raw)).decode('utf-8'),
+            "nonce":      base64.b64encode(nonce).decode("utf-8"),
+            "ciphertext": base64.b64encode(encryptor.encrypt(nonce, msg, aad_raw)).decode("utf-8"),
         }
         with self.sender_lock:
             encode_send_message(self.request, to_send)

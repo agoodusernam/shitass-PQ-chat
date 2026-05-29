@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 import pytest
+from protocol.errors import ErrorCode, ChatError
 
 from protocol.file_handler import ProtocolFileHandler
 
@@ -22,22 +23,22 @@ class TestInitialState:
 class TestAddChunkValidation:
     def test_negative_index(self) -> None:
         h = ProtocolFileHandler()
-        with pytest.raises(ValueError):
+        with pytest.raises(ChatError):
             h.add_file_chunk("abc", -1, b"x", 5)
     
     def test_index_at_total(self) -> None:
         h = ProtocolFileHandler()
-        with pytest.raises(ValueError):
+        with pytest.raises(ChatError):
             h.add_file_chunk("abc", 5, b"x", 5)
     
     def test_non_alphanumeric_transfer_id(self) -> None:
         h = ProtocolFileHandler()
-        with pytest.raises(ValueError):
+        with pytest.raises(ChatError):
             h.add_file_chunk("not-alnum!", 0, b"x", 1)
     
     def test_too_long_transfer_id(self) -> None:
         h = ProtocolFileHandler()
-        with pytest.raises(ValueError):
+        with pytest.raises(ChatError):
             h.add_file_chunk("a" * 65, 0, b"x", 1)
 
 
@@ -63,14 +64,14 @@ class TestReassemble:
     
     def test_unknown_transfer_raises(self, tmp_path: Path) -> None:
         h = ProtocolFileHandler()
-        with pytest.raises(ValueError):
+        with pytest.raises(ChatError):
             h.reassemble_file("missing", str(tmp_path / "x"), "0" * 64, compressed=False)
     
     def test_hash_mismatch_raises(self, tmp_path: Path) -> None:
         h = ProtocolFileHandler()
         tid = "tid1"
         h.add_file_chunk(tid, 0, b"hello", 1, chunk_size=16)
-        with pytest.raises(ValueError, match="integrity"):
+        with pytest.raises(ChatError):
             h.reassemble_file(tid, str(tmp_path / "x"), "0" * 64, compressed=False)
     
     def test_gzip_decompression(self, tmp_path: Path) -> None:

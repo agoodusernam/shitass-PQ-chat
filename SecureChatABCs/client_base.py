@@ -251,8 +251,14 @@ class ClientBase(ABC):
         raise UnsupportedError("Deaddrop is not supported")
     
     @abstractmethod
-    def on_error(self, message: str) -> None:
-        """Handle an error reported by the protocol layer."""
+    def raise_to_ui(self, exc: BaseException) -> None:
+        """Forward an exception to the UI via the unified callback.
+
+        Wraps *exc* (a :class:`protocol.errors.ChatError` or any other
+        exception) and forwards code/severity/context to
+        :meth:`UIBase.on_error`. Non-``ChatError`` exceptions are wrapped
+        as the generic ``0xFFF`` code.
+        """
         ...
     
     @abstractmethod

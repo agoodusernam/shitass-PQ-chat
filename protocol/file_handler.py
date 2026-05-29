@@ -7,6 +7,11 @@ import typing
 from pathlib import Path
 
 from protocol.constants import SEND_CHUNK_SIZE
+from protocol.errors import (
+    ErrorCode,
+    ChatError,
+    FileTransferError,
+)
 from protocol.types import FileMetadata
 from utils.file_utils import (
     cleanup_paths,
@@ -84,13 +89,15 @@ class ProtocolFileHandler:
         """
         
         if chunk_index < 0 or chunk_index >= total_chunks:
-            raise ValueError(f"Invalid chunk index {chunk_index} for transfer with {total_chunks} chunks")
-        
+            raise FileTransferError(code=ErrorCode.FT_INVALID_CHUNK_INDEX, 
+                context={"chunk_index": chunk_index, "total_chunks": total_chunks}
+            )
+
         if not transfer_id.isalnum():
-            raise ValueError(f"Invalid transfer_id format: {transfer_id}")
-        
+            raise FileTransferError(code=ErrorCode.FT_INVALID_TRANSFER_ID, context={"transfer_id": transfer_id, "reason": "non-alphanumeric"})
+
         if len(transfer_id) > 64:
-            raise ValueError(f"transfer_id too long: {len(transfer_id)} characters")
+            raise FileTransferError(code=ErrorCode.FT_INVALID_TRANSFER_ID, context={"length": len(transfer_id), "reason": "too long"})
         
         # Initialise tracking structures if this is the first chunk for this transfer
         if transfer_id not in self.received_chunks:
@@ -110,7 +117,7 @@ class ProtocolFileHandler:
                 self.open_file_handles[transfer_id] = temp_file  # type: ignore
             
             except OSError as e:
-                raise ValueError(f"Failed to create temporary file: {e}")
+                raise FileTransferError(code=ErrorCode.FT_TEMP_FILE, context={"error": str(e)}, cause=e)
         
         # Get the open file handle
         file_handle = self.open_file_handles[transfer_id]
@@ -122,14 +129,17 @@ class ProtocolFileHandler:
             
             actual_position = file_handle.tell()
             if actual_position != position:
-                raise ValueError(f"Failed to seek to position {position}, got {actual_position}")
-            
+                raise FileTransferError(code=ErrorCode.FT_SEEK, context={"expected": position, "actual": actual_position})
+
             bytes_written = file_handle.write(chunk_data)
             if bytes_written != len(chunk_data):
-                raise ValueError(f"Failed to write complete chunk: wrote {bytes_written} of {len(chunk_data)} bytes")
-        
+                raise FileTransferError(code=ErrorCode.FT_WRITE, context={"written": bytes_written, "expected": len(chunk_data)})
+
         except (OSError, IOError) as e:
-            raise ValueError(f"Failed to write chunk {chunk_index} at position {position}: {e}")
+            raise FileTransferError(code=ErrorCode.FT_WRITE, 
+                context={"chunk_index": chunk_index, "position": position, "error": str(e)},
+                cause=e,
+            )
         
         # Mark this chunk as received
         self.received_chunks[transfer_id].add(chunk_index)
@@ -166,7 +176,9 @@ class ProtocolFileHandler:
             
             # Verify file integrity
             if hash_file_hexdigest(final_file_path) != expected_hash:
-                raise ValueError("File integrity check failed")
+                raise FileTransferError(code=ErrorCode.FT_SIZE_MISMATCH, 
+                    context={"transfer_id": transfer_id, "reason": "integrity_hash_mismatch"}
+                )
             
             # Move the final file to the output path
             final_file_path.replace(output_path)
@@ -177,11 +189,14 @@ class ProtocolFileHandler:
         
         except Exception as e:
             cleanup_paths(cleanup_on_error)
-            if isinstance(e, (OSError, IOError, gzip.BadGzipFile)):
-                raise ValueError(f"File processing failed (I/O or gzip): {e}") from e
-            if isinstance(e, ValueError):
+            if isinstance(e, ChatError):
                 raise
-            raise ValueError(f"File processing failed (unexpected): {e}") from e
+            if isinstance(e, (OSError, IOError, gzip.BadGzipFile)):
+                raise FileTransferError(code=ErrorCode.FT_IO, context={"transfer_id": transfer_id, "error": str(e)}, cause=e) from e
+            raise FileTransferError(code=ErrorCode.FT_IO, 
+                context={"transfer_id": transfer_id, "error": str(e), "kind": type(e).__name__},
+                cause=e,
+            ) from e
         
         # Clean up tracking data
         del self.received_chunks[transfer_id]
@@ -192,7 +207,7 @@ class ProtocolFileHandler:
     def _close_and_get_temp_path(self, transfer_id: str) -> Path:
         """Ensure transfer exists, close any open handle, and return the temp file path."""
         if transfer_id not in self.received_chunks or transfer_id not in self.temp_file_paths:
-            raise ValueError(f"No data found for transfer {transfer_id}")
+            raise FileTransferError(code=ErrorCode.FT_NO_ACTIVE_TRANSFER, context={"transfer_id": transfer_id})
         
         if transfer_id in self.open_file_handles:
             try:
@@ -203,5 +218,7 @@ class ProtocolFileHandler:
         
         temp_received_path = self.temp_file_paths[transfer_id]
         if not os.path.exists(temp_received_path):
-            raise ValueError(f"Temporary file not found: {temp_received_path}")
+            raise FileTransferError(code=ErrorCode.FT_TEMP_FILE, 
+                context={"transfer_id": transfer_id, "path": str(temp_received_path), "reason": "missing"}
+            )
         return temp_received_path

@@ -9,6 +9,7 @@ Covers:
 from __future__ import annotations
 
 import pytest
+from protocol.errors import ErrorCode, ChatError
 from cryptography.exceptions import InvalidTag
 from hypothesis import given, strategies as st
 
@@ -52,13 +53,13 @@ def test_iso7816_pad_always_appends_0x80(data: bytes) -> None:
 @given(data=st.binary(min_size=0, max_size=2048))
 def test_iso7816_unpad_rejects_no_marker(data: bytes) -> None:
     # All-zero input has no 0x80 → invalid.
-    with pytest.raises(ValueError):
+    with pytest.raises(ChatError):
         _iso7816_unpad(b"\x00" * max(1, len(data)))
 
 
 @given(data=st.binary(min_size=1, max_size=2048).filter(lambda b: b[-1] != 0x00 and b[-1] != 0x80))
 def test_iso7816_unpad_rejects_trailing_non_padding(data: bytes) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ChatError):
         _iso7816_unpad(data)
 
 
@@ -115,14 +116,14 @@ def test_double_encryptor_counter_mismatch_corrupts(key, nonce, data, otp_secret
     dec = DoubleEncryptor(key, otp_secret, ctr_dec)
     try:
         recovered = dec.decrypt(nonce, ct, ad, pad=True)
-    except ValueError:
+    except (ValueError, ChatError):
         return  # Padding check caught it — good.
     # On the rare occasion padding happens to be valid, plaintext must not equal original.
     assert recovered != data or data == b""
 
 
 def test_double_encryptor_rejects_wrong_key_length() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ChatError):
         DoubleEncryptor(b"\x00" * (DOUBLE_KEY_SIZE - 1), b"otp", 0)
 
 
@@ -150,7 +151,7 @@ def test_chunk_independent_different_nonces_diverge(key, nonce_a, nonce_b, data)
 
 
 def test_chunk_independent_rejects_wrong_key_length() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ChatError):
         ChunkIndependentDoubleEncryptor(b"\x00" * (DOUBLE_KEY_SIZE + 1))
 
 

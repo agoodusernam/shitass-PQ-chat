@@ -21,9 +21,6 @@ CTR_NONCE_SIZE: Final[int] = 16  # bytes, for AES-CTR / deaddrop chunk nonces
 PAD_SIZE: Final[int] = 512  # bytes, block size for ISO/IEC 7816-4 padding
 CLIENT_RANDOM_SIZE: Final[int] = 32  # bytes, for key exchange client randoms
 DOUBLE_KEY_SIZE: Final[int] = 64  # bytes, for double-encryptor keys (32 AES + 32 ChaCha)
-single_key_size: float = DOUBLE_KEY_SIZE / 2
-if not single_key_size.is_integer():
-    raise ValueError("DOUBLE_KEY_SIZE must be divisible by 2 without remainder")
 SINGLE_KEY_SIZE: Final[int] = DOUBLE_KEY_SIZE // 2
 HKDF_KEY_LENGTH: Final[int] = 64  # bytes, output length for HKDF key derivations
 DEADDROP_KDF_KEY_LENGTH: Final[int] = 32  # bytes, output length for deaddrop KDF derivations

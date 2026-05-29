@@ -18,6 +18,14 @@ from SecureChatABCs.ui_base import UIBase
 from config import ClientConfigHandler
 from protocol.constants import MessageType
 from protocol.create_messages import create_file_metadata_message
+from protocol.errors import (
+    ErrorCode,
+    ChatError,
+    FileTransferError,
+    KeyExchangeError,
+    MessageError,
+    TransportError,
+)
 from protocol.file_handler import ProtocolFileHandler
 from protocol.parse_messages import process_file_metadata
 from protocol.types import FileMetadata, FileTransfer
@@ -71,7 +79,7 @@ class FileTransferManager:
         try:
             file_path_obj = Path(file_path) if isinstance(file_path, str) else file_path
             if not self._client.verification_complete:
-                self._ui.display_error_message("Cannot send file: Key verification not complete")
+                self._client.raise_to_ui(KeyExchangeError(code=ErrorCode.KE_STATE, context={"reason": "verification_not_complete", "op": "send_file"}))
                 return
             
             if not self._client.peer_key_verified:
@@ -96,9 +104,11 @@ class FileTransferManager:
                     f"File transfer request sent: {metadata['filename']} ({metadata['file_size']} bytes, {compression_text})",
             )
         
+        except ChatError as e:
+            self._client.raise_to_ui(e)
         except Exception as e:
-            self._ui.display_error_message(f"Failed to send file: {e}")
-    
+            self._client.raise_to_ui(FileTransferError(context={"op": "send", "error": str(e)}, cause=e))
+
     def reject(self, transfer_id: str) -> None:
         """Reject an incoming file transfer request identified by *transfer_id*."""
         self._protocol.queue_json({
@@ -116,7 +126,7 @@ class FileTransferManager:
         try:
             metadata = process_file_metadata(decrypted_message)
         except KeyError as e:
-            self._ui.display_error_message(str(e))
+            self._client.raise_to_ui(MessageError(code=ErrorCode.MESSAGE_FIELD_MISSING, context={"frame": "FILE_METADATA", "field": str(e)}, cause=e))
             return
         transfer_id = metadata["transfer_id"]
         if not self._client.allow_file_transfers:
@@ -148,13 +158,15 @@ class FileTransferManager:
                 compressed_size,
         )
         
-        if result is False or result is None:
+        if result is False:
             self._protocol.queue_json({
                 "type":        MessageType.FILE_REJECT,
                 "transfer_id": transfer_id,
                 "reason":      "User declined",
             })
             del self.active_file_metadata[transfer_id]
+        elif result is None:
+            pass
         else:
             self._protocol.queue_json({
                 "type":        MessageType.FILE_ACCEPT,
@@ -168,7 +180,7 @@ class FileTransferManager:
         try:
             transfer_id = message["transfer_id"]
         except KeyError:
-            self._ui.display_error_message("Received acceptance without transfer ID")
+            self._client.raise_to_ui(MessageError(code=ErrorCode.MESSAGE_FIELD_MISSING, context={"frame": "FILE_ACCEPT", "field": "transfer_id"}))
             self._protocol.send_dummy_messages = True
             return
         
@@ -196,7 +208,7 @@ class FileTransferManager:
         try:
             transfer_id = message["transfer_id"]
         except KeyError:
-            self._ui.display_error_message("Received rejection without transfer ID")
+            self._client.raise_to_ui(MessageError(code=ErrorCode.MESSAGE_FIELD_MISSING, context={"frame": "FILE_REJECT", "field": "transfer_id"}))
             return
         reason = message.get("reason", "Unknown reason")
         
@@ -207,14 +219,14 @@ class FileTransferManager:
                 self._file_handler.stop_sending_transfer(transfer_id)
                 del self.pending_file_transfers[transfer_id]
             else:
-                self._ui.display_error_message("Received rejection for unknown file transfer")
+                self._client.raise_to_ui(FileTransferError(code=ErrorCode.FT_NO_ACTIVE_TRANSFER, context={"transfer_id": transfer_id, "frame": "FILE_REJECT"}))
     
     def handle_complete(self, message: dict[str, Any]) -> None:
         """Peer acknowledged completion — clean up outgoing transfer state."""
         try:
             transfer_id = message["transfer_id"]
         except KeyError:
-            self._ui.display_error_message("Dropped file complete message without transfer ID. Invalid JSON.")
+            self._client.raise_to_ui(MessageError(code=ErrorCode.MESSAGE_FIELD_MISSING, context={"frame": "FILE_COMPLETE", "field": "transfer_id"}))
             return
         
         if transfer_id in self.pending_file_transfers:
@@ -223,7 +235,7 @@ class FileTransferManager:
             del self.pending_file_transfers[transfer_id]
             self._protocol.send_dummy_messages = True
         else:
-            self._ui.display_error_message(f"Received file complete for unknown transfer ID: {transfer_id}")
+            self._client.raise_to_ui(FileTransferError(code=ErrorCode.FT_NO_ACTIVE_TRANSFER, context={"transfer_id": transfer_id, "frame": "FILE_COMPLETE"}))
     
     # inbound chunks
     
@@ -233,7 +245,7 @@ class FileTransferManager:
         
         with self.active_file_metadata.lock:
             if transfer_id not in self.active_file_metadata:
-                self._ui.display_error_message("Received chunk for unknown file transfer")
+                self._client.raise_to_ui(FileTransferError(code=ErrorCode.FT_NO_ACTIVE_TRANSFER, context={"transfer_id": transfer_id, "frame": "FILE_CHUNK"}))
                 return
             
             metadata = self.active_file_metadata[transfer_id]
@@ -285,8 +297,10 @@ class FileTransferManager:
                     "transfer_id": transfer_id,
                 })
             
+            except ChatError as e:
+                self._client.raise_to_ui(e)
             except Exception as e:
-                self._ui.display_error_message(f"File reassembly failed: {e}")
+                self._client.raise_to_ui(FileTransferError(code=ErrorCode.FT_IO, context={"transfer_id": transfer_id, "op": "reassemble", "error": str(e)}, cause=e))
             
             with self.active_file_metadata.lock:
                 if transfer_id in self.active_file_metadata:
@@ -313,7 +327,9 @@ class FileTransferManager:
                 
                 result = self._client.send_raw(self._protocol.encrypt_file_chunk(transfer_id, i, chunk))
                 if result is not None:
-                    self._ui.display_error_message(f"File transfer failed while sending chunk {i}: {result}")
+                    self._client.raise_to_ui(TransportError(code=ErrorCode.SOCKET_SEND, 
+                        context={"transfer_id": transfer_id, "chunk_index": i, "reason": str(result)}
+                    ))
                     self._file_handler.stop_sending_transfer(transfer_id)
                     return
                 
@@ -332,6 +348,9 @@ class FileTransferManager:
             self._ui.display_system_message(f"File chunks sent successfully: {filename}")
             self._file_handler.stop_sending_transfer(transfer_id)
         
+        except ChatError as e:
+            self._client.raise_to_ui(e)
+            self._file_handler.stop_sending_transfer(transfer_id)
         except Exception as e:
-            self._ui.display_error_message(f"Error sending file chunks: {e}")
+            self._client.raise_to_ui(FileTransferError(context={"transfer_id": transfer_id, "op": "send_chunks", "error": str(e)}, cause=e))
             self._file_handler.stop_sending_transfer(transfer_id)
