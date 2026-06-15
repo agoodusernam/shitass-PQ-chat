@@ -10,6 +10,8 @@
 > against any form of side-channel attack. The intended use of this project
 > is for learning and experimenting with PQC and end-to-end encryption concepts.
 
+This codebase is quite a mess. It was originally written quickly and just to *function* so my friends and I could send messages and files without relying on any external services. I am working on a refactor in the dev branch, but that will take a while.
+
 An end-to-end encrypted chat application using post-quantum cryptography (ML-KEM-1024, HQC-256) for key exchange and double AEAD encryption
 (AES-256-GCM-SIV + ChaCha20-Poly1305) for message protection.
 
