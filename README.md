@@ -1,7 +1,7 @@
 # Post-Quantum E2E Encrypted Chat
 
 >
-**Mirrors**: [Primary](https://git.nerds-inc.com/HardlineMouse16/shitass-PQ-chat) · [GitHub (read-only)](https://github.com/agoodusernam/shitass-PQ-chat)
+**Mirrors**: [Primary](https://git.nerds-inc.com/HardlineMouse16/PQ-chat) · [GitHub (read-only)](https://github.com/agoodusernam/shitass-PQ-chat)
 
 > [!CAUTION]
 > **This should NOT be used for anything important.**
@@ -42,26 +42,26 @@ An end-to-end encrypted chat application using post-quantum cryptography (ML-KEM
 ### Prerequisites
 
 - Python 3.9+
-- `pip` for installing dependencies
+- `pip` or `uv` for installing dependencies
 
 ### Installation
 
 1. Clone the repository:
    ```bash
-   git clone https://git.nerds-inc.com/HardlineMouse16/shitass-PQ-chat
-   cd shitass-PQ-chat
+   git clone https://git.nerds-inc.com/HardlineMouse16/PQ-chat
+   cd PQ-chat
    ```
 
 2. Install the required packages:
 
    **Client:**
    ```bash
-   pip install -r requirements.txt
+   pip install .[client]
    ```
 
    **Server only** (lighter install, no UI dependencies):
    ```bash
-   pip install -r requirements_server.txt
+   pip install .
    ```
 
 ### Configuration
@@ -91,8 +91,6 @@ Start the server first. It will wait for two clients to connect.
 ```bash
 python server.py
 ```
-
-The server requires only `requirements_server.txt` dependencies and has no UI.
 
 #### Starting the Client
 
@@ -125,7 +123,7 @@ The GUI client provides:
 To run the test suite:
 
 ```bash
-pip install pytest
+pip install .[dev]
 python -m pytest tests/
 ```
 
