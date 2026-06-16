@@ -7,7 +7,7 @@ V = TypeVar("V")
 T = TypeVar("T")
 
 
-class ThreadSafeDict(MutableMapping[K, V]):
+class ThreadSafeDict[K, V](MutableMapping[K, V]):
     """A dict wrapper that serialises all access with an internal RLock.
 
     NOTE: Individual operations are atomic, but compound check-then-act

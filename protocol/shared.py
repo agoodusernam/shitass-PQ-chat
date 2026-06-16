@@ -280,6 +280,7 @@ class SecureChatProtocol(ProtocolBase):
         self.shared_key = False
         self.message_counter = 0
         self.peer_counter = 0
+        self.skipped_counters._cache.clear()
         self.peer_mlkem_public_key = None
         self.mlkem_public_key = None
         self._hqc_secret = b""

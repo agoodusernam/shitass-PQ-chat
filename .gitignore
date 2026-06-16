@@ -26,3 +26,11 @@
 /themes/
 /client_config.json
 /server_config.json
+/__pycache__/
+/.idea/markdown.xml
+/.idea/jsonSchemas.xml
+/.idea/MypyPlugin.xml
+/.idea/pq-chat.iml
+/.idea/pyLspTools.xml
+/.coverage
+/.mcp.json
