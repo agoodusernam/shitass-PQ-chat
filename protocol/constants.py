@@ -1,13 +1,13 @@
-from typing import Any
 from enum import IntEnum, unique
-from typing import Final
+from typing import Any, Final
 
 # Protocol constants
 PROTOCOL_VERSION: Final[str] = "9.0.0"
 # Protocol compatibility is denoted by version number
 # Breaking.Minor.Patch - only Breaking versions are checked for compatibility.
 # Breaking version changes introduce breaking changes that are not compatible with the previous major version.
-# Minor version changes may add or change features but remain largely compatible with previous minor versions of the same major version.
+# Minor version changes may add or change features but remain largely compatible with previous minor versions
+# of the same major version.
 # Patch versions are for bug fixes and minor changes that do not affect compatibility.
 
 # File transfer constants
@@ -39,7 +39,8 @@ DEADDROP_FILE_EXT_HEADER_SIZE: Final[int] = 12  # bytes, file extension header i
 DEADDROP_HKDF_SALT_SIZE: Final[int] = 32  # bytes, salt for deaddrop file key HKDF
 MISSING_CHUNKS_LIMIT: Final[int] = 20000
 DEADDROP_MIN_CHUNK_SIZE: Final[int] = 2048  # bytes, minimum chunk size for deaddrop
-DEADDROP_MAX_CHUNKS: Final[int] = 1024 * 1024  # max amount of chunks that can be in a deaddrop upload (to prevent mem exhaustion)
+DEADDROP_MAX_CHUNKS: Final[int] = 1024 * 1024  # max amount of chunks that can be in a deaddrop upload
+# (to prevent mem exhaustion)
 
 # Nickname / sanitisation limits
 MAX_SANITIZED_STR_LENGTH: Final[int] = 32

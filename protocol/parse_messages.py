@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Any
 
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.hmac import HMAC
 from cryptography.hazmat.primitives.constant_time import bytes_eq
+from cryptography.hazmat.primitives.hmac import HMAC
 
 from protocol.constants import PROTOCOL_VERSION
 from protocol.errors import CryptoError, ErrorCode
@@ -23,10 +23,10 @@ def process_file_metadata(message: dict[Any, Any]) -> FileMetadata:
             "file_hash":       message["file_hash"],
             "total_chunks":    message["total_chunks"],
             "compressed":      message.get("compressed", False),
-            "compressed_size": message.get("compressed_size", message["file_size"]),
+            "compressed_size": message.get("compressed_size", message["file_size"]), # type: ignore
         }
     except KeyError:
-        raise KeyError("Invalid file metadata message")
+        raise KeyError("Invalid file metadata message") from None
 
 
 def process_key_verification_message(data: bytes) -> bool:
@@ -37,7 +37,7 @@ def process_key_verification_message(data: bytes) -> bool:
             raise CryptoError("Received invalid key verification message", code=ErrorCode.DECODE)
         return bool(message.get("verified", False))
     except (UnicodeDecodeError, json.JSONDecodeError):
-        raise CryptoError("Received invalid key verification message", code=ErrorCode.DECODE)
+        raise CryptoError("Received invalid key verification message", code=ErrorCode.DECODE) from None
 
 
 def parse_ke_dsa_random(data: bytes) -> dict[str, Any]:

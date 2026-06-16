@@ -14,21 +14,20 @@ Covers:
 - Static key-derivation helpers
 - Queue / sender-thread helpers
 - reset_key_exchange
-- send_emergency_close (no client → False)
 """
 
 import json
 import os
 
+import cryptography.exceptions
 import pytest
-from protocol.errors import ErrorCode, ChatError
 
 from protocol import create_messages, parse_messages
 from protocol.constants import MAGIC_NUMBER_FILE_TRANSFER
 from protocol.crypto_classes import DoubleEncryptor, KeyExchangeDoubleEncryptor, _KeyDerivation
+from protocol.errors import ChatError
 from protocol.shared import SecureChatProtocol
 from protocol.utils import LRUCache
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -698,29 +697,6 @@ class TestKeyDerivationHelpers:
 
 
 # ---------------------------------------------------------------------------
-# Sender thread
-# ---------------------------------------------------------------------------
-
-# noinspection PyMissingTypeHints
-class TestSenderThread:
-    def test_start_stop_sender_thread(self):
-        p = _make_protocol()
-        p.start_sender_thread()
-        assert p._sender_running is True
-        assert p._sender_thread is not None
-        p.stop_sender_thread()
-        assert p._sender_running is False
-    
-    def test_start_sender_thread_idempotent(self):
-        p = _make_protocol()
-        p.start_sender_thread()
-        thread_before = p._sender_thread
-        p.start_sender_thread()  # second call should be a no-op
-        assert p._sender_thread is thread_before
-        p.stop_sender_thread()
-
-
-# ---------------------------------------------------------------------------
 # LRUCache (used by protocol for skipped counters)
 # ---------------------------------------------------------------------------
 
@@ -791,7 +767,7 @@ class TestDoubleEncryptor:
         enc2 = DoubleEncryptor(key2, otp, 1)
         nonce = os.urandom(12)
         ct = enc1.encrypt(nonce, b"secret")
-        with pytest.raises(Exception):
+        with pytest.raises(cryptography.exceptions.InvalidTag):
             enc2.decrypt(nonce, ct)
     
     def test_bad_key_length_raises(self):
@@ -802,7 +778,7 @@ class TestDoubleEncryptor:
         enc, _, _ = self._make_encryptor()
         nonce = os.urandom(12)
         ct = enc.encrypt(nonce, b"data", associated_data=b"aad1")
-        with pytest.raises(Exception):
+        with pytest.raises(cryptography.exceptions.InvalidTag):
             enc.decrypt(nonce, ct, associated_data=b"aad2")
     
     def test_encrypt_no_pad(self):

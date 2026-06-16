@@ -7,8 +7,8 @@ import os
 from pathlib import Path
 
 import pytest
-from protocol.errors import ErrorCode, ChatError
 
+from protocol.errors import ChatError
 from protocol.file_handler import ProtocolFileHandler
 
 

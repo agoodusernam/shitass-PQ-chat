@@ -19,7 +19,8 @@ Usage (Windows cmd.exe examples):
   python speed_test.py -n 1000 --sizes 16,32,64,128,256
 
 Notes:
-  - Padding: The protocol pads to the next 512 bytes boundary (adding an extra 512 even if already aligned). We compute padded size analytically; we don't introspect internals.
+  - Padding: The protocol pads to the next 512 bytes boundary (adding an extra 512 even if already aligned).
+  We compute padded size analytically; we don't introspect internals.
   - Encrypted size: Actual length of the returned JSON bytes of encrypt_message().
   - All timings use perf_counter_ns for high resolution.
   - Warmup iterations are excluded from statistics to allow JIT-like warm cache effects to stabilize.
@@ -38,12 +39,12 @@ import statistics
 import string
 import sys
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Sequence
+from typing import Any
 
 from protocol.shared import SecureChatProtocol
-
 
 # ---------------------------------- Data Structures ---------------------------------- #
 
@@ -312,7 +313,7 @@ def load_previous_results(path: str) -> dict[str, Any] | None:
     try:
         if not os.path.exists(path):
             return None
-        with open(path, 'r', encoding='utf-8') as f:
+        with open(path, encoding='utf-8') as f:
             return json.load(f)
     except Exception:
         # If file is corrupt or unreadable, ignore silently for benchmark continuity

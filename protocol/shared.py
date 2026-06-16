@@ -1,9 +1,8 @@
 # shared.py - Shared cryptographic utilities and protocol definitions
-# pylint: disable=trailing-whitespace, line-too-long
-try:
-    import pqcrypto  # noqa: F401
-    import cryptography  # noqa: F401
-except ImportError as _exc:
+import importlib.util
+import threading
+
+if importlib.util.find_spec("cryptography") is None or importlib.util.find_spec("pqcrypto") is None:
     print("Required cryptographic libraries not found.")
     raise ImportError(
             "Please install the required libraries with pip install -r requirements.txt",
@@ -11,98 +10,79 @@ except ImportError as _exc:
 
 import base64
 import binascii
-import enum
+import contextlib
 import json
 import os
 import struct
-import threading
-import time
-from collections import deque
-from typing import Any, TYPE_CHECKING
+from typing import Any
 
-from SecureChatABCs.protocol_base import ProtocolBase
-from protocol._rekey_state import _RekeyState
-from protocol.file_handler import ProtocolFileHandler
-from config import ClientConfigHandler
-from protocol.crypto_classes import (
-    DoubleEncryptor,
-    KeyExchangeDoubleEncryptor,
-    _KeyDerivation,
-)
-from protocol.constants import (
-    DEFAULT_MAX_RATCHET_FORWARD,
-    MessageType,
-    MAGIC_NUMBER_FILE_TRANSFER,
-    NONCE_SIZE,
-    CLIENT_RANDOM_SIZE,
-    HEADER_LENGTH_SIZE,
-    FILE_CHUNK_COUNTER_OFFSET,
-    FILE_CHUNK_NONCE_OFFSET,
-    FILE_CHUNK_EPH_PUB_OFFSET,
-    FILE_CHUNK_CIPHERTEXT_OFFSET,
-    ML_DSA_CONTEXT,
-)
-from protocol.utils import (
-    LRUCache,
-    generate_key_fingerprint,
-)
-from protocol.create_messages import (
-    create_key_verification_message,
-    create_ke_dsa_random,
-    create_ke_mlkem_pubkey,
-    create_ke_mlkem_ct_keys,
-    create_ke_x25519_hqc_ct,
-    create_ke_verification,
-)
-from protocol.parse_messages import (
-    process_key_verification_message,
-    parse_ke_dsa_random,
-    parse_ke_mlkem_pubkey,
-    parse_ke_mlkem_ct_keys,
-    parse_ke_x25519_hqc_ct,
-    parse_ke_verification,
-)
-
-from pqcrypto.kem import hqc_256
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives.asymmetric.x25519 import (
-    X25519PrivateKey,
-    X25519PublicKey,
+from cryptography.exceptions import InvalidSignature, InvalidTag
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric.mldsa import (
+    MLDSA87PrivateKey,
+    MLDSA87PublicKey,
 )
 from cryptography.hazmat.primitives.asymmetric.mlkem import (
     MLKEM1024PrivateKey,
     MLKEM1024PublicKey,
 )
-from cryptography.hazmat.primitives.asymmetric.mldsa import (
-    MLDSA87PrivateKey,
-    MLDSA87PublicKey,
+from cryptography.hazmat.primitives.asymmetric.x25519 import (
+    X25519PrivateKey,
+    X25519PublicKey,
 )
-
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.hmac import HMAC
-
 from cryptography.hazmat.primitives.constant_time import bytes_eq
+from cryptography.hazmat.primitives.hmac import HMAC
+from pqcrypto.kem import hqc_256
 
-from cryptography.exceptions import InvalidTag
-
+from config import ClientConfigHandler
+from protocol._rekey_state import _RekeyState
+from protocol.constants import (
+    CLIENT_RANDOM_SIZE,
+    DEFAULT_MAX_RATCHET_FORWARD,
+    FILE_CHUNK_CIPHERTEXT_OFFSET,
+    FILE_CHUNK_COUNTER_OFFSET,
+    FILE_CHUNK_EPH_PUB_OFFSET,
+    FILE_CHUNK_NONCE_OFFSET,
+    HEADER_LENGTH_SIZE,
+    MAGIC_NUMBER_FILE_TRANSFER,
+    ML_DSA_CONTEXT,
+    NONCE_SIZE,
+    MessageType,
+)
+from protocol.create_messages import (
+    create_ke_dsa_random,
+    create_ke_mlkem_ct_keys,
+    create_ke_mlkem_pubkey,
+    create_ke_verification,
+    create_ke_x25519_hqc_ct,
+    create_key_verification_message,
+)
+from protocol.crypto_classes import (
+    DoubleEncryptor,
+    KeyExchangeDoubleEncryptor,
+    _KeyDerivation,
+)
 from protocol.errors import (
-    ErrorCode,
-    RatchetError,
-    ChatError,
     ChunkError,
+    ErrorCode,
     KeyExchangeError,
     MessageError,
+    RatchetError,
 )
-
-if TYPE_CHECKING:
-    from SecureChatABCs.client_base import ClientBase
-
-
-class _QueueKind(enum.Enum):
-    """Discriminant for items stored in the protocol send queue."""
-    ENCRYPT_TEXT = "encrypt_text"
-    ENCRYPT_JSON = "encrypt_json"
-    ENCRYPT_JSON_THEN_SWITCH = "encrypt_json_then_switch"
+from protocol.file_handler import ProtocolFileHandler
+from protocol.parse_messages import (
+    parse_ke_dsa_random,
+    parse_ke_mlkem_ct_keys,
+    parse_ke_mlkem_pubkey,
+    parse_ke_verification,
+    parse_ke_x25519_hqc_ct,
+    process_key_verification_message,
+)
+from protocol.utils import (
+    LRUCache,
+    generate_key_fingerprint,
+)
+from SecureChatABCs.protocol_base import ProtocolBase
 
 
 def _build_aad(msg_type: MessageType, counter: int, nonce: bytes, dh_pub: bytes) -> bytes:
@@ -136,11 +116,9 @@ class SecureChatProtocol(ProtocolBase):
 
     Inherits from :class:`ProtocolBase` and satisfies its full abstract interface.
     """
-    client: "ClientBase | None" = None
-    
+
     def __init__(
             self,
-            client: "ClientBase | None" = None,
             file_handler: ProtocolFileHandler | None = None,
     ) -> None:
         """
@@ -158,8 +136,6 @@ class SecureChatProtocol(ProtocolBase):
         documentation completeness but should not be accessed directly by callers.
 
         Args:
-            client (ClientBase | None): The client instance this protocol reports events and
-                errors to.  May be ``None`` when the protocol is used standalone.
             file_handler (ProtocolFileHandler | None): Delegate for all file-transfer I/O.
                 When ``None``, file-transfer operations are unavailable.
 
@@ -182,11 +158,6 @@ class SecureChatProtocol(ProtocolBase):
             msg_peer_base_public (bytes): Peer's last known Double Ratchet X25519 public key.
         Guaranteed Private Attributes:
             _file_handler (ProtocolFileHandler | None): File-transfer delegate; ``None`` when unused.
-            _message_queue (deque): Queue of outgoing items pending encryption and dispatch.
-            _sender_thread (threading.Thread | None): Background sender thread; ``None`` when stopped.
-            _sender_running (bool): Whether the background sender thread is active.
-            _sender_lock (threading.Lock): Mutex protecting access to ``_message_queue``.
-            _send_dummy_messages (bool): Whether traffic-analysis padding messages are enabled.
 
         Unsafe Private Attributes (valid only after the relevant protocol phase):
             _verification_key (bytes): HMAC key derived during key exchange; empty until then.
@@ -214,19 +185,11 @@ class SecureChatProtocol(ProtocolBase):
         protocol via explicit ``@property`` passthroughs (``messages_since_last_rekey``,
         ``rekey_interval``, ``rekey_in_progress``).
         """
-        self.client: "ClientBase | None" = client
         self._file_handler: ProtocolFileHandler | None = file_handler
         
         # Configuration + protocol
         self.config: ClientConfigHandler = ClientConfigHandler()
-        
-        # Transport + queuing
-        self._message_queue: deque[tuple[_QueueKind, str | dict[str, Any]]] = deque()
-        self._sender_thread: threading.Thread | None = None
-        self._sender_running: bool = False
-        self._sender_lock: threading.Lock = threading.Lock()
-        self._send_dummy_messages: bool = self.config["send_dummy_packets"]
-        
+
         # Cryptographic identity + peer info
         self.mlkem_public_key: MLKEM1024PublicKey | None = None
         self._mlkem_private_key: MLKEM1024PrivateKey | None = None
@@ -261,6 +224,8 @@ class SecureChatProtocol(ProtocolBase):
         self.peer_counter: int = 0
         self._send_chain_key: bytes = b""
         self._receive_chain_key: bytes = b""
+        self._encryption_lock: threading.RLock = threading.RLock()
+        self._decryption_lock: threading.RLock = threading.RLock()
         
         # X25519 ephemeral DH (session setup)
         self._dh_private_key: X25519PrivateKey | None = None
@@ -302,25 +267,16 @@ class SecureChatProtocol(ProtocolBase):
                 not self.rekey_in_progress and
                 self.encryption_ready)
     
-    @property
-    def send_dummy_messages(self) -> bool:
-        """Check if dummy messages should be sent."""
-        return self._send_dummy_messages and not self.rekey_in_progress and not self.has_active_file_transfers
-    
-    @send_dummy_messages.setter
-    def send_dummy_messages(self, value: bool) -> None:
-        """Set whether the client wants dummy messages to be sent."""
-        self._send_dummy_messages = value
-    
     def reset_key_exchange(self) -> None:
         """
         Reset all cryptographic state to initial values for key exchange restart.
 
+        Callers MUST stop the sender thread (``ConnectionManager.reset_send_state``)
+        before invoking this so no in-flight message encrypts against half-reset keys.
+
         These values will be rewritten quickly, so it's not necessary to zero them manually.
         Even that likely wouldn't actually clear the data from RAM
         """
-        self.stop_sender_thread()
-        
         self.shared_key = False
         self.message_counter = 0
         self.peer_counter = 0
@@ -346,179 +302,7 @@ class SecureChatProtocol(ProtocolBase):
         self._ke_mlkem_shared_secret = b""
         self._ke_intermediary_key_1 = b""
         self.ke_step = 0
-        
-        # Clear message queue
-        with self._sender_lock:
-            self._message_queue.clear()
-    
-    def start_sender_thread(self) -> None:
-        """Start the background sender thread for message queuing.
 
-        Frames are transmitted via ``self.client.send_raw``.
-        """
-        if self._sender_thread is not None and self._sender_thread.is_alive():
-            return  # Thread already running
-        
-        self._sender_running = True
-        self._sender_thread = threading.Thread(target=self._sender_loop, daemon=True)
-        self._sender_thread.start()
-    
-    def stop_sender_thread(self) -> None:
-        """Stop the background sender thread."""
-        self._sender_running = False
-        if self._sender_thread is not None and self._sender_thread.is_alive():
-            self._sender_thread.join(timeout=1.0)
-        self._sender_thread = None
-    
-    def queue_json(self, obj: dict[str, Any]) -> None:
-        """Encrypt a JSON-serialisable dict and add it to the send queue."""
-        with self._sender_lock:
-            self._message_queue.append((_QueueKind.ENCRYPT_JSON, obj))
-    
-    def queue_text(self, text: str) -> None:
-        """Encrypt a plain-text chat message and add it to the send queue."""
-        with self._sender_lock:
-            self._message_queue.append((_QueueKind.ENCRYPT_TEXT, text))
-    
-    def queue_json_then_switch(self, obj: dict[str, Any]) -> None:
-        """Encrypt a JSON dict, send it under the current keys, then activate pending keys."""
-        with self._sender_lock:
-            self._message_queue.append((_QueueKind.ENCRYPT_JSON_THEN_SWITCH, obj))
-    
-    def send_emergency_close(self) -> bool:
-        """
-        Send an emergency close message immediately, bypassing the queue.
-
-        Behavior:
-            - If encryption is ready, encrypt immediately and send over the socket.
-            - If encryption is not ready, send plaintext immediately.
-
-        Returns:
-            bool: True if the message was sent successfully, False otherwise.
-        """
-        if self.client is None:
-            return False
-        emergency_message = {"type": MessageType.EMERGENCY_CLOSE}
-        if self.shared_key and self._send_chain_key:
-            # Encrypt immediately using normal ratcheting
-            encrypted = self.encrypt_message(json.dumps(emergency_message))
-            self.client.send_raw(encrypted)
-        
-        else:
-            # Fall back to plaintext immediate send
-            self.client.send_raw(json.dumps(emergency_message).encode("utf-8"))
-        
-        return True
-    
-    def _generate_dummy_message(self) -> bytes:
-        """Generate a dummy message with random data."""
-        dummy_data = os.urandom(self.config["max_dummy_packet_size"])
-        
-        dummy_message = {
-            "type": MessageType.DUMMY_MESSAGE,
-            "data": base64.b64encode(dummy_data).decode("utf-8"),
-        }
-        return self.encrypt_message(json.dumps(dummy_message))
-    
-    def _sender_loop(self) -> None:
-        """Background thread loop that sends messages every 250 ms.
-
-        Dequeues one item per tick, encrypts it, and sends it over the socket.
-        When the queue is empty and dummy-message sending is enabled, a random
-        dummy packet is sent instead to obscure traffic patterns.
-        """
-        while self._sender_running:
-            item = self._get_next_item()
-            to_send, switch_keys_after = self._prepare_item_for_sending(item)
-            
-            if to_send is not None and self.client is not None:
-                self._send_prepared_item(to_send, switch_keys_after)
-            
-            time.sleep(0.25)
-    
-    def _get_next_item(self) -> tuple["_QueueKind", Any] | bytes | None:
-        """Get the next item from the queue or generate a dummy message."""
-        with self._sender_lock:
-            if self._message_queue:
-                return self._message_queue.popleft()
-        
-        # Generate dummy message if appropriate
-        if self.send_dummy_messages and self.encryption_ready and self.config["send_dummy_packets"]:
-            return self._generate_dummy_message()
-        
-        return None
-    
-    def _prepare_item_for_sending(
-            self, item: tuple["_QueueKind", Any] | bytes | bytearray | None,
-    ) -> tuple[bytes | None, bool]:
-        """Convert a queue item into bytes ready for transmission.
-
-        Returns (data_to_send, switch_keys_after) where switch_keys_after signals
-        that pending keys should be activated after the message is sent.
-        """
-        if item is None:
-            return None, False
-        
-        try:
-            # Raw bytes from _generate_dummy_message
-            if isinstance(item, (bytes, bytearray)):
-                return bytes(item), False
-            
-            kind, payload = item
-            
-            if kind is _QueueKind.ENCRYPT_TEXT:
-                return self._encrypt_text_message(payload), False
-            
-            if kind is _QueueKind.ENCRYPT_JSON:
-                return self._encrypt_json_message(payload), False
-            
-            if kind is _QueueKind.ENCRYPT_JSON_THEN_SWITCH:
-                return self._encrypt_json_message(payload), True
-            
-            raise MessageError(code=ErrorCode.MESSAGE_TYPE, context={"queue_kind": str(kind)})
-        
-        except ChatError as e:
-            self._forward_exc(e)
-            return None, False
-        except (ValueError, TypeError) as e:
-            self._forward_exc(ChatError(f"Message preparation error (dropped): {e}", cause=e))
-            return None, False
-        except Exception as e:
-            self._forward_exc(ChatError(f"Unexpected error preparing message (dropped): {e}", cause=e))
-            return None, False
-    
-    def _encrypt_text_message(self, text: str) -> bytes:
-        """Encrypt a text message."""
-        if not isinstance(text, str) or not (self.shared_key and self._send_chain_key):
-            raise RatchetError(code=ErrorCode.CHAIN_KEY_MISSING, context={"kind": "encrypt_text"})
-        
-        inner_obj = {"type": MessageType.TEXT_MESSAGE, "text": text}
-        return self.encrypt_message(json.dumps(inner_obj))
-    
-    def _encrypt_json_message(self, obj: dict) -> bytes:
-        """Encrypt a JSON message."""
-        if not isinstance(obj, dict) or not (self.shared_key and self._send_chain_key):
-            raise RatchetError(code=ErrorCode.CHAIN_KEY_MISSING, context={"kind": "encrypt_json"})
-        
-        return self.encrypt_message(json.dumps(obj))
-    
-    def _send_prepared_item(self, to_send: bytes, switch_keys_after: bool) -> None:
-        """Send prepared bytes and activate pending keys afterwards if requested."""
-        assert self.client is not None
-        result = self.client.send_raw(to_send)
-        if result is not None:
-            self._forward_exc(ChatError(f"Failed to send message: {result}", context={"reason": str(result)}))
-        
-        if switch_keys_after:
-            self.activate_pending_keys()
-    
-    def _forward_exc(self, exc: BaseException) -> None:
-        """Report an exception to the client, or fall back to print if no client is set."""
-        if self.client is not None:
-            self.client.raise_to_ui(exc)
-        else:
-            print(exc)
-    
     def _generate_dsa_keys(self) -> None:
         """Generate ML-DSA keypair for key exchange signing."""
         priv = MLDSA87PrivateKey.generate()
@@ -573,7 +357,7 @@ class SecureChatProtocol(ProtocolBase):
                     context=ML_DSA_CONTEXT,
             )
         except InvalidSignature as exc:
-            raise KeyExchangeError(code=ErrorCode.KE_MLKEM_SIG, cause=exc)
+            raise KeyExchangeError(code=ErrorCode.KE_MLKEM_SIG, cause=exc) from None
         
         self.peer_mlkem_public_key = MLKEM1024PublicKey.from_public_bytes(mlkem_public_key)
     
@@ -626,7 +410,7 @@ class SecureChatProtocol(ProtocolBase):
                     context=ML_DSA_CONTEXT,
             )
         except InvalidSignature as exc:
-            raise KeyExchangeError(code=ErrorCode.KE_MLKEM_CT_SIG, cause=exc)
+            raise KeyExchangeError(code=ErrorCode.KE_MLKEM_CT_SIG, cause=exc) from None
         
         if self._mlkem_private_key is None:
             raise KeyExchangeError(code=ErrorCode.KE_MISSING_PRIVATE_KEY, context={"algo": "ML-KEM"})
@@ -702,7 +486,7 @@ class SecureChatProtocol(ProtocolBase):
                     context=ML_DSA_CONTEXT,
             )
         except InvalidSignature as exc:
-            raise KeyExchangeError(code=ErrorCode.KE_X25519_HQC_SIG, cause=exc)
+            raise KeyExchangeError(code=ErrorCode.KE_X25519_HQC_SIG, cause=exc) from None
         
         # Decrypt peer's X25519 pubkey with intermediary key 1
         decryptor_1 = KeyExchangeDoubleEncryptor(self._ke_intermediary_key_1)
@@ -835,7 +619,7 @@ class SecureChatProtocol(ProtocolBase):
     def process_key_verification_message(data: bytes) -> bool:
         """Process a key verification message from peer."""
         return process_key_verification_message(data)
-    
+
     def encrypt_message(self, plaintext: str | bytes) -> bytes:
         """
         Encrypt a message with authentication and replay protection using perfect forward secrecy.
@@ -854,6 +638,10 @@ class SecureChatProtocol(ProtocolBase):
             It also makes it possible to differentiate between forged messages and messages
             that have been corrupted or manipulated in flight
         """
+        with self._encryption_lock:
+            return self._encrypt_message(plaintext)
+
+    def _encrypt_message(self, plaintext: str | bytes) -> bytes:
         if not self.shared_key or not self._send_chain_key:
             raise RatchetError(code=ErrorCode.CHAIN_KEY_MISSING, context={"direction": "send"})
         
@@ -862,10 +650,7 @@ class SecureChatProtocol(ProtocolBase):
         
         nonce, eph_pub_bytes, message_key = self._ratchet_send_step()
         
-        if isinstance(plaintext, str):
-            plaintext_bytes = plaintext.encode("utf-8")
-        else:
-            plaintext_bytes = plaintext
+        plaintext_bytes = plaintext.encode("utf-8") if isinstance(plaintext, str) else plaintext
         
         aad = _build_aad(MessageType.ENCRYPTED_MESSAGE, self.message_counter, nonce, eph_pub_bytes)
         encryptor = DoubleEncryptor(message_key, self._otp_material, message_counter=self.message_counter)
@@ -890,28 +675,33 @@ class SecureChatProtocol(ProtocolBase):
         encrypted_message["verification"] = base64.b64encode(verif_hasher.finalize()).decode("utf-8")
         
         return json.dumps(encrypted_message).encode("utf-8")
-    
+
     def decrypt_message(self, data: bytes) -> str:
-        """Decrypt and authenticate a message using perfect forward secrecy with proper state management.
+        """
+        Decrypt and authenticate a message using perfect forward secrecy with proper state management.
         Incorporates Double Ratchet: mixes DH shared secret (from peer's included X25519 public key and our
         message-phase private key) into the chain before deriving the message key.
 
         Raises value error if message is invalid or verification fails.
         """
+        with self._decryption_lock:
+            return self._decrypt_message(data)
+
+    def _decrypt_message(self, data: bytes) -> str:
         if not self.shared_key or not self._receive_chain_key:
             raise RatchetError(code=ErrorCode.CHAIN_KEY_MISSING, context={"direction": "recv"})
         try:
             message: dict[str, Any] = json.loads(data)
-            nonce: bytes = base64.b64decode(message["nonce"])
-            ciphertext: bytes = base64.b64decode(message["ciphertext"])
+            nonce: bytes = base64.b64decode(message["nonce"], validate=True)
+            ciphertext: bytes = base64.b64decode(message["ciphertext"], validate=True)
             counter: int = message["counter"]
             peer_dh_pub_b64: str = message["dh_public_key"]
             peer_dh_pub_bytes = base64.b64decode(peer_dh_pub_b64, validate=True)
             expected_verification: bytes = base64.b64decode(message["verification"], validate=True)
-        except (UnicodeDecodeError, json.JSONDecodeError, binascii.Error, TypeError) as e:
-            raise MessageError(code=ErrorCode.MESSAGE_DECODE, cause=e)
+        except (UnicodeDecodeError, ValueError, json.JSONDecodeError, binascii.Error, TypeError) as e:
+            raise MessageError(code=ErrorCode.MESSAGE_DECODE, cause=e) from None
         except KeyError as e:
-            raise MessageError(code=ErrorCode.MESSAGE_FIELD_MISSING, cause=e)
+            raise MessageError(code=ErrorCode.MESSAGE_FIELD_MISSING, cause=e) from None
         
         verif_hasher = HMAC(self._verification_key, hashes.SHA512())
         verif_hasher.update(json.dumps({
@@ -931,12 +721,12 @@ class SecureChatProtocol(ProtocolBase):
         try:
             decrypted_data = decryptor.decrypt(nonce, ciphertext, aad)
         except InvalidTag:
-            raise MessageError(code=ErrorCode.MESSAGE_DECRYPT, context={"reason": "invalid_tag"})
+            raise MessageError(code=ErrorCode.MESSAGE_DECRYPT, context={"reason": "invalid_tag"}) from None
         
         try:
             decrypted_data_str = decrypted_data.decode("utf-8")
-        except UnicodeDecodeError:
-            raise MessageError(code=ErrorCode.MESSAGE_DECODE, context={"reason": "utf8"})
+        except (UnicodeDecodeError, ValueError):
+            raise MessageError(code=ErrorCode.MESSAGE_DECODE, context={"reason": "utf8"}) from None
         
         self._commit_recv_state(counter, peer_dh_pub_bytes, new_chain_key, use_saved)
         if not use_saved and new_chain_key:
@@ -951,7 +741,8 @@ class SecureChatProtocol(ProtocolBase):
         Encrypt a file chunk using the Double Ratchet, identical in structure to encrypt_message
         but operating on raw binary data rather than JSON text.
 
-        Frame layout: [1-byte magic][COUNTER_SIZE-byte counter][NONCE_SIZE-byte nonce][HALF_KEY_SIZE-byte eph_pub][ciphertext]
+        Frame layout:
+        [1-byte magic][COUNTER_SIZE-byte counter][NONCE_SIZE-byte nonce][HALF_KEY_SIZE-byte eph_pub][ciphertext]
 
         :return: The encrypted frame as bytes, ready to send.
         :raises ValueError: If encryption state is not ready.
@@ -980,13 +771,23 @@ class SecureChatProtocol(ProtocolBase):
         counter_bytes = struct.pack('!Q', self.message_counter)
         return MAGIC_NUMBER_FILE_TRANSFER + counter_bytes + nonce + eph_pub_bytes + ciphertext
     
-    def decrypt_file_chunk(self, encrypted_data: bytes) -> dict:
+    def decrypt_file_chunk(self, encrypted_data: bytes) -> dict[str, int | str | bytes]:
         """
         Decrypt a file chunk frame produced by encrypt_file_chunk.
-        Expects frame: [1-byte magic][COUNTER_SIZE-byte counter][NONCE_SIZE-byte nonce][HALF_KEY_SIZE-byte eph_pub][ciphertext].
+        Expects frame:
+        [1-byte magic][COUNTER_SIZE-byte counter][NONCE_SIZE-byte nonce][HALF_KEY_SIZE-byte eph_pub][ciphertext].
 
-        :return: dict with keys ``transfer_id``, ``chunk_index``, ``chunk_data``.
-        :raises ValueError: If decryption fails or the frame is malformed.
+        Returns:
+            dict[str, int | str | bytes]: A dictionary containing the decrypted data and metadata:
+                - transfer_id (str): The unique identifier of the transfer this chunk belongs to.
+                - chunk_index (int): The index of this chunk in the transfer's sequence.
+                - chunk_data (bytes): The binary content of the decrypted chunk.
+
+        Raises:
+            RatchetError: If the shared key or receiving chain key is missing.
+            ChunkError: If the encrypted data is improperly formatted, cannot be decrypted, or
+                        its metadata is invalid.
+            MessageError: If the decrypted message type is not a file chunk.
         """
         if not self.shared_key or not self._receive_chain_key:
             raise RatchetError(code=ErrorCode.CHAIN_KEY_MISSING, context={"direction": "recv"})
@@ -996,9 +797,9 @@ class SecureChatProtocol(ProtocolBase):
         try:
             counter = int(struct.unpack('!Q', encrypted_data[FILE_CHUNK_COUNTER_OFFSET:FILE_CHUNK_NONCE_OFFSET])[0])
         except struct.error:
-            raise ChunkError(code=ErrorCode.CHUNK_FORMAT)
+            raise ChunkError(code=ErrorCode.CHUNK_FORMAT) from None
         except ValueError:
-            raise ChunkError(code=ErrorCode.CHUNK_COUNTER)
+            raise ChunkError(code=ErrorCode.CHUNK_COUNTER) from None
         
         nonce = encrypted_data[FILE_CHUNK_NONCE_OFFSET:FILE_CHUNK_EPH_PUB_OFFSET]
         peer_eph_pub = encrypted_data[FILE_CHUNK_EPH_PUB_OFFSET:FILE_CHUNK_CIPHERTEXT_OFFSET]
@@ -1012,7 +813,7 @@ class SecureChatProtocol(ProtocolBase):
         try:
             plaintext = decryptor.decrypt(nonce, ciphertext, aad)
         except InvalidTag:
-            raise ChunkError(code=ErrorCode.CHUNK_DECRYPT, context={"reason": "invalid_tag"})
+            raise ChunkError(code=ErrorCode.CHUNK_DECRYPT, context={"reason": "invalid_tag"}) from None
         
         if len(plaintext) < HEADER_LENGTH_SIZE:
             raise ChunkError(code=ErrorCode.CHUNK_HEADER, context={"reason": "too_short"})
@@ -1020,7 +821,7 @@ class SecureChatProtocol(ProtocolBase):
         try:
             header_len = struct.unpack("!H", plaintext[:HEADER_LENGTH_SIZE])[0]
         except struct.error:
-            raise ChunkError(code=ErrorCode.CHUNK_HEADER, context={"reason": "bad_header_length"})
+            raise ChunkError(code=ErrorCode.CHUNK_HEADER, context={"reason": "bad_header_length"}) from None
         
         if len(plaintext) < HEADER_LENGTH_SIZE + header_len:
             raise ChunkError(code=ErrorCode.CHUNK_HEADER, context={"reason": "header_length_mismatch"})
@@ -1030,7 +831,7 @@ class SecureChatProtocol(ProtocolBase):
         try:
             header = json.loads(header_json)
         except (json.JSONDecodeError, UnicodeDecodeError):
-            raise ChunkError(code=ErrorCode.CHUNK_JSON)
+            raise ChunkError(code=ErrorCode.CHUNK_JSON) from None
         
         if header["type"] != MessageType.FILE_CHUNK:
             raise MessageError(code=ErrorCode.MESSAGE_TYPE, context={"scope": "chunk"})
@@ -1147,10 +948,8 @@ class SecureChatProtocol(ProtocolBase):
     ) -> None:
         """Update receive-side ratchet state after a successful decryption."""
         if use_saved:
-            try:
+            with contextlib.suppress(KeyError):
                 self.skipped_counters.pop(counter)
-            except KeyError:
-                pass
         elif new_chain_key:
             self._receive_chain_key = new_chain_key
             self.peer_counter = counter

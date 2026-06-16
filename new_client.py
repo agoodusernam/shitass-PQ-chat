@@ -12,9 +12,6 @@ import string
 from pathlib import Path
 from typing import Any
 
-from SecureChatABCs.client_base import ClientBase
-from SecureChatABCs.protocol_base import ProtocolBase
-from SecureChatABCs.ui_base import UIBase
 from client.connection_manager import ConnectionManager
 from client.deaddrop_manager import DeaddropManager
 from client.file_transfer_manager import FileTransferManager
@@ -24,17 +21,20 @@ from config import ClientConfigHandler
 from protocol import constants
 from protocol.constants import FILE_CHUNK_CIPHERTEXT_OFFSET, MAGIC_SIZE, MessageType
 from protocol.errors import (
-    ErrorCode,
     ChatError,
-    RatchetError,
+    ErrorCode,
     KeyExchangeError,
     MessageError,
+    RatchetError,
     UIError,
     dispatch_error,
 )
 from protocol.file_handler import ProtocolFileHandler
 from protocol.shared import SecureChatProtocol
 from protocol.types import FileMetadata, FileTransfer
+from SecureChatABCs.client_base import ClientBase
+from SecureChatABCs.protocol_base import ProtocolBase
+from SecureChatABCs.ui_base import UIBase
 from utils.checks import (
     allowed_outer_fields,
     allowed_unverified_inner_fields,
@@ -84,7 +84,7 @@ class SecureChatClient(ClientBase):
         self.port: int = 16384
         
         self.file_handler: ProtocolFileHandler = ProtocolFileHandler()
-        self._protocol: ProtocolBase = SecureChatProtocol(self, self.file_handler)
+        self._protocol: ProtocolBase = SecureChatProtocol(self.file_handler)
         
         # Session state flags
         self._key_exchange_complete: bool = False
@@ -116,7 +116,7 @@ class SecureChatClient(ClientBase):
         self._deaddrop: DeaddropManager = DeaddropManager(self)
         
         # Networking + dispatch — delegated to ConnectionManager
-        self._connection: ConnectionManager = ConnectionManager(self)
+        self._connection: ConnectionManager = ConnectionManager(self, self._protocol)
     
     @property
     def connected(self) -> bool:
@@ -181,7 +181,11 @@ class SecureChatClient(ClientBase):
     
     @property
     def bypass_rate_limits(self) -> bool:
-        """True when rate limiting should be suspended — during file transfers, voice calls, rekeying, or while key verification is still pending after key exchange."""
+        """
+        True when rate limiting should be suspended:
+        during file transfers, voice calls, rekeying,
+        or while key verification is still pending after key exchange.
+        """
         return (
                 self.file_transfer_active
                 or self._voice_call.active
@@ -196,7 +200,7 @@ class SecureChatClient(ClientBase):
     @own_nickname.setter
     def own_nickname(self, value: str) -> None:
         """Set the local user's nickname and notify the peer via an encrypted NICKNAME_CHANGE message."""
-        self._protocol.queue_json({
+        self._connection.queue_json({
             "type":     MessageType.NICKNAME_CHANGE,
             "nickname": value,
         })
@@ -230,7 +234,6 @@ class SecureChatClient(ClientBase):
     
     def disconnect(self) -> None:
         self.end_call(notify_peer=self.key_exchange_complete and self.connected)
-        self._protocol.stop_sender_thread()
         self._connection.disconnect()
         self._deaddrop.reset()
         self.ui.on_graceful_disconnect("Disconnected from server.")
@@ -244,6 +247,35 @@ class SecureChatClient(ClientBase):
     def next_message_counter(self) -> int:
         return self._protocol.message_counter + 1
     
+    @property
+    def send_dummy_messages(self) -> bool:
+        """Whether dummy traffic-shaping packets should currently be sent."""
+        return self._connection.send_dummy_messages
+
+    @send_dummy_messages.setter
+    def send_dummy_messages(self, value: bool) -> None:
+        self._connection.send_dummy_messages = value
+
+    def queue_json(self, obj: dict[str, Any]) -> None:
+        """Encrypt a JSON-serialisable dict and add it to the send queue."""
+        self._connection.queue_json(obj)
+
+    def queue_text(self, text: str) -> None:
+        """Encrypt a plain-text chat message and add it to the send queue."""
+        self._connection.queue_text(text)
+
+    def queue_json_then_switch(self, obj: dict[str, Any]) -> None:
+        """Encrypt a JSON dict, send it under the current keys, then activate pending keys."""
+        self._connection.queue_json_then_switch(obj)
+
+    def start_sender_thread(self) -> None:
+        """Start the background sender thread that drains the send queue."""
+        self._connection.start_sender_thread()
+
+    def reset_send_state(self) -> None:
+        """Stop the sender thread and drop any queued outgoing messages."""
+        self._connection.reset_send_state()
+
     def send_message(self, text: str) -> bool:
         """Encrypt and queue a text message for delivery to the peer.
 
@@ -251,7 +283,10 @@ class SecureChatClient(ClientBase):
         Also triggers an auto-rekey check after queuing.
         """
         if not self.key_exchange_complete:
-            self.raise_to_ui(KeyExchangeError(code=ErrorCode.KE_STATE, context={"reason": "ke_not_complete", "op": "send_message"}))
+            self.raise_to_ui(KeyExchangeError(
+                code=ErrorCode.KE_STATE,
+                context={"reason": "ke_not_complete", "op": "send_message"}
+            ))
             return False
         
         if not self._protocol.encryption_ready:
@@ -261,7 +296,7 @@ class SecureChatClient(ClientBase):
         if not self.peer_key_verified:
             self.ui.display_system_message("Sending message to unverified peer")
         
-        self._protocol.queue_text(text)
+        self._connection.queue_text(text)
         self.check_and_initiate_auto_rekey()
         return True
     
@@ -318,7 +353,7 @@ class SecureChatClient(ClientBase):
             "type": MessageType.EPHEMERAL_MODE_CHANGE,
             "mode": mode,
         }
-        self._protocol.queue_json(payload)
+        self._connection.queue_json(payload)
     
     # deaddrop — thin proxies to DeaddropManager
     
@@ -418,9 +453,15 @@ class SecureChatClient(ClientBase):
                 if self.key_exchange_complete:
                     self.handle_encrypted_message(message_data)
                 else:
-                    self.raise_to_ui(KeyExchangeError(code=ErrorCode.KE_STATE, context={"reason": "ke_not_complete", "frame": "ENCRYPTED_MESSAGE"}))
+                    self.raise_to_ui(KeyExchangeError(
+                        code=ErrorCode.KE_STATE,
+                        context={"reason": "ke_not_complete", "frame": "ENCRYPTED_MESSAGE"}
+                    ))
             case MessageType.ERROR:
-                self.raise_to_ui(ChatError(str(message_json.get("error", "Unknown error")), context={"frame": "ERROR", "server_error": str(message_json.get("error", ""))}))
+                self.raise_to_ui(ChatError(
+                    str(message_json.get("error", "Unknown error")),
+                    context={"frame": "ERROR", "server_error": str(message_json.get("error", ""))}
+                ))
             case MessageType.KEY_VERIFICATION:
                 self._key_exchange.handle_verification_message(message_data)
             case MessageType.KEY_EXCHANGE_RESET:
@@ -500,7 +541,10 @@ class SecureChatClient(ClientBase):
             allowed_inner = allowed_unverified_inner_fields()
             unexpected_inner = first_unexpected_field(message_json, allowed_inner)
             if unexpected_inner:
-                self.raise_to_ui(UIError(code=ErrorCode.UNKNOWN_FIELD, context={"field": unexpected_inner, "scope": "inner"}))
+                self.raise_to_ui(UIError(
+                    code=ErrorCode.UNKNOWN_FIELD,
+                    context={"field": unexpected_inner, "scope": "inner"}
+                ))
                 return
         
         message_type = MessageType(message_json.get("type", -1))
@@ -596,10 +640,11 @@ class SecureChatClient(ClientBase):
             "type":              MessageType.DELIVERY_CONFIRMATION,
             "confirmed_counter": confirmed_counter,
         }
-        self._protocol.queue_json(message)
+        self._connection.queue_json(message)
     
     def handle_emergency_close(self) -> None:
         """Handle an EMERGENCY_CLOSE message from the peer: notify the UI and immediately disconnect."""
+        self._connection.reset_send_state()
         self._protocol.reset_key_exchange()
         self.ui.on_emergency_close()
         self.ui.display_system_message("EMERGENCY CLOSE RECEIVED")
@@ -612,14 +657,19 @@ class SecureChatClient(ClientBase):
         self.file_handler.clear()
     
     def handle_ephemeral_mode_change(self, message: dict[str, Any]) -> None:
-        """Apply an ephemeral-mode change from the server, but only if the owner ID matches the known server identifier."""
+        """
+        Apply an ephemeral-mode change from the server, but only if the owner ID matches the known server identifier.
+        """
         mode = str(message.get("mode", "OFF")).upper()
         owner_id = message.get("owner_id")
         
         if owner_id == self.server_identifier:
             self.ui.on_ephemeral_mode_change(mode, owner_id)
         else:
-            self.raise_to_ui(UIError(code=ErrorCode.UNKNOWN_FIELD, context={"reason": "invalid_owner", "owner_id": str(owner_id)}))
+            self.raise_to_ui(UIError(
+                code=ErrorCode.UNKNOWN_FIELD,
+                context={"reason": "invalid_owner", "owner_id": str(owner_id)}
+            ))
     
     def handle_nickname_change(self, message: dict[str, Any]) -> None:
         """Apply a peer nickname change, subject to verification and configuration checks."""

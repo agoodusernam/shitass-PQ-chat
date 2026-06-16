@@ -18,9 +18,11 @@ python debug_client.py
 pytest tests/
 pytest tests/test_protocol_shared.py::TestClass::test_name  # single test
 
-# Install deps
-pip install -r requirements.txt         # client (includes UI libs)
-pip install -r requirements_server.txt  # server-only (crypto only)
+# Install deps (uv)
+uv sync --extra server    # server only (crypto)
+uv sync --extra client    # client without UI
+uv sync --extra full      # client + UI libs
+uv sync                   # dev deps only (pytest, hypothesis)
 
 # Lint
 pylint <module>              # config at .pylintrc
@@ -35,13 +37,13 @@ Post-quantum E2E encrypted chat. Server is a dumb relay - it routes ciphertext a
 ```
 UIs/ (GUI.py, TUI.py, debug_GUI.py)
   └─ SecureChatABCs/ui_base.py  (UIBase ABC)
-       └─ SecureChatClient  (new_client.py, ~580 lines - facade)
-            ├─ ConnectionManager   (client/connection_manager.py)    - socket I/O, receive loop, rate limit, keepalive, server frames
+       └─ SecureChatClient  (new_client.py, ~660 lines - facade)
+            ├─ ConnectionManager   (client/connection_manager.py)    - socket I/O, receive loop, rate limit, keepalive, server frames, send queue + sender thread + dummy traffic
             ├─ KeyExchangeManager  (client/key_exchange_manager.py)  - 16-step hybrid KE, verification, rekey, reset
             ├─ FileTransferManager (client/file_transfer_manager.py) - metadata, chunking, progress, send thread
             ├─ DeaddropManager     (client/deaddrop_manager.py)      - PBKDF2-protected async file sharing via server
             ├─ VoiceCallManager    (client/voice_call_manager.py)    - voice call signaling + audio frames
-            ├─ SecureChatProtocol  (protocol/shared.py, ~1700 lines; composes _KeyDerivation + _RekeyState)
+            ├─ SecureChatProtocol  (protocol/shared.py, ~1000 lines; composes _KeyDerivation + _RekeyState)
             │    ├─ crypto_classes.py    - DoubleEncryptor, ChunkIndependentDoubleEncryptor
             │    ├─ constants.py         - message types, frame offsets, crypto constants
             │    ├─ create_messages.py   - serialize protocol frames
@@ -66,16 +68,20 @@ consumed by UIs and tests. State probed by tests (`_protocol`,
 
 The socket is owned solely by `ConnectionManager` (`_socket`). Nothing else holds a socket reference.
 `ConnectionManager` owns the full transport lifecycle: socket creation, `connect`, the receive thread,
-`disconnect`/`close`. All sending goes through the facade's public `send_raw(bytes)` / `send_encoded(obj)`, which delegate to
-`ConnectionManager`. The protocol's sender thread receives an injected send callable via
-`start_sender_thread(send_func)` — it never touches a socket directly.
+`disconnect`/`close`. It also owns the outgoing **send queue + sender thread + dummy-traffic
+generation** (`_message_queue`, `start_sender_thread`, `queue_json`/`queue_text`/`queue_json_then_switch`,
+`send_dummy_messages`). The sender thread encrypts via `protocol.encrypt_message()` and sends via its own
+`send_raw`. `SecureChatProtocol` is now pure crypto — it holds no `client`/`SecureChatClient` back-reference.
+All sending goes through the facade's public `send_raw(bytes)` / `send_encoded(obj)` and the queue proxies,
+which delegate to `ConnectionManager`.
 
 ### Manager dispatch rules
 
 - Managers MUST call their sibling managers directly (`self._client._key_exchange.handle_reset(...)`), never bounce through facade proxies
   (`self._client.handle_key_exchange_reset(...)`). Facade proxies are for external callers (UIs, tests) only. Exception: transport —
-  `ConnectionManager` is reached only through the facade's `send_raw` /
-  `send_encoded`, so managers send via `self._client.send_raw(...)` / `self._client.send_encoded(...)`.
+  `ConnectionManager` is reached only through the facade's transport proxies (`send_raw`, `send_encoded`, `queue_json`,
+  `queue_text`, `queue_json_then_switch`, `send_dummy_messages`, `start_sender_thread`, `reset_send_state`), so managers
+  call e.g. `self._client.queue_json(...)` / `self._client.send_raw(...)`, never `self._client._connection` directly.
 - Inside a single manager, dispatch to own methods via `self.`, not via `self._client.<same_method>`.
 - When adding a new message-type case in `SecureChatClient.route` (outer/plaintext frames) or
   `SecureChatClient.handle_message_types` (inner/decrypted frames), route straight to the owning manager.
@@ -156,7 +162,7 @@ Wire format (`ENCRYPTED_MESSAGE`, type 10):
 ## Threading Model
 
 - **Main thread**: UI event loop
-- **Sender thread** (protocol): dequeues `_message_queue`, encrypts, sends every ~250 ms tick via the injected send callable
+- **Sender thread** (ConnectionManager): dequeues `_message_queue`, encrypts via `protocol.encrypt_message()`, sends every ~250 ms tick; emits a dummy packet when the queue is empty and `send_dummy_messages` is on
 - **Receiver thread** (ConnectionManager): `ConnectionManager.receive_loop()` reads the TCP socket;
   `ConnectionManager.handle_message` applies rate limit + size cap, then hands off to `SecureChatClient.route`, which parses the frame and
   dispatches to the owning manager

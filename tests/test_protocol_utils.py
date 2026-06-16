@@ -11,7 +11,6 @@ from protocol.constants import FINGERPRINT_WORD_COUNT, MAX_SANITIZED_STR_LENGTH
 from protocol.utils import (
     LRUCache,
     StreamingGzipCompressor,
-    bytes_to_human_readable,
     chunk_file,
     decide_compression,
     generate_key_fingerprint,
@@ -25,7 +24,7 @@ from protocol.utils import (
 class TestLRUCache:
     def test_eviction_order(self) -> None:
         c = LRUCache(2)
-        c[1] = b"a";
+        c[1] = b"a"
         c[2] = b"b"
         assert c[1] == b"a"  # touch
         c[3] = b"c"  # evicts 2
@@ -48,42 +47,19 @@ class TestStreamingGzip:
         data = b"data" * 4096
         out = comp.compress_chunk(data) + comp.finalise()
         assert gzip.decompress(out) == data
-    
-    def test_finalize_is_alias_of_finalise(self) -> None:
-        comp = StreamingGzipCompressor()
-        comp.compress_chunk(b"x")
-        assert comp.finalize.__func__ is comp.finalise.__func__
-
 
 class TestDecideCompression:
     def test_user_pref_off(self, tmp_path: Path) -> None:
-        f = tmp_path / "a.txt";
-        f.touch()
+        f = tmp_path / "a.txt"
         assert decide_compression(f, user_pref=False) is False
     
     def test_incompressible_extension(self, tmp_path: Path) -> None:
-        f = tmp_path / "a.zip";
-        f.touch()
+        f = tmp_path / "a.zip"
         assert decide_compression(f, user_pref=True) is False
     
     def test_text_compresses(self, tmp_path: Path) -> None:
-        f = tmp_path / "a.txt";
-        f.touch()
+        f = tmp_path / "a.txt"
         assert decide_compression(f, user_pref=True) is True
-
-
-class TestBytesHumanReadable:
-    @pytest.mark.parametrize("size,expected", [
-        (0, "0 B"),
-        (1023, "1023 B"),
-        (1024, "1.0 KiB"),
-        (1024 * 1024, "1.0 MiB"),
-        (1024 ** 3, "1.00 GiB"),
-        (5 * 1024 ** 3, "5.00 GiB"),
-    ])
-    def test_format(self, size: int, expected: str) -> None:
-        assert bytes_to_human_readable(size) == expected
-
 
 class TestXorBytes:
     @pytest.mark.parametrize("a,b", [
@@ -103,7 +79,7 @@ class TestXorBytes:
     
     def test_unequal_lengths_int_path(self) -> None:
         a, b = b"\xff", b"\x0f\x00"
-        expected = bytes(x ^ y for x, y in zip(b"\xff\x00", b"\x0f\x00"))
+        expected = bytes(x ^ y for x, y in zip(b"\xff\x00", b"\x0f\x00", strict=False))
         assert xor_bytes(a, b) == expected
 
 

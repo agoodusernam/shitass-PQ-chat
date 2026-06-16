@@ -76,7 +76,7 @@ def allowed_outer_fields(msg_type: Any) -> set[str]:
 
 def first_unexpected_field(obj: dict[Any, Any], allowed: set[str]) -> str | None:
     """Return the first key not in allowed or None if all keys allowed."""
-    for k in obj.keys():
+    for k in obj:
         if k not in allowed:
             return utils.sanitize_str(k)
     return None

@@ -1,8 +1,4 @@
 from abc import ABC, abstractmethod
-from typing import Any, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from SecureChatABCs.client_base import ClientBase
 
 
 class ProtocolBase(ABC):
@@ -15,69 +11,33 @@ class ProtocolBase(ABC):
     """
     
     @abstractmethod
-    def __init__(self, client: "ClientBase | None" = None) -> None:
+    def __init__(self) -> None:
         self.peer_counter: int = 0
         self.ke_step: int = 0
         self.message_counter: int = 0
-    
+
     @property
     @abstractmethod
     def encryption_ready(self) -> bool:
         """Check if encryption is ready (shared key and chain keys established)."""
-    
+
     @property
     @abstractmethod
     def should_auto_rekey(self) -> bool:
         """Check if automatic rekey should be initiated based on message count."""
-    
+
     @property
     @abstractmethod
     def rekey_in_progress(self) -> bool:
         """Check if a rekey is currently in progress."""
-    
-    @property
-    @abstractmethod
-    def send_dummy_messages(self) -> bool:
-        """Check if dummy messages should be sent."""
-    
-    @send_dummy_messages.setter
-    @abstractmethod
-    def send_dummy_messages(self, value: bool) -> None:
-        """Set whether the client wants dummy messages to be sent."""
-    
+
     @property
     @abstractmethod
     def has_active_file_transfers(self) -> bool:
         """Return True if any file transfers are currently active."""
-    
-    # Transport
-    
-    @abstractmethod
-    def start_sender_thread(self) -> None:
-        """Start the background sender thread, transmitting via the client's ``send_raw``."""
-    
-    @abstractmethod
-    def stop_sender_thread(self) -> None:
-        """Stop the background sender thread."""
-    
-    @abstractmethod
-    def queue_json(self, obj: dict[str, Any]) -> None:
-        """Encrypt a JSON-serialisable dict and add it to the send queue."""
-    
-    @abstractmethod
-    def queue_text(self, text: str) -> None:
-        """Encrypt a plain-text chat message and add it to the send queue."""
-    
-    @abstractmethod
-    def queue_json_then_switch(self, obj: dict[str, Any]) -> None:
-        """Encrypt a JSON dict, send it under the current keys, then activate pending keys."""
-    
-    @abstractmethod
-    def send_emergency_close(self) -> bool:
-        """Send an emergency close message immediately, bypassing the queue."""
-    
+
     # Key generation & exchange
-    
+
     @abstractmethod
     def reset_key_exchange(self) -> None:
         """Reset all cryptographic state to initial values for key exchange restart."""
@@ -207,12 +167,3 @@ class ProtocolBase(ABC):
     def reset_auto_rekey_counter(self) -> None:
         """Reset the automatic rekey message counter"""
     
-    @property
-    @abstractmethod
-    def client(self) -> "ClientBase | None":
-        """The client instance this protocol reports errors to."""
-    
-    @client.setter
-    @abstractmethod
-    def client(self, value: "ClientBase") -> None:
-        """Set the client instance."""

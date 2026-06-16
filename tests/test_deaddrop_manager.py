@@ -9,20 +9,18 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from protocol.errors import ErrorCode, ChatError
 
 from new_client import SecureChatClient
 from protocol.constants import (
-    DEADDROP_FILE_EXT_HEADER_SIZE,
     DEADDROP_KDF_KEY_LENGTH,
     DOUBLE_KEY_SIZE,
     MessageType,
 )
+from protocol.errors import ChatError
 
 
 def _make_client() -> SecureChatClient:

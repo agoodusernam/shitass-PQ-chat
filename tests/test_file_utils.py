@@ -26,9 +26,9 @@ class TestSafeRemove:
 
 class TestCleanupPaths:
     def test_counts_all_removed(self, tmp_path: Path) -> None:
-        a = tmp_path / "a";
+        a = tmp_path / "a"
         a.write_bytes(b"1")
-        b = tmp_path / "b";
+        b = tmp_path / "b"
         b.write_bytes(b"2")
         missing = tmp_path / "c"
         assert cleanup_paths([a, b, missing]) == 3

@@ -10,12 +10,11 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from protocol import parse_messages
-from protocol import create_messages
+from protocol import create_messages, parse_messages
 from protocol.errors import (
-    ErrorCode,
     ChatError,
     CryptoError,
+    ErrorCode,
     KeyExchangeError,
     MessageError,
     RekeyError,
@@ -31,7 +30,7 @@ if TYPE_CHECKING:
 class KeyExchangeManager:
     """Owns initial KE, verification, rekey, and reset handling."""
     
-    def __init__(self, client: "SecureChatClient") -> None:
+    def __init__(self, client: SecureChatClient) -> None:
         self._client = client
     
     @property
@@ -127,7 +126,7 @@ class KeyExchangeManager:
         self._client.send_raw(verification_message)
         
         self._client._verification_complete = True
-        self._protocol.start_sender_thread()
+        self._client.start_sender_thread()
     
     def get_own_key_fingerprint(self) -> str:
         return self._protocol.get_own_key_fingerprint()
@@ -137,7 +136,10 @@ class KeyExchangeManager:
         try:
             peer_verified = parse_messages.process_key_verification_message(message_data)
         except CryptoError as e:
-            self._client.raise_to_ui(MessageError(code=ErrorCode.MESSAGE_FIELD_MISSING, context={"frame": "key_verification"}, cause=e))
+            self._client.raise_to_ui(MessageError(
+                code=ErrorCode.MESSAGE_FIELD_MISSING,
+                context={"frame": "key_verification"}, cause=e
+            ))
             return
         
         self._client._peer_verified_own_key = peer_verified
@@ -147,13 +149,16 @@ class KeyExchangeManager:
     
     def initiate_rekey(self) -> None:
         if not self._client.key_exchange_complete:
-            self._client.raise_to_ui(KeyExchangeError(code=ErrorCode.KE_STATE, context={"reason": "ke_not_complete", "op": "rekey"}))
+            self._client.raise_to_ui(KeyExchangeError(
+                code=ErrorCode.KE_STATE,
+                context={"reason": "ke_not_complete", "op": "rekey"}
+            ))
             return
         if self._protocol.rekey_in_progress:
             self._ui.display_system_message("Rekey already in progress.")
             return
         msg = self._protocol.create_rekey_dsa_random(is_initiator=True)
-        self._protocol.queue_json(msg)
+        self._client.queue_json(msg)
         self._ui.display_system_message("Rekey initiated.")
     
     def check_auto_rekey(self) -> None:
@@ -172,7 +177,7 @@ class KeyExchangeManager:
         if not self._client.key_exchange_complete:
             return
         msg = self._protocol.create_rekey_dsa_random(is_initiator=True)
-        self._protocol.queue_json(msg)
+        self._client.queue_json(msg)
         self._file_handler.clear_orphan_handles()
     
     def handle_rekey(self, inner: dict[str, Any]) -> None:
@@ -184,7 +189,10 @@ class KeyExchangeManager:
         try:
             action = inner["action"]
         except KeyError:
-            self._client.raise_to_ui(MessageError(code=ErrorCode.MESSAGE_FIELD_MISSING, context={"frame": "rekey", "field": "action"}))
+            self._client.raise_to_ui(MessageError(
+                code=ErrorCode.MESSAGE_FIELD_MISSING,
+                context={"frame": "rekey", "field": "action"}
+            ))
             return
         match action:
             case "dsa_random":
@@ -209,8 +217,8 @@ class KeyExchangeManager:
                     self._client.raise_to_ui(e)
                     return
                 if response is not None:
-                    self._protocol.queue_json(response)
-            
+                    self._client.queue_json(response)
+
             case "mlkem_pubkey":
                 # B receives A's signed ML-KEM pubkey
                 try:
@@ -219,8 +227,8 @@ class KeyExchangeManager:
                     self._protocol.reset_rekey(str(e))
                     self._client.raise_to_ui(e)
                     return
-                self._protocol.queue_json(response)
-            
+                self._client.queue_json(response)
+
             case "mlkem_ct_keys":
                 # A receives B's ML-KEM ciphertext + encrypted pubkeys
                 try:
@@ -229,8 +237,8 @@ class KeyExchangeManager:
                     self._protocol.reset_rekey(str(e))
                     self._client.raise_to_ui(e)
                     return
-                self._protocol.queue_json(response)  # x25519_hqc_ct
-                self._protocol.queue_json(self._protocol.create_rekey_verification())  # A's verification
+                self._client.queue_json(response)  # x25519_hqc_ct
+                self._client.queue_json(self._protocol.create_rekey_verification())  # A's verification
             
             case "x25519_hqc_ct":
                 # B receives A's X25519 pubkey + encrypted HQC ciphertext; pending keys computed
@@ -242,7 +250,7 @@ class KeyExchangeManager:
                     return
                 # Send verification under old keys, then activate — ensures A can decrypt B's proof.
                 # on_rekey_complete deferred until B also verifies A's proof (in "verification" case).
-                self._protocol.queue_json_then_switch(self._protocol.create_rekey_verification())
+                self._client.queue_json_then_switch(self._protocol.create_rekey_verification())
             
             case "verification":
                 # Both A and B arrive here to verify peer's proof.
@@ -264,7 +272,10 @@ class KeyExchangeManager:
                 self._ui.on_rekey_complete()
             
             case _:
-                self._client.raise_to_ui(MessageError(code=ErrorCode.MESSAGE_TYPE, context={"frame": "rekey", "action": action}))
+                self._client.raise_to_ui(MessageError(
+                    code=ErrorCode.MESSAGE_TYPE,
+                    context={"frame": "rekey", "action": action}
+                ))
     
     # server-issued reset
     
@@ -278,6 +289,7 @@ class KeyExchangeManager:
         self._client._verification_started = False
         self._client._peer_key_verified = False
         self._client._peer_verified_own_key = False
+        self._client.reset_send_state()
         self._protocol.reset_key_exchange()
         self._file_handler.clear()
         

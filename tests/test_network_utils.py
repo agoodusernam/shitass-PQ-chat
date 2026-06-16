@@ -2,15 +2,14 @@
 from __future__ import annotations
 
 import json
-import socket
 import struct
 from unittest.mock import MagicMock
 
 import pytest
-from protocol.errors import ErrorCode, ChatError
 
 from protocol.constants import MAX_MESSAGE_SIZE
-from utils.network_utils import encode_send_message, receive_message, send_message
+from protocol.errors import ChatError
+from utils.network_utils import receive_message, send_dict_as_json, send_message
 
 
 class _FakeSock:
@@ -35,14 +34,14 @@ class TestSendMessage:
     
     def test_socket_error_returned(self) -> None:
         sock = MagicMock()
-        sock.sendall.side_effect = socket.error("boom")
+        sock.sendall.side_effect = OSError("boom")
         assert send_message(sock, b"x") == "boom"
 
 
 class TestEncodeSendMessage:
     def test_serializes_json(self) -> None:
         sock = _FakeSock()
-        assert encode_send_message(sock, {"k": 1}) is None
+        assert send_dict_as_json(sock, {"k": 1}) is None
         length = struct.unpack("!I", sock.sent[:4])[0]
         assert json.loads(sock.sent[4:4 + length]) == {"k": 1}
 

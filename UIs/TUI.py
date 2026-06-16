@@ -8,9 +8,9 @@ import time
 from pathlib import Path
 from typing import Any
 
+from protocol.errors import Severity, describe, format_code
 from SecureChatABCs.client_base import ClientBase
 from SecureChatABCs.ui_base import UIBase, UICapability
-from protocol.errors import ErrorCode, Severity, describe, format_code
 
 
 class TUI(UIBase):
@@ -213,111 +213,115 @@ class TUI(UIBase):
         print()
         
         try:
-            while client.connected:
-                if not (client.key_exchange_complete and client.verification_complete):
-                    time.sleep(0.2)
-                    continue
-                try:
-                    message: str = input()
-                    if message.lower() == '/quit':
-                        break
-                    elif message.lower() == '/rekey':
-                        client.initiate_rekey()
-                    elif message.lower() == '/help':
-                        print("Commands:")
-                        print("  /quit - Exit the chat")
-                        print("  /file <path> - Send a file")
-                        print("  /deaddrop upload - Upload a file to deaddrop")
-                        print("  /deaddrop check <name> - Check if a deaddrop exists")
-                        print("  /deaddrop download <name> - Download a deaddrop file")
-                        print("  /rekey - Initiate a rekey for fresh session keys")
-                        print("  /help - Show this help message")
-                    elif message.lower().strip() == '/deaddrop upload':
-                        try:
-                            name = input("Deaddrop name: ").strip()
-                            password = input("Deaddrop password: ")
-                            file_path = Path(input("File path: ").strip())
-                        except (EOFError, KeyboardInterrupt):
-                            print("Deaddrop upload cancelled.")
-                            continue
-                        if not (name and password and file_path):
-                            print("Deaddrop upload aborted: missing fields")
-                            continue
-                        client.start_deaddrop()
-                        if not client.wait_for_deaddrop_handshake(3.0):
-                            print("Deaddrop handshake failed.")
-                            continue
-                        client.deaddrop_upload(name, password, file_path)
-                    
-                    elif message.lower().startswith('/deaddrop check'):
-                        parts = message.split(maxsplit=2)
-                        name = parts[2] if len(parts) >= 3 else ""
-                        if not name:
-                            print("Usage: /deaddrop check <name>")
-                            continue
-                        
-                        if not client.deaddrop_session_active():
-                            client.start_deaddrop()
-                            if not client.wait_for_deaddrop_handshake(3.0):
-                                print("Deaddrop handshake failed.")
-                                continue
-                        
-                        client.deaddrop_check(name)
-                    
-                    elif message.lower().startswith('/deaddrop download'):
-                        parts = message.split(maxsplit=2)
-                        name = parts[2] if len(parts) >= 3 else ""
-                        if not name:
-                            print("Usage: /deaddrop download <name>")
-                            continue
-                        try:
-                            password = input("Deaddrop password: ")
-                        except (EOFError, KeyboardInterrupt):
-                            print("Deaddrop download cancelled.")
-                            continue
-                        if not password:
-                            print("Deaddrop download aborted: missing password")
-                            continue
-                        client.start_deaddrop()
-                        if not client.wait_for_deaddrop_handshake(3.0):
-                            print("Deaddrop handshake failed.")
-                            continue
-                        client.deaddrop_download(name, password)
-                    
-                    elif message.lower().startswith('/file '):
-                        file_path = Path(message[6:].strip())
-                        if file_path:
-                            client.send_file(file_path)
-                        else:
-                            print("Usage: /file <path>")
-                    elif message.lower().startswith('/nick ') or message.lower().startswith('/nickname '):
-                        new_nickname = message[6:].strip()
-                        if new_nickname:
-                            client.own_nickname = new_nickname
-                            print(f"Nickname changed to: {new_nickname}")
-                        else:
-                            print("Usage: /nick <new_nickname>")
-                    
-                    elif message.strip():
-                        if not client.send_message(message):
-                            continue
-                        
-                        if client.peer_key_verified:
-                            print(f"You: {message}")
-                        else:
-                            print(f"You (unverified): {message}")
-                except KeyboardInterrupt:
-                    break
-                except EOFError:
-                    break
-                else:
-                    time.sleep(0.1)
-        
+            self.chat_loop()
         except Exception as e:
             print(f"Chat error: {e}")
         finally:
             client.disconnect()
-
+    
+    def chat_loop(self) -> None:
+        assert self.client is not None, "Client not attached"
+        client = self.client
+        while client.connected:
+            if not (client.key_exchange_complete and client.verification_complete):
+                time.sleep(0.2)
+                continue
+            try:
+                message: str = input()
+                if message.lower() == '/quit':
+                    break
+                if message.lower() == '/rekey':
+                    client.initiate_rekey()
+                elif message.lower() == '/help':
+                    print("Commands:")
+                    print("  /quit - Exit the chat")
+                    print("  /file <path> - Send a file")
+                    print("  /deaddrop upload - Upload a file to deaddrop")
+                    print("  /deaddrop check <name> - Check if a deaddrop exists")
+                    print("  /deaddrop download <name> - Download a deaddrop file")
+                    print("  /rekey - Initiate a rekey for fresh session keys")
+                    print("  /help - Show this help message")
+                elif message.lower().strip() == '/deaddrop upload':
+                    try:
+                        name = input("Deaddrop name: ").strip()
+                        password = input("Deaddrop password: ")
+                        file_path = Path(input("File path: ").strip())
+                    except (EOFError, KeyboardInterrupt):
+                        print("Deaddrop upload cancelled.")
+                        continue
+                    if not (name and password and file_path):
+                        print("Deaddrop upload aborted: missing fields")
+                        continue
+                    client.start_deaddrop()
+                    if not client.wait_for_deaddrop_handshake(3.0):
+                        print("Deaddrop handshake failed.")
+                        continue
+                    client.deaddrop_upload(name, password, file_path)
+                
+                elif message.lower().startswith('/deaddrop check'):
+                    parts = message.split(maxsplit=2)
+                    name = parts[2] if len(parts) >= 3 else ""
+                    if not name:
+                        print("Usage: /deaddrop check <name>")
+                        continue
+                    
+                    if not client.deaddrop_session_active():
+                        client.start_deaddrop()
+                        if not client.wait_for_deaddrop_handshake(3.0):
+                            print("Deaddrop handshake failed.")
+                            continue
+                    
+                    client.deaddrop_check(name)
+                
+                elif message.lower().startswith('/deaddrop download'):
+                    parts = message.split(maxsplit=2)
+                    name = parts[2] if len(parts) >= 3 else ""
+                    if not name:
+                        print("Usage: /deaddrop download <name>")
+                        continue
+                    try:
+                        password = input("Deaddrop password: ")
+                    except (EOFError, KeyboardInterrupt):
+                        print("Deaddrop download cancelled.")
+                        continue
+                    if not password:
+                        print("Deaddrop download aborted: missing password")
+                        continue
+                    client.start_deaddrop()
+                    if not client.wait_for_deaddrop_handshake(3.0):
+                        print("Deaddrop handshake failed.")
+                        continue
+                    client.deaddrop_download(name, password)
+                
+                elif message.lower().startswith('/file '):
+                    file_path = Path(message[6:].strip())
+                    if file_path:
+                        client.send_file(file_path)
+                    else:
+                        print("Usage: /file <path>")
+                elif message.lower().startswith('/nick ') or message.lower().startswith('/nickname '):
+                    new_nickname = message[6:].strip()
+                    if new_nickname:
+                        client.own_nickname = new_nickname
+                        print(f"Nickname changed to: {new_nickname}")
+                    else:
+                        print("Usage: /nick <new_nickname>")
+                
+                elif message.strip():
+                    if not client.send_message(message):
+                        continue
+                    
+                    if client.peer_key_verified:
+                        print(f"You: {message}")
+                    else:
+                        print(f"You (unverified): {message}")
+            except KeyboardInterrupt:
+                break
+            except EOFError:
+                break
+            else:
+                time.sleep(0.1)
+    
 
 def run(client: type[ClientBase]) -> None:
     """Main function to run the secure chat client with TUI."""

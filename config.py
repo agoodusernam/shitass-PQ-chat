@@ -18,9 +18,9 @@ Usage::
 
 import json
 from pathlib import Path
-from typing import Any, Literal, TypeAlias, TypedDict, get_type_hints, overload
+from typing import Any, Literal, TypedDict, get_type_hints, overload
 
-from protocol.errors import ErrorCode, ConfigError
+from protocol.errors import ConfigError, ErrorCode
 
 __all__ = ["ClientConfigHandler", "ServerConfigHandler"]
 
@@ -94,7 +94,7 @@ ClientIntKeys = Literal[
     "max_nickname_length",
 ]
 ClientFloatKeys = Literal["voice_send_frequency"]
-ClientConfigKey: TypeAlias = ClientBoolKeys | ClientStrKeys | ClientPathKeys | ClientIntKeys | ClientFloatKeys
+ClientConfigKey = ClientBoolKeys | ClientStrKeys | ClientPathKeys | ClientIntKeys | ClientFloatKeys
 
 
 def _create_default_client_config() -> ClientConfigDict:
@@ -144,29 +144,61 @@ def _validate_client(config: ClientConfigDict) -> None:
     for key, expected_type in _get_client_config_types().items():
         value = config[key]  # type: ignore[literal-required]
         if expected_type is int and isinstance(value, bool): 
-            raise ConfigError(code=ErrorCode.CFG_INVALID_VALUE, context={"reason": "type_mismatch", "detail": f"Config key '{key}' must be int, got bool"})
+            raise ConfigError(
+                code=ErrorCode.CFG_INVALID_VALUE,
+                context={"reason": "type_mismatch", "detail": f"Config key '{key}' must be int, got bool"}
+            )
         if not isinstance(value, expected_type):
-            raise ConfigError(code=ErrorCode.CFG_INVALID_VALUE, context={"reason": "type_mismatch", "detail": f"Config key '{key}' must be {expected_type.__name__}, "
+            raise ConfigError(
+                code=ErrorCode.CFG_INVALID_VALUE,
+                context={"reason": "type_mismatch", "detail": f"Config key '{key}' must be {expected_type.__name__}, "
                     f"got {type(value).__name__}"})
     
     if config["max_dummy_packet_size"] <= 0:
-        raise ConfigError(code=ErrorCode.CFG_INVALID_VALUE, context={"reason": "out_of_range", "detail": "max_dummy_packet_size must be a positive integer"})
+        raise ConfigError(
+            code=ErrorCode.CFG_INVALID_VALUE,
+            context={"reason": "out_of_range", "detail": "max_dummy_packet_size must be a positive integer"}
+        )
     if config["voice_send_frequency"] <= 0:
-        raise ConfigError(code=ErrorCode.CFG_INVALID_VALUE, context={"reason": "out_of_range", "detail": "voice_send_frequency must be positive"})
+        raise ConfigError(
+            code=ErrorCode.CFG_INVALID_VALUE,
+            context={"reason": "out_of_range", "detail": "voice_send_frequency must be positive"}
+        )
     if config["voice_rate"] <= 0:
-        raise ConfigError(code=ErrorCode.CFG_INVALID_VALUE, context={"reason": "out_of_range", "detail": "voice_rate must be positive"})
+        raise ConfigError(
+            code=ErrorCode.CFG_INVALID_VALUE,
+            context={"reason": "out_of_range", "detail": "voice_rate must be positive"}
+        )
     if config["voice_channels"] not in (1, 2):
-        raise ConfigError(code=ErrorCode.CFG_INVALID_VALUE, context={"reason": "out_of_range", "detail": "voice_channels must be 1 (mono) or 2 (stereo)"})
+        raise ConfigError(
+            code=ErrorCode.CFG_INVALID_VALUE,
+            context={"reason": "out_of_range", "detail": "voice_channels must be 1 (mono) or 2 (stereo)"}
+        )
     if config["voice_format"] not in (1, 2, 4, 8, 16, 32):
-        raise ConfigError(code=ErrorCode.CFG_INVALID_VALUE, context={"reason": "out_of_range", "detail": "voice_format must be a valid PyAudio format constant"})
+        raise ConfigError(
+            code=ErrorCode.CFG_INVALID_VALUE,
+            context={"reason": "out_of_range", "detail": "voice_format must be a valid PyAudio format constant"}
+        )
     if config["rekey_interval"] < 5:
-        raise ConfigError(code=ErrorCode.CFG_INVALID_VALUE, context={"reason": "out_of_range", "detail": "rekey_interval must be at least 5"})
+        raise ConfigError(
+            code=ErrorCode.CFG_INVALID_VALUE,
+            context={"reason": "out_of_range", "detail": "rekey_interval must be at least 5"}
+        )
     if config["send_chunk_size"] < 1024:
-        raise ConfigError(code=ErrorCode.CFG_INVALID_VALUE, context={"reason": "out_of_range", "detail": "send_chunk_size must be at least 1024 bytes"})
+        raise ConfigError(
+            code=ErrorCode.CFG_INVALID_VALUE,
+            context={"reason": "out_of_range", "detail": "send_chunk_size must be at least 1024 bytes"}
+        )
     if config["max_message_size"] < 1024:
-        raise ConfigError(code=ErrorCode.CFG_INVALID_VALUE, context={"reason": "out_of_range", "detail": "max_message_size must be at least 1024 bytes"})
+        raise ConfigError(
+            code=ErrorCode.CFG_INVALID_VALUE,
+            context={"reason": "out_of_range", "detail": "max_message_size must be at least 1024 bytes"}
+        )
     if config["max_nickname_length"] < 1:
-        raise ConfigError(code=ErrorCode.CFG_INVALID_VALUE, context={"reason": "out_of_range", "detail": "max_nickname_length must be at least 1"})
+        raise ConfigError(
+            code=ErrorCode.CFG_INVALID_VALUE,
+            context={"reason": "out_of_range", "detail": "max_nickname_length must be at least 1"}
+        )
 
 
 class ServerConfigDict(TypedDict):
@@ -199,7 +231,7 @@ ServerIntKeys = Literal[
     "deaddrop_min_chunk_size",
     "max_message_size",
 ]
-ServerConfigKey: TypeAlias = ServerBoolKeys | ServerPathKeys | ServerIntKeys
+ServerConfigKey = ServerBoolKeys | ServerPathKeys | ServerIntKeys
 
 
 def _create_default_server_config() -> ServerConfigDict:
@@ -231,23 +263,46 @@ def _validate_server(config: ServerConfigDict) -> None:
     for key, expected_type in _get_server_config_types().items():
         value = config[key]  # type: ignore[literal-required]
         if expected_type is int and isinstance(value, bool):
-            raise ConfigError(code=ErrorCode.CFG_INVALID_VALUE, context={"reason": "type_mismatch", "detail": f"Config key '{key}' must be int, got bool"})
+            raise ConfigError(
+                code=ErrorCode.CFG_INVALID_VALUE,
+                context={"reason": "type_mismatch", "detail": f"Config key '{key}' must be int, got bool"}
+            )
         if not isinstance(value, expected_type):
-            raise ConfigError(code=ErrorCode.CFG_INVALID_VALUE, context={"reason": "type_mismatch", "detail": f"Config key '{key}' must be {expected_type.__name__}, "
+            raise ConfigError(
+                code=ErrorCode.CFG_INVALID_VALUE,
+                context={"reason": "type_mismatch", "detail": f"Config key '{key}' must be {expected_type.__name__}, "
                     f"got {type(value).__name__}"})
     
     if config["max_unexpected_msgs"] <= 0:
-        raise ConfigError(code=ErrorCode.CFG_INVALID_VALUE, context={"reason": "out_of_range", "detail": "max_unexpected_msgs must be a positive integer"})
+        raise ConfigError(
+            code=ErrorCode.CFG_INVALID_VALUE,
+            context={"reason": "out_of_range", "detail": "max_unexpected_msgs must be a positive integer"}
+        )
     if config["deaddrop_max_size"] <= 0:
-        raise ConfigError(code=ErrorCode.CFG_INVALID_VALUE, context={"reason": "out_of_range", "detail": "deaddrop_max_size must be a positive integer"})
+        raise ConfigError(
+            code=ErrorCode.CFG_INVALID_VALUE,
+            context={"reason": "out_of_range", "detail": "deaddrop_max_size must be a positive integer"}
+        )
     if config["missing_chunks_limit"] < 1:
-        raise ConfigError(code=ErrorCode.CFG_INVALID_VALUE, context={"reason": "out_of_range", "detail": "missing_chunks_limit must be at least 1"})
+        raise ConfigError(
+            code=ErrorCode.CFG_INVALID_VALUE,
+            context={"reason": "out_of_range", "detail": "missing_chunks_limit must be at least 1"}
+        )
     if config["deaddrop_max_chunks"] < 1:
-        raise ConfigError(code=ErrorCode.CFG_INVALID_VALUE, context={"reason": "out_of_range", "detail": "deaddrop_max_chunks must be at least 1"})
+        raise ConfigError(
+            code=ErrorCode.CFG_INVALID_VALUE,
+            context={"reason": "out_of_range", "detail": "deaddrop_max_chunks must be at least 1"}
+        )
     if config["deaddrop_min_chunk_size"] < 1:
-        raise ConfigError(code=ErrorCode.CFG_INVALID_VALUE, context={"reason": "out_of_range", "detail": "deaddrop_min_chunk_size must be at least 1"})
+        raise ConfigError(
+            code=ErrorCode.CFG_INVALID_VALUE,
+            context={"reason": "out_of_range", "detail": "deaddrop_min_chunk_size must be at least 1"}
+        )
     if config["max_message_size"] < 1024:
-        raise ConfigError(code=ErrorCode.CFG_INVALID_VALUE, context={"reason": "out_of_range", "detail": "max_message_size must be at least 1024 bytes"})
+        raise ConfigError(
+            code=ErrorCode.CFG_INVALID_VALUE,
+            context={"reason": "out_of_range", "detail": "max_message_size must be at least 1024 bytes"}
+        )
 
 
 class _BaseConfigHandler:
@@ -277,7 +332,7 @@ class _BaseConfigHandler:
             self.save()
     
     def _load(self) -> None:
-        with open(self._config_file, "r", encoding="utf-8") as f:
+        with open(self._config_file, encoding="utf-8") as f:
             raw: dict[Any, Any] = json.load(f)
         self._merge(raw)
     
@@ -286,7 +341,10 @@ class _BaseConfigHandler:
         type_hints = self._type_getter()
         for key, value in raw.items():
             if not isinstance(key, str):
-                raise ConfigError(code=ErrorCode.CFG_INVALID_VALUE, context={"reason": "out_of_range", "detail": f"Config key {key!r} is not a string"})
+                raise ConfigError(
+                    code=ErrorCode.CFG_INVALID_VALUE,
+                    context={"reason": "out_of_range", "detail": f"Config key {key!r} is not a string"}
+                )
             if key not in type_hints:
                 print(f"Warning: unknown config key {key!r}, skipping")
                 continue
@@ -294,16 +352,26 @@ class _BaseConfigHandler:
             if expected_type is float and isinstance(value, int) and not isinstance(value, bool):
                 value = float(value)
             if expected_type is int and isinstance(value, bool):
-                raise ConfigError(code=ErrorCode.CFG_INVALID_VALUE, context={"reason": "type_mismatch", "detail": f"Config key '{key}' must be int, got bool"})
+                raise ConfigError(
+                    code=ErrorCode.CFG_INVALID_VALUE,
+                    context={"reason": "type_mismatch", "detail": f"Config key '{key}' must be int, got bool"}
+                )
             if not isinstance(value, expected_type):
-                raise ConfigError(code=ErrorCode.CFG_INVALID_VALUE, context={"reason": "type_mismatch", "detail": f"Config key '{key}' must be {expected_type.__name__}, "
-                        f"got {type(value).__name__}"})
+                raise ConfigError(
+                    code=ErrorCode.CFG_INVALID_VALUE,
+                    context={"reason": "type_mismatch",
+                             "detail": f"Config key '{key}' " +
+                                       f"must be {expected_type.__name__}, got {type(value).__name__}"}
+                )
             self._config[key] = value  # type: ignore[literal-required]
         self._validator(self._config)
     
     def _get(self, key: str) -> Any:
         if not isinstance(key, str):
-            raise ConfigError(code=ErrorCode.CFG_INVALID_VALUE, context={"reason": "non_string_key", "key_type": type(key).__name__})
+            raise ConfigError(
+                code=ErrorCode.CFG_INVALID_VALUE,
+                context={"reason": "non_string_key", "key_type": type(key).__name__}
+            )
         value = self._config[key]  # type: ignore[literal-required]
         if key in self._path_keys:
             return Path(value)  # type: ignore[arg-type]
@@ -315,15 +383,24 @@ class _BaseConfigHandler:
             raise KeyError(f"Unknown config key '{key}'")
         if key in self._path_keys:
             if not isinstance(value, (str, Path)):
-                raise ConfigError(code=ErrorCode.CFG_INVALID_VALUE, context={"reason": "type_mismatch", "key": key, "detail": "must be str or Path"})
+                raise ConfigError(
+                    code=ErrorCode.CFG_INVALID_VALUE,
+                    context={"reason": "type_mismatch", "key": key, "detail": "must be str or Path"}
+                )
             self._config[key] = str(value)  # type: ignore[literal-required]
             return
         expected_type = type_hints[key]
         if expected_type is int and isinstance(value, bool):
-            raise ConfigError(code=ErrorCode.CFG_INVALID_VALUE, context={"reason": "type_mismatch", "key": key, "detail": "must be int, got bool"})
+            raise ConfigError(
+                code=ErrorCode.CFG_INVALID_VALUE,
+                context={"reason": "type_mismatch", "key": key, "detail": "must be int, got bool"}
+            )
         if not isinstance(value, expected_type):
-            raise ConfigError(code=ErrorCode.CFG_INVALID_VALUE, context={"reason": "type_mismatch", "detail": f"Config key '{key}' must be {expected_type.__name__}, "
-                    f"got {type(value).__name__}"})
+            raise ConfigError(
+                code=ErrorCode.CFG_INVALID_VALUE,
+                context={"reason": "type_mismatch", "detail": f"Config key '{key}' must be {expected_type.__name__}, " +
+                    f"got {type(value).__name__}"}
+            )
         self._config[key] = value  # type: ignore[literal-required]
     
     def save(self) -> tuple[bool, str]:

@@ -4,10 +4,10 @@ import struct
 from typing import Any
 
 from protocol.constants import MAX_MESSAGE_SIZE
-from protocol.errors import ErrorCode, ConnectionClosedError, TransportError
+from protocol.errors import ConnectionClosedError, ErrorCode, TransportError
 
 
-def encode_send_message(sock: socket.socket, data: Any) -> str | None:
+def send_dict_as_json(sock: socket.socket, data: dict[str, Any]) -> str | None:
     encoded: bytes = json.dumps(data).encode("utf-8")
     return send_message(sock, encoded)
 
@@ -18,7 +18,7 @@ def send_message(sock: socket.socket, data: bytes) -> str | None:
         length = struct.pack("!I", len(data))
         sock.sendall(length + data)
         return None
-    except socket.error as e:
+    except (OSError, struct.error) as e:
         return str(e)
 
 

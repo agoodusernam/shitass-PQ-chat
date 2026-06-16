@@ -2,12 +2,9 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import threading
 from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from new_client import SecureChatClient
 from protocol.constants import MessageType
@@ -23,7 +20,10 @@ def _make_ui(prompt_result: bool | None = True) -> MagicMock:
 def _make_client(prompt_result: bool | None = True) -> SecureChatClient:
     c = SecureChatClient(_make_ui(prompt_result))
     c._protocol = MagicMock()
-    c._protocol.send_dummy_messages = True
+    c._protocol.rekey_in_progress = False
+    c._protocol.has_active_file_transfers = False
+    c._connection.queue_json = MagicMock()
+    c.send_dummy_messages = True
     return c
 
 
@@ -49,7 +49,7 @@ class TestSend:
         c._verification_complete = False
         c._file_transfer.send("/no/such/file")
         c.ui.on_error.assert_called_once()
-        c._protocol.queue_json.assert_not_called()
+        c._connection.queue_json.assert_not_called()
     
     def test_missing_file_reports_error(self, tmp_path: Path) -> None:
         c = _make_client()
@@ -66,8 +66,8 @@ class TestSend:
         p.write_bytes(b"x" * 4096)
         c._file_transfer.send(p)
         # metadata frame queued
-        c._protocol.queue_json.assert_called_once()
-        msg = c._protocol.queue_json.call_args.args[0]
+        c._connection.queue_json.assert_called_once()
+        msg = c._connection.queue_json.call_args.args[0]
         assert msg["type"] == MessageType.FILE_METADATA
         tid = msg["transfer_id"]
         assert tid in c._file_transfer.pending_file_transfers
@@ -78,7 +78,7 @@ class TestReject:
         c = _make_client()
         c._file_transfer.active_file_metadata["tid"] = {"filename": "x"}  # type: ignore[typeddict-item]
         c._file_transfer.reject("tid")
-        msg = c._protocol.queue_json.call_args.args[0]
+        msg = c._connection.queue_json.call_args.args[0]
         assert msg["type"] == MessageType.FILE_REJECT
         assert msg["transfer_id"] == "tid"
         assert "tid" not in c._file_transfer.active_file_metadata
@@ -102,14 +102,14 @@ class TestHandleMetadata:
         c = _make_client()
         c.allow_file_transfers = False
         c._file_transfer.handle_metadata(_good_metadata())
-        msg = c._protocol.queue_json.call_args.args[0]
+        msg = c._connection.queue_json.call_args.args[0]
         assert msg["type"] == MessageType.FILE_REJECT
     
     def test_user_decline_sends_reject(self) -> None:
         c = _make_client(prompt_result=False)
         c._peer_key_verified = True
         c._file_transfer.handle_metadata(_good_metadata())
-        msg = c._protocol.queue_json.call_args.args[0]
+        msg = c._connection.queue_json.call_args.args[0]
         assert msg["type"] == MessageType.FILE_REJECT
         assert "tid" not in c._file_transfer.active_file_metadata
     
@@ -117,10 +117,10 @@ class TestHandleMetadata:
         c = _make_client(prompt_result=True)
         c._peer_key_verified = True
         c._file_transfer.handle_metadata(_good_metadata())
-        msg = c._protocol.queue_json.call_args.args[0]
+        msg = c._connection.queue_json.call_args.args[0]
         assert msg["type"] == MessageType.FILE_ACCEPT
         assert "tid" in c._file_transfer.active_file_metadata
-        assert c._protocol.send_dummy_messages is False
+        assert c.send_dummy_messages is False
     
     def test_malformed_metadata_errors(self) -> None:
         c = _make_client()
@@ -133,7 +133,7 @@ class TestHandleAcceptReject:
         c = _make_client()
         c._file_transfer.handle_accept({"transfer_id": "nope"})
         c.ui.display_system_message.assert_called_once()
-        assert c._protocol.send_dummy_messages is True
+        assert c.send_dummy_messages is True
     
     def test_accept_missing_id(self) -> None:
         c = _make_client()
@@ -193,10 +193,10 @@ class TestHandleComplete:
             "metadata":  {"filename": "a.bin"},
             "compress":  False,
         }  # type: ignore[typeddict-item]
-        c._protocol.send_dummy_messages = False
+        c.send_dummy_messages = False
         c._file_transfer.handle_complete({"transfer_id": "tid"})
         assert "tid" not in c._file_transfer.pending_file_transfers
-        assert c._protocol.send_dummy_messages is True
+        assert c.send_dummy_messages is True
     
     def test_unknown_id_errors(self) -> None:
         c = _make_client()
@@ -239,7 +239,7 @@ class TestHandleChunkBinary:
         assert out_path.read_bytes() == payload
         # FILE_COMPLETE queued
         completes = [
-            call.args[0] for call in c._protocol.queue_json.call_args_list
+            call.args[0] for call in c._connection.queue_json.call_args_list
             if call.args and call.args[0].get("type") == MessageType.FILE_COMPLETE
         ]
         assert completes and completes[0]["transfer_id"] == "tid"

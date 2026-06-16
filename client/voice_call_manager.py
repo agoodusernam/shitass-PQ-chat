@@ -10,9 +10,9 @@ import base64
 import json
 from typing import TYPE_CHECKING, Any
 
-from SecureChatABCs.ui_base import UIBase, UICapability
-from SecureChatABCs.protocol_base import ProtocolBase
 from protocol.constants import MessageType
+from SecureChatABCs.protocol_base import ProtocolBase
+from SecureChatABCs.ui_base import UIBase, UICapability
 
 if TYPE_CHECKING:
     from new_client import SecureChatClient
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 class VoiceCallManager:
     """Manages voice call signaling and audio data transport."""
     
-    def __init__(self, client: "SecureChatClient") -> None:
+    def __init__(self, client: SecureChatClient) -> None:
         self._client = client
         self._active: bool = False
         self.muted: bool = False
@@ -49,7 +49,7 @@ class VoiceCallManager:
         # Peer's audio thread writes directly to the socket (not through the 250 ms
         # sender queue), so audio frames can arrive before the queued VOICE_CALL_ACCEPT.
         self._active = True
-        self._protocol.queue_json({
+        self._client.queue_json({
             "type":         MessageType.VOICE_CALL_INIT,
             "rate":         rate,
             "chunk_size":   chunk_size,
@@ -60,14 +60,14 @@ class VoiceCallManager:
         """Handle local user's response to an incoming voice call."""
         if accepted:
             self._active = True
-            self._protocol.queue_json({
+            self._client.queue_json({
                 "type":         MessageType.VOICE_CALL_ACCEPT,
                 "rate":         rate,
                 "chunk_size":   chunk_size,
                 "audio_format": audio_format,
             })
         else:
-            self._protocol.queue_json({"type": MessageType.VOICE_CALL_REJECT})
+            self._client.queue_json({"type": MessageType.VOICE_CALL_REJECT})
             self._ui.display_system_message("Rejected voice call")
     
     def send_audio(self, audio_data: bytes) -> None:
@@ -85,9 +85,9 @@ class VoiceCallManager:
         if not self._active:
             return
         self._active = False
-        self._protocol.send_dummy_messages = True
+        self._client.send_dummy_messages = True
         if notify_peer:
-            self._protocol.queue_json({"type": MessageType.VOICE_CALL_END})
+            self._client.queue_json({"type": MessageType.VOICE_CALL_END})
             self._ui.display_system_message("Voice call ended")
         self._ui.on_voice_call_end()
     
@@ -96,7 +96,7 @@ class VoiceCallManager:
     def handle_init(self, init_msg: dict[str, Any]) -> None:
         """Handle incoming voice call request."""
         if not self._ui.has_capability(UICapability.VOICE_CALLS):
-            self._protocol.queue_json({"type": MessageType.VOICE_CALL_REJECT})
+            self._client.queue_json({"type": MessageType.VOICE_CALL_REJECT})
             self._ui.display_system_message("Auto-rejected incoming voice call (unsupported by UI).")
             return
         

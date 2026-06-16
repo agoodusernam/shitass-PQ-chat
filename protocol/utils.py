@@ -1,18 +1,19 @@
+import contextlib
 import gzip
 import hashlib
 import io
 from collections import OrderedDict
+from collections.abc import Generator
 from pathlib import Path
-from typing import Generator
 
 import numpy as np
 
 from protocol.constants import (
-    INCOMPRESSIBLE_EXTENSIONS,
-    SEND_CHUNK_SIZE,
     FINGERPRINT_HASH_SIZE,
     FINGERPRINT_WORD_COUNT,
+    INCOMPRESSIBLE_EXTENSIONS,
     MAX_SANITIZED_STR_LENGTH,
+    SEND_CHUNK_SIZE,
 )
 
 
@@ -163,10 +164,11 @@ def xor_bytes(a: bytes, b: bytes) -> bytes:
 def load_wordlist(wordlist_file: Path) -> list[str]:
     """Load the wordlist from the given file path."""
     try:
-        with open(wordlist_file.resolve(), "r", encoding="utf-8") as f:
+        with open(wordlist_file.resolve(), encoding="utf-8") as f:
             return [line.strip() for line in f if line.strip()]
     except FileNotFoundError:
-        raise FileNotFoundError(f"{wordlist_file} not found. Please ensure the wordlist file is in the same directory as shared.py")
+        raise FileNotFoundError(f"{wordlist_file} not found. " +
+                                "Please ensure the wordlist file is in the same directory as shared.py") from None
 
 
 def hash_to_words(hash_bytes: bytes, wordlist: list[str], num_words: int = FINGERPRINT_WORD_COUNT) -> list[str]:
@@ -254,9 +256,7 @@ def chunk_file(
             if pending_data:
                 yield pending_data
     
-    except (OSError, IOError) as e:
-        try:
-            compressor.finalise()
-        except Exception:  # ignore finalise issues because we're already failing
-            pass
+    except OSError as e:
+        with contextlib.suppress(Exception):
+            compressor.finalise() # ignore finalise issues because we're already failing
         raise e

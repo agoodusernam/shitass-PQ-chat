@@ -6,17 +6,17 @@ from typing import TYPE_CHECKING
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric.x25519 import (
-    X25519PrivateKey,
-    X25519PublicKey,
+from cryptography.hazmat.primitives.asymmetric.mldsa import (
+    MLDSA87PrivateKey,
+    MLDSA87PublicKey,
 )
 from cryptography.hazmat.primitives.asymmetric.mlkem import (
     MLKEM1024PrivateKey,
     MLKEM1024PublicKey,
 )
-from cryptography.hazmat.primitives.asymmetric.mldsa import (
-    MLDSA87PrivateKey,
-    MLDSA87PublicKey,
+from cryptography.hazmat.primitives.asymmetric.x25519 import (
+    X25519PrivateKey,
+    X25519PublicKey,
 )
 from cryptography.hazmat.primitives.constant_time import bytes_eq
 from cryptography.hazmat.primitives.hmac import HMAC
@@ -25,15 +25,14 @@ from pqcrypto.kem import hqc_256
 from protocol.constants import (
     CLIENT_RANDOM_SIZE,
     ML_DSA_CONTEXT,
-    MessageType,
     NONCE_SIZE,
+    MessageType,
 )
 from protocol.crypto_classes import KeyExchangeDoubleEncryptor, _KeyDerivation
 from protocol.errors import (
     ErrorCode,
     KeyExchangeError,
     MessageError,
-    RekeyError,
 )
 from protocol.utils import LRUCache
 
@@ -53,7 +52,7 @@ class _RekeyState:
     """
     
     def __init__(self, protocol: "SecureChatProtocol") -> None:
-        self._protocol: "SecureChatProtocol" = protocol
+        self._protocol: SecureChatProtocol = protocol
         
         # In-flight rekey KE state
         self._rke_step: int = 0  # 0=off, 1=I am A (initiator), 2=I am B (responder)
@@ -133,8 +132,6 @@ class _RekeyState:
         self._pending_msg_peer_base_public = b""
         self._pending_peer_dh_public_key_bytes = b""
         self.rekey_in_progress = False
-        if error_msg:
-            self._protocol._forward_exc(RekeyError(code=ErrorCode.REKEY_ABORTED, context={"reason": error_msg}))
     
     def activate(self) -> None:
         """Atomically switch active session to the pending keys (if available)."""
@@ -293,7 +290,11 @@ class _RekeyState:
             peer_mldsa_pub = base64.b64decode(inner["mldsa_public_key"], validate=True)
             peer_random = base64.b64decode(inner["client_random"], validate=True)
         except (KeyError, binascii.Error) as e:
-            raise MessageError(code=ErrorCode.MESSAGE_DECODE, context={"phase": "rekey", "step": "dsa_random"}, cause=e)
+            raise MessageError(
+                code=ErrorCode.MESSAGE_DECODE,
+                context={"phase": "rekey", "step": "dsa_random"},
+                cause=e
+            ) from None
         
         peer_is_initiating = not inner.get("is_response", False)
         
@@ -342,19 +343,30 @@ class _RekeyState:
     def process_mlkem_pubkey(self, inner: dict) -> dict:
         """(B) Process A's mlkem_pubkey; generate B's keys, encapsulate, return mlkem_ct_keys payload."""
         if self._rke_mldsa_priv is None:
-            raise KeyExchangeError(code=ErrorCode.KE_MISSING_PRIVATE_KEY, context={"algo": "ML-DSA", "phase": "rekey"})
+            raise KeyExchangeError(
+                code=ErrorCode.KE_MISSING_PRIVATE_KEY,
+                context={"algo": "ML-DSA", "phase": "rekey"}
+            )
         try:
             mlkem_pub = base64.b64decode(inner["mlkem_public_key"], validate=True)
             mldsa_sig = base64.b64decode(inner["mldsa_signature"], validate=True)
         except (KeyError, binascii.Error) as e:
-            raise MessageError(code=ErrorCode.MESSAGE_DECODE, context={"phase": "rekey", "step": "mlkem_pubkey"}, cause=e)
+            raise MessageError(
+                code=ErrorCode.MESSAGE_DECODE,
+                context={"phase": "rekey", "step": "mlkem_pubkey"},
+                cause=e
+            ) from None
         
         try:
             MLDSA87PublicKey.from_public_bytes(self._rke_peer_mldsa_pub).verify(
                     mldsa_sig, mlkem_pub, context=ML_DSA_CONTEXT,
             )
         except InvalidSignature as exc:
-            raise KeyExchangeError(code=ErrorCode.KE_MLKEM_SIG, context={"phase": "rekey"}, cause=exc)
+            raise KeyExchangeError(
+                code=ErrorCode.KE_MLKEM_SIG,
+                context={"phase": "rekey"},
+                cause=exc
+            ) from None
         
         self._rke_peer_mlkem_pub = MLKEM1024PublicKey.from_public_bytes(mlkem_pub)
         
@@ -405,7 +417,11 @@ class _RekeyState:
             nonce2 = base64.b64decode(inner["nonce2"], validate=True)
             mldsa_sig = base64.b64decode(inner["mldsa_signature"], validate=True)
         except (KeyError, binascii.Error) as e:
-            raise MessageError(code=ErrorCode.MESSAGE_DECODE, context={"phase": "rekey", "step": "mlkem_ct_keys"}, cause=e)
+            raise MessageError(
+                code=ErrorCode.MESSAGE_DECODE,
+                context={"phase": "rekey", "step": "mlkem_ct_keys"},
+                cause=e
+            ) from None
         
         signed_payload = mlkem_ct + enc_hqc_pub + enc_x25519_pub + nonce1 + nonce2
         try:
@@ -415,7 +431,11 @@ class _RekeyState:
                     context=ML_DSA_CONTEXT,
             )
         except InvalidSignature as exc:
-            raise KeyExchangeError(code=ErrorCode.KE_MLKEM_CT_SIG, context={"phase": "rekey"}, cause=exc)
+            raise KeyExchangeError(
+                code=ErrorCode.KE_MLKEM_CT_SIG,
+                context={"phase": "rekey"},
+                cause=exc
+            ) from None
         
         if self._rke_mlkem_priv is None:
             raise KeyExchangeError(code=ErrorCode.KE_MISSING_PRIVATE_KEY, context={"algo": "ML-KEM", "phase": "rekey"})
@@ -476,7 +496,11 @@ class _RekeyState:
             nonce2 = base64.b64decode(inner["nonce2"], validate=True)
             mldsa_sig = base64.b64decode(inner["mldsa_signature"], validate=True)
         except (KeyError, binascii.Error) as e:
-            raise MessageError(code=ErrorCode.MESSAGE_DECODE, context={"phase": "rekey", "step": "x25519_hqc_ct"}, cause=e)
+            raise MessageError(
+                code=ErrorCode.MESSAGE_DECODE,
+                context={"phase": "rekey", "step": "x25519_hqc_ct"},
+                cause=e
+            ) from None
         
         signed_payload = enc_x25519_pub + enc_hqc_ct + nonce1 + nonce2
         try:
@@ -486,7 +510,11 @@ class _RekeyState:
                     context=ML_DSA_CONTEXT,
             )
         except InvalidSignature as exc:
-            raise KeyExchangeError(code=ErrorCode.KE_X25519_HQC_SIG, context={"phase": "rekey"}, cause=exc)
+            raise KeyExchangeError(
+                code=ErrorCode.KE_X25519_HQC_SIG,
+                context={"phase": "rekey"},
+                cause=exc
+            ) from None
         
         dec1 = KeyExchangeDoubleEncryptor(self._rke_intermediary_key_1)
         peer_x25519_pub_bytes = dec1.decrypt(nonce1, enc_x25519_pub)
@@ -522,11 +550,18 @@ class _RekeyState:
         try:
             peer_proof = base64.b64decode(inner["verification_key"], validate=True)
         except (KeyError, binascii.Error) as e:
-            raise MessageError(code=ErrorCode.MESSAGE_DECODE, context={"phase": "rekey", "step": "verification"}, cause=e)
+            raise MessageError(
+                code=ErrorCode.MESSAGE_DECODE,
+                context={"phase": "rekey", "step": "verification"},
+                cause=e
+            ) from None
         
         key_material = self._pending_key_verification_material or self._protocol._key_verification_material
         if not key_material:
-            raise KeyExchangeError(code=ErrorCode.KE_STATE, context={"phase": "rekey", "reason": "no_verification_material"})
+            raise KeyExchangeError(
+                code=ErrorCode.KE_STATE,
+                context={"phase": "rekey", "reason": "no_verification_material"}
+            )
         
         h = HMAC(key_material, hashes.SHA3_512())
         h.update(b"key-verification-v1")

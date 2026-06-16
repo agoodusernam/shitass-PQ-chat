@@ -16,6 +16,7 @@ Classes:
 # pylint: disable=trailing-whitespace, broad-exception-caught, too-many-instance-attributes
 import base64
 import binascii
+import contextlib
 import datetime
 import io
 import json
@@ -26,41 +27,40 @@ import socket
 import socketserver
 import threading
 import time
+import warnings
 from collections.abc import Generator, Iterator
 from pathlib import Path
 from typing import Any, Final
-import warnings
 
 from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric.mlkem import MLKEM1024PrivateKey
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives.constant_time import bytes_eq
 from cryptography.hazmat.primitives.kdf.concatkdf import ConcatKDFHash
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.primitives.asymmetric.mlkem import MLKEM1024PrivateKey
 
 from config import ServerConfigHandler
 from protocol.constants import (
+    DEADDROP_CIPHERTEXT_OFFSET,
+    DEADDROP_KDF_KEY_LENGTH,
+    DEADDROP_LENGTH_PREFIX_SIZE,
+    DEADDROP_NONCE_OFFSET,
+    DEADDROP_PBKDF2_ITERATIONS,
+    DEADDROP_SALT_SIZE,
     MAGIC_NUMBER_DEADDROPS,
     MAGIC_NUMBER_FILE_TRANSFER,
-    MessageType,
-    PROTOCOL_VERSION,
-    NONCE_SIZE,
-    DEADDROP_KDF_KEY_LENGTH,
-    DEADDROP_SALT_SIZE,
-    DEADDROP_PBKDF2_ITERATIONS,
     MAGIC_SIZE,
-    DEADDROP_NONCE_OFFSET,
-    DEADDROP_CIPHERTEXT_OFFSET,
-    DEADDROP_LENGTH_PREFIX_SIZE,
+    NONCE_SIZE,
+    PROTOCOL_VERSION,
+    MessageType,
 )
 from protocol.create_messages import create_reset_message
 from protocol.errors import (
-    ErrorCode,
-    ChatError,
     ConnectionClosedError,
+    ErrorCode,
     ServerError,
 )
-from utils.network_utils import encode_send_message, receive_message, send_message
+from utils.network_utils import receive_message, send_dict_as_json, send_message
 
 _config = ServerConfigHandler()
 
@@ -86,7 +86,10 @@ class DeadDropManager:
             return
         location: Path = _config["deaddrop_file_location"]
         if location.is_file():
-            raise ServerError(code=ErrorCode.SRV_DD_IO, context={"path": str(location), "reason": "folder_location_is_file"})
+            raise ServerError(
+                code=ErrorCode.SRV_DD_IO,
+                context={"path": str(location), "reason": "folder_location_is_file"}
+            )
         if not location.exists():
             location.mkdir(mode=0o700, parents=True)
         location.chmod(mode=0o700)
@@ -194,7 +197,7 @@ class DeadDropManager:
     def check_file(self, name: str) -> bool:
         time.sleep(secrets.randbelow(500) / 1000)
         # We wait for 0-2 seconds to obscure timing attacks
-        return name in self.deaddrop_files.keys()
+        return name in self.deaddrop_files
     
     def get_file(self, name: str) -> io.BufferedReader:
         if not self.check_file(name):
@@ -211,7 +214,7 @@ class DeadDropManager:
         if not self.check_file(name):
             raise ServerError(code=ErrorCode.SRV_DD_IO, context={"name": name, "reason": "not_found"})
         
-        with open(self.deaddrop_files[name].with_suffix(".metadata"), "r") as f:
+        with open(self.deaddrop_files[name].with_suffix(".metadata")) as f:
             lines = f.readlines()
             if len(lines) < 2:
                 raise ServerError(code=ErrorCode.SRV_DD_IO, context={"name": name, "reason": "metadata_corrupted"})
@@ -221,7 +224,7 @@ class DeadDropManager:
         if not self.check_file(name):
             raise ServerError(code=ErrorCode.SRV_DD_IO, context={"name": name, "reason": "not_found"})
         
-        with open(self.deaddrop_files[name].with_suffix(".metadata"), "r") as f:
+        with open(self.deaddrop_files[name].with_suffix(".metadata")) as f:
             lines = f.readlines()
             if len(lines) < 2:
                 raise ServerError(code=ErrorCode.SRV_DD_IO, context={"name": name, "reason": "metadata_corrupted"})
@@ -231,14 +234,13 @@ class DeadDropManager:
         if not self.check_file(name):
             raise ServerError(code=ErrorCode.SRV_DD_IO, context={"name": name, "reason": "not_found"})
         
-        with open(self.deaddrop_files[name].with_suffix(".metadata"), "r") as f:
+        with open(self.deaddrop_files[name].with_suffix(".metadata")) as f:
             lines = f.readlines()
             if len(lines) < 3:
                 return ""
             return lines[2].strip()
 
 
-# noinspection PyBroadException
 class SecureChatServer(socketserver.ThreadingTCPServer):
     """
     Secure chat server that handles two-client connections with end-to-end encryption.
@@ -256,12 +258,11 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
                 Defaults to 0.0.0.0.
             port (int, optional): The port number to listen on. Defaults to 16384.
         """
-        self.clients: dict[str, "SecureChatRequestHandler"] = {}
+        self.clients: dict[str, SecureChatRequestHandler] = {}
         self.clients_lock: threading.Lock = threading.Lock()
-        self.running: bool = False
-        self.client_counter: int = 0
-        self.deaddrop_manager: DeadDropManager = DeadDropManager()
         self.server_identifier: str = ""
+
+        self.deaddrop_manager: DeadDropManager = DeadDropManager()
         # Deaddrop session exclusivity control
         self.deaddrop_busy: bool = False
         self.deaddrop_owner: str = ""
@@ -273,7 +274,7 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
             self.server_identifier = self._load_or_create_identifier()
         except Exception as e:
             # Fall back to empty identifier on failure; connection will still work
-            warnings.warn(f"Warning: Failed to load/create server identifier: {e}")
+            warnings.warn(f"Warning: Failed to load/create server identifier: {e}", stacklevel=2)
             self.server_identifier = ""
         
         print(f"Secure chat server started on {host}:{port}")
@@ -300,7 +301,7 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
         """
         id_path = self._get_identifier_path()
         try:
-            with open(id_path, "r", encoding="utf-8") as f:
+            with open(id_path, encoding="utf-8") as f:
                 ident = f.read().strip()
                 if ident:
                     return ident
@@ -310,7 +311,7 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
         # Create a new identifier
         words: list[str]
         wl_path = self._get_wordlist_path()
-        with open(wl_path, "r", encoding="utf-8") as f:
+        with open(wl_path, encoding="utf-8") as f:
             words = [line.strip() for line in f if line.strip()]
         if not words:
             raise ServerError(code=ErrorCode.SRV_IDENTIFIER_MISSING, context={"reason": "wordlist_empty_or_missing"})
@@ -328,15 +329,12 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
         """Add a client to the server. Returns True if added, False if server rejects the client."""
         with self.clients_lock:
             # Enforce normal 2-client limit unless a deaddrop session is active
-            if self.deaddrop_busy:
-                # Only allow the deaddrop owner to remain connected; reject new clients
-                if len(self.clients) >= 1:
-                    return False
+            if self.deaddrop_busy and len(self.clients) >= 1:
+                return False
             if len(self.clients) >= 2:
                 return False
             
-            self.client_counter += 1
-            client_id = f"client_{self.client_counter}"
+            client_id = f"client_{len(self.clients)}"
             client_handler.client_id = client_id
             self.clients[client_id] = client_handler
             
@@ -353,19 +351,21 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
     def remove_client(self, client_id: str) -> None:
         """Remove a client from the server."""
         with self.clients_lock:
-            if client_id in self.clients:
-                del self.clients[client_id]
-                
-                # Notify remaining client to reset key exchange
-                if self.clients:
-                    remaining_client = list(self.clients.values())[0]
-                    # Send key exchange reset message
-                    reset_msg = create_reset_message()
-                    send_message(remaining_client.request, reset_msg)
-                    remaining_client.key_exchange_complete = False
-                else:
-                    self.client_counter = 0
-    
+            if client_id not in self.clients:
+                return
+
+            del self.clients[client_id]
+
+            # Notify remaining client to reset key exchange
+            if len(self.clients) == 0:
+                return
+
+            remaining_client = list(self.clients.values())[0]
+            # Send key exchange reset message
+            reset_msg = create_reset_message()
+            send_message(remaining_client.request, reset_msg)
+            remaining_client.key_exchange_complete = False
+
     def initiate_key_exchange(self) -> None:
         """Initiate the key exchange process between two connected clients."""
         with self.clients_lock:
@@ -377,7 +377,7 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
             
             # Tell first client to start key exchange
             initiate_message = {"type": MessageType.INITIATE_KEY_EXCHANGE}
-            encode_send_message(client1.request, initiate_message)
+            send_dict_as_json(client1.request, initiate_message)
     
     def route_message(self, sender_id: str, message_data: bytes) -> bool:
         """Route encrypted message from sender to the other client."""
@@ -399,11 +399,10 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
         error_msg = {"type": MessageType.ERROR, "error": error_text}
         with self.clients_lock:
             for client_handler in self.clients.values():
-                encode_send_message(client_handler.request, error_msg)
+                send_dict_as_json(client_handler.request, error_msg)
     
     def start_server(self) -> None:
         """Start the server and serve forever."""
-        self.running = True
         try:
             self.serve_forever()
         except KeyboardInterrupt:
@@ -413,14 +412,12 @@ class SecureChatServer(socketserver.ThreadingTCPServer):
     
     def stop_server(self) -> None:
         """Stop the server and clean up."""
-        self.running = False
         for client_handler in list(self.clients.values()):
             client_handler.disconnect("Server shutting down")
         self.shutdown()
         self.server_close()
 
 
-# noinspection PyBroadException
 class SecureChatRequestHandler(socketserver.BaseRequestHandler):
     """
     Handles individual client connections.
@@ -480,7 +477,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                 rejection_message = {
                     "type": MessageType.SERVER_FULL,
                 }
-                encode_send_message(self.request, rejection_message)
+                send_dict_as_json(self.request, rejection_message)
             except (OSError, ConnectionError):
                 # Ignore: client can't receive rejection or already disconnected
                 pass
@@ -505,7 +502,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
     def _handle(self) -> None:
         """Main client handling loop."""
         # If client wasn't added (server full), don't process
-        if self.client_id is None:
+        if not self.client_id:
             return
         
         self.start_keepalive()
@@ -749,7 +746,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                 "timestamp": time.time(),
             }
             with self.sender_lock:
-                encode_send_message(self.request, keepalive_message)
+                send_dict_as_json(self.request, keepalive_message)
             self.waiting_for_keepalive_response = True
             self.last_keepalive_time = time.time()
         except (OSError, ConnectionError) as e:
@@ -778,7 +775,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                 "identifier":       self.server.server_identifier,
             }
             with self.sender_lock:
-                encode_send_message(self.request, version_message)
+                send_dict_as_json(self.request, version_message)
         except (OSError, ConnectionError) as e:
             print(f"Error sending protocol version info to {self.client_id} (socket): {e}")
         except Exception as e:
@@ -805,15 +802,13 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                     "type":   MessageType.SERVER_DISCONNECT,
                     "reason": reason if reason else "Server disconnect",
                 }
-                encode_send_message(self.request, disconnect_message)
+                send_dict_as_json(self.request, disconnect_message)
             
             if self.client_id:
                 self.server.remove_client(self.client_id)
-            try:
+            with contextlib.suppress(OSError):
                 self.request.close()
-            except (OSError, socket.error):
-                # ignore: closing a dead socket
-                pass
+
     
     def handle_unexpected_message(self, extra_info: str = "") -> None:
         """Handle unexpected messages from the client."""
@@ -829,12 +824,12 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                 "supported": False,
             }
             with self.sender_lock:
-                encode_send_message(self.request, deny_msg)
+                send_dict_as_json(self.request, deny_msg)
             return
         
         if self.get_other_client():
             with self.sender_lock:
-                encode_send_message(self.request, {
+                send_dict_as_json(self.request, {
                     "type":   MessageType.DEADDROP_DENY,
                     "reason": "Cannot start deaddrop while another client is connected.",
                 })
@@ -854,7 +849,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             "mlkem_public":  base64.b64encode(public_key).decode("utf-8"),
         }
         with self.sender_lock:
-            encode_send_message(self.request, msg)
+            send_dict_as_json(self.request, msg)
         
         print(f"Deaddrop session started by {self.client_id}")
     
@@ -864,14 +859,14 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             client_mlkem_ct = base64.b64decode(message_data["mlkem_ct"], validate=True)
         except KeyError:
             with self.sender_lock:
-                encode_send_message(self.request, {
+                send_dict_as_json(self.request, {
                     "type":   MessageType.DEADDROP_DENY,
                     "reason": "Missing mlkem_ct in deaddrop ke response message",
                 })
             return
         except binascii.Error:
             with self.sender_lock:
-                encode_send_message(self.request, {
+                send_dict_as_json(self.request, {
                     "type":   MessageType.DEADDROP_DENY,
                     "reason": "Invalid mlkem_ct in deaddrop ke response message",
                 })
@@ -1153,7 +1148,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
         
         # Enforce maximum size (hard cap)
         if self.pending_deaddrop_received_size + len(chunk_data) > _config["deaddrop_max_size"]:
-            self._fail_current_upload(f"Upload exceeded maximum allowed size")
+            self._fail_current_upload("Upload exceeded maximum allowed size")
             return
         
         if chunk_index not in self.pending_deaddrop_received_chunks:
@@ -1162,7 +1157,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
                 self.pending_deaddrop_received_chunks.add(chunk_index)
                 self.pending_deaddrop_received_size += len(chunk_data)
             except Exception:
-                self._fail_current_upload(f"Internal server error")
+                self._fail_current_upload("Internal server error")
                 return
         
         if len(self.pending_deaddrop_received_chunks) > _config["deaddrop_max_chunks"]:
@@ -1180,7 +1175,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
     
     def handle_deaddrop_complete(self) -> None:
         if not self.upload_accepted or not self.pending_deaddrop_upload_name:
-            self._fail_current_upload(f"No active deaddrop upload to complete")
+            self._fail_current_upload("No active deaddrop upload to complete")
             return
         
         if self.pending_deaddrop_chunk_size <= 0:
@@ -1270,7 +1265,7 @@ class SecureChatRequestHandler(socketserver.BaseRequestHandler):
             "ciphertext": base64.b64encode(encryptor.encrypt(nonce, msg, aad_raw)).decode("utf-8"),
         }
         with self.sender_lock:
-            encode_send_message(self.request, to_send)
+            send_dict_as_json(self.request, to_send)
     
     def send_raw_deaddrop_data(self, message: bytes) -> None:
         """Send a raw deaddrop data message to the client."""

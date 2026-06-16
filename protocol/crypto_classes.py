@@ -14,11 +14,11 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from protocol.constants import (
     DOUBLE_KEY_SIZE,
     HKDF_KEY_LENGTH,
+    NONCE_SIZE,
     PAD_SIZE,
     SINGLE_KEY_SIZE,
-    NONCE_SIZE,
 )
-from protocol.errors import ErrorCode, CryptoError
+from protocol.errors import CryptoError, ErrorCode
 from protocol.utils import xor_bytes
 
 
@@ -57,7 +57,8 @@ class DoubleEncryptor:
           the 64-byte key to reduce nonce misuse risk (even if the provided nonce repeats).
 
     Key material:
-        - Requires a DOUBLE_KEY_SIZE-byte key: first HALF_KEY_SIZE bytes for AES-GCM-SIV, last HALF_KEY_SIZE bytes for ChaCha20-Poly1305.
+        - Requires a DOUBLE_KEY_SIZE-byte key: first HALF_KEY_SIZE bytes for AES-GCM-SIV,
+        last HALF_KEY_SIZE bytes for ChaCha20-Poly1305.
         - `OTP_secret` is a separate secret (e.g. from HQC) used solely for keystream derivation.
     
     Padding:
@@ -76,7 +77,8 @@ class DoubleEncryptor:
     def __init__(self, key: bytes, OTP_secret: bytes, message_counter: int):
         """
         Args:
-            key: DOUBLE_KEY_SIZE bytes. First HALF_KEY_SIZE bytes for AES-GCM-SIV, last HALF_KEY_SIZE bytes for ChaCha20-Poly1305.
+            key: DOUBLE_KEY_SIZE bytes. First HALF_KEY_SIZE bytes for AES-GCM-SIV,
+            last HALF_KEY_SIZE bytes for ChaCha20-Poly1305.
             OTP_secret: Secret seed used to derive the OTP-like keystream that pre-masks the padded data.
             message_counter: Monotonically increasing counter mixed into the keystream to ensure per-message
                              uniqueness.
@@ -109,10 +111,7 @@ class DoubleEncryptor:
             associated_data: bytes | None = None,
             pad: bool = True,
     ) -> bytes:
-        if pad:
-            new_data = _iso7816_pad(data, PAD_SIZE)
-        else:
-            new_data = data
+        new_data = _iso7816_pad(data, PAD_SIZE) if pad else data
         
         aes_nonce, chacha_nonce = _derive_nonces(nonce, self._key)
         
@@ -174,15 +173,19 @@ class ChunkIndependentDoubleEncryptor:
     def encrypt(self, nonce: bytes, data: bytes) -> bytes:
         # Technically, ChaCha20 requires 12 bytes of nonce + 4 bytes of counter.
         # However, we provide a complete 16 byte nonce every time which includes that 'counter' value
-        chacha_encryptor: CipherContext = Cipher(algorithms.ChaCha20(self._key[SINGLE_KEY_SIZE:], nonce), None).encryptor()
-        aes_encryptor: CipherContext = Cipher(algorithms.AES(self._key[:SINGLE_KEY_SIZE]), modes.CTR(nonce)).encryptor()
+        chacha = algorithms.ChaCha20(self._key[SINGLE_KEY_SIZE:], nonce)
+        chacha_encryptor: CipherContext = Cipher(chacha, None).encryptor()
+        aes = algorithms.AES(self._key[:SINGLE_KEY_SIZE])
+        aes_encryptor: CipherContext = Cipher(aes, modes.CTR(nonce)).encryptor()
         layer1 = chacha_encryptor.update(data) + chacha_encryptor.finalize()
         layer2 = aes_encryptor.update(layer1) + aes_encryptor.finalize()
         return layer2
     
     def decrypt(self, nonce: bytes, data: bytes) -> bytes:
-        chacha_decryptor: CipherContext = Cipher(algorithms.ChaCha20(self._key[SINGLE_KEY_SIZE:], nonce), None).decryptor()
-        aes_decryptor: CipherContext = Cipher(algorithms.AES(self._key[:SINGLE_KEY_SIZE]), modes.CTR(nonce)).decryptor()
+        chacha: algorithms.ChaCha20 = algorithms.ChaCha20(self._key[SINGLE_KEY_SIZE:], nonce)
+        chacha_decryptor: CipherContext = Cipher(chacha, None).decryptor()
+        aes: algorithms.AES = algorithms.AES(self._key[:SINGLE_KEY_SIZE])
+        aes_decryptor: CipherContext = Cipher(aes, modes.CTR(nonce)).decryptor()
         layer2 = aes_decryptor.update(data) + aes_decryptor.finalize()
         layer1 = chacha_decryptor.update(layer2) + chacha_decryptor.finalize()
         return layer1
@@ -348,7 +351,7 @@ class _KeyDerivation:
                 algorithm=hashes.SHA3_512(),
                 length=HKDF_KEY_LENGTH,
                 salt=counter.to_bytes(8, byteorder="little"),
-                info=f"chain_key_{counter}".encode("utf-8"),
+                info=f"chain_key_{counter}".encode(),
         )
         return hkdf.derive(chain_key)
     

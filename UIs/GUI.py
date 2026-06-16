@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 import base64
 import binascii
 import collections
+import contextlib
 import json
 import os
 import re
@@ -10,22 +13,20 @@ import time
 import tkinter as tk
 import uuid
 import wave
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext
-from typing import Any, Callable, ParamSpec, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, ParamSpec
 from wave import Wave_read
 
+from config import ClientConfigHandler
+from protocol.errors import Severity, describe, format_code
+from protocol.utils import bytes_to_human_readable
 from SecureChatABCs.client_base import ClientBase
 from SecureChatABCs.ui_base import UIBase, UICapability
-from config import ClientConfigHandler
-from protocol.errors import ErrorCode, Severity, describe, format_code
-from protocol.utils import bytes_to_human_readable
+from utils.ltk import ltk
 from utils.vc_utils import negotiate_audio_format
 
-P = ParamSpec("P")
-
-# Check for optional dependencies
 try:
     from PIL import Image, ImageGrab, ImageTk
     
@@ -69,6 +70,7 @@ except ImportError:
     TkinterDnD = None
     DND_FILES = None
 
+P = ParamSpec("P")
 
 class FileTransferWindow:
     """Separate window for file transfer progress and status updates."""
@@ -108,12 +110,10 @@ class FileTransferWindow:
         self.speed_label: tk.Label | None = None
         self.transfer_list: scrolledtext.ScrolledText | None = None
         
-        # Speed calculation variables
         self.last_update_time: float = time.time()
         self.last_bytes_transferred: int = 0
         self.current_speed: float = 0.0
         
-        # Theme colours (use provided theme or defaults)
         if theme_colors:
             self.BG_COLOR = theme_colors["BG_COLOR"]
             self.FG_COLOR = theme_colors["FG_COLOR"]
@@ -132,83 +132,81 @@ class FileTransferWindow:
     
     def create_window(self) -> None:
         """Create the file transfer window if it doesn't exist."""
-        if not self._ui_created:
-            self.window.title("File Transfer Progress")
-            self.window.geometry("550x400")
-            self.window.configure(bg=self.BG_COLOR)
-            
-            # Make window stay on top but not always
-            self.window.transient(self.parent_root)
-            
-            # Top frame for speed display
-            top_frame = tk.Frame(self.window, bg=self.BG_COLOR)
-            top_frame.pack(fill=tk.X, padx=10, pady=5)
-            
-            # Speed label in top right
-            self.speed_label = tk.Label(
-                    top_frame,
-                    text="Speed: 0.0 MiB/s",
-                    bg=self.BG_COLOR,
-                    fg=self.SPEED_LABEL_COLOR,
-                    font=("Consolas", 10, "bold"),
-            )
-            self.speed_label.pack(side=tk.RIGHT)
-            
-            # Title label
-            title_label = tk.Label(
-                    top_frame,
-                    text="File Transfers",
-                    bg=self.BG_COLOR,
-                    fg=self.FG_COLOR,
-                    font=("Consolas", 12, "bold"),
-            )
-            title_label.pack(side=tk.LEFT)
-            
-            # Main frame for transfer list
-            main_frame = tk.Frame(self.window, bg=self.BG_COLOR)
-            main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-            
-            # Scrollable text area for transfer updates
-            self.transfer_list = scrolledtext.ScrolledText(
-                    main_frame,
-                    state=tk.DISABLED,
-                    wrap=tk.WORD,
-                    height=20,
-                    font=("Consolas", 9),
-                    bg=self.TEXT_BG_COLOR,
-                    fg=self.FG_COLOR,
-                    insertbackground=self.FG_COLOR,
-                    relief=tk.FLAT,
-            )
-            self.transfer_list.pack(fill=tk.BOTH, expand=True)
-            
-            # Handle window closing
-            self.window.protocol("WM_DELETE_WINDOW", self.hide_window)
-            self._ui_created = True
+        if self._ui_created:
+            return
+
+        self.window.title("File Transfer Progress")
+        self.window.geometry("550x400")
+        self.window.configure(bg=self.BG_COLOR)
+
+        # Make window stay on top but not always
+        self.window.transient(self.parent_root)
+
+        # Top frame for speed display
+        top_frame = tk.Frame(self.window, bg=self.BG_COLOR)
+        top_frame.pack(fill=ltk.X, padx=10, pady=5)
+
+        # Speed label in top right
+        self.speed_label = tk.Label(
+                top_frame,
+                text="Speed: 0.0 MiB/s",
+                bg=self.BG_COLOR,
+                fg=self.SPEED_LABEL_COLOR,
+                font=("Consolas", 10, "bold"),
+        )
+        self.speed_label.pack(side=ltk.RIGHT)
+
+        # Title label
+        title_label = tk.Label(
+                top_frame,
+                text="File Transfers",
+                bg=self.BG_COLOR,
+                fg=self.FG_COLOR,
+                font=("Consolas", 12, "bold"),
+        )
+        title_label.pack(side=ltk.LEFT)
+
+        # Main frame for transfer list
+        main_frame = tk.Frame(self.window, bg=self.BG_COLOR)
+        main_frame.pack(fill=ltk.BOTH, expand=True, padx=10, pady=5)
+
+        # Scrollable text area for transfer updates
+        self.transfer_list = scrolledtext.ScrolledText(
+                main_frame,
+                state=ltk.DISABLED,
+                wrap=ltk.WORD,
+                height=20,
+                font=("Consolas", 9),
+                bg=self.TEXT_BG_COLOR,
+                fg=self.FG_COLOR,
+                insertbackground=self.FG_COLOR,
+                relief=ltk.FLAT,
+        )
+        self.transfer_list.pack(fill=ltk.BOTH, expand=True)
+
+        # Handle window closing
+        self.window.protocol("WM_DELETE_WINDOW", self.hide_window)
+        self._ui_created = True
     
     def show_window(self) -> None:
-        """Show the file transfer window."""
         self.create_window()
         self.window.deiconify()
         self.window.lift()
     
     def hide_window(self) -> None:
-        """Hide the file transfer window."""
         if self.window:
             self.window.withdraw()
     
     def add_transfer_message(self, message: str):
-        """Add a message to the transfer window."""
         self.create_window()
         
         if self.transfer_list:
-            self.transfer_list.config(state=tk.NORMAL)
+            self.transfer_list.config(state=ltk.NORMAL)
             timestamp = time.strftime("%H:%M:%S")
             self.transfer_list.insert(tk.END, f"[{timestamp}] {message}\n")
             self.transfer_list.see(tk.END)
-            self.transfer_list.config(state=tk.DISABLED)
+            self.transfer_list.config(state=ltk.DISABLED)
         
-        # Show window if not visible
         if self.window.state() == 'withdrawn':
             self.show_window()
     
@@ -226,11 +224,9 @@ class FileTransferWindow:
         """
         progress = (current / total) * 100 if total > 0 else 0
         
-        # Calculate speed if bytes_transferred is provided
         if bytes_transferred != -1:
             self.update_speed(bytes_transferred)
         
-        # Include compression status if provided
         compression_info = f" ({comp_text})" if comp_text != "" else ""
         message = f"{filename}: {progress:.1f}% ({current}/{total} chunks){compression_info}"
         self.add_transfer_message(message)
@@ -265,18 +261,18 @@ class FileTransferWindow:
 class DeadDropWindow:
     """Dialog window for deaddrop upload, check, and download operations."""
     
-    def __init__(self, parent_root: tk.Tk, client: ClientBase, theme_colors: dict):
-        self.parent_root = parent_root
-        self.client = client
-        self.theme_colors = theme_colors
+    def __init__(self, parent_root: tk.Tk, client: ClientBase, theme_colors: dict[str, str]):
+        self.parent_root: tk.Tk = parent_root
+        self.client: ClientBase = client
+        self.theme_colors: dict[str, str] = theme_colors
         
-        self.BG_COLOR = theme_colors.get("BG_COLOR", "#2b2b2b")
-        self.FG_COLOR = theme_colors.get("FG_COLOR", "#d4d4d4")
-        self.ENTRY_BG_COLOR = theme_colors.get("ENTRY_BG_COLOR", "#3c3c3c")
-        self.BUTTON_BG_COLOR = theme_colors.get("BUTTON_BG_COLOR", "#4b4b4b")
-        self.TEXT_BG_COLOR = theme_colors.get("TEXT_BG_COLOR", "#1e1e1e")
+        self.BG_COLOR: str = theme_colors.get("BG_COLOR", "#2b2b2b")
+        self.FG_COLOR: str = theme_colors.get("FG_COLOR", "#d4d4d4")
+        self.ENTRY_BG_COLOR: str = theme_colors.get("ENTRY_BG_COLOR", "#3c3c3c")
+        self.BUTTON_BG_COLOR: str = theme_colors.get("BUTTON_BG_COLOR", "#4b4b4b")
+        self.TEXT_BG_COLOR: str = theme_colors.get("TEXT_BG_COLOR", "#1e1e1e")
         
-        self.window = tk.Toplevel(parent_root)
+        self.window: tk.Toplevel = tk.Toplevel(parent_root)
         self.window.title("Dead Drop")
         self.window.geometry("480x420")
         self.window.configure(bg=self.BG_COLOR)
@@ -285,113 +281,105 @@ class DeadDropWindow:
         
         self._build_ui()
     
-    # noinspection PyMissingTypeHints
-    def _label(self, parent, text, **kw):
+    def _label(self, parent: tk.Frame | tk.Toplevel, text: str, **kw) -> tk.Label:
         return tk.Label(parent, text=text, bg=self.BG_COLOR, fg=self.FG_COLOR, **kw)
     
-    # noinspection PyMissingTypeHints
-    def _entry(self, parent, show="", **kw):
+    def _entry(self, parent: tk.Frame | tk.Toplevel, show: str = "", **kw) -> tk.Entry:
         return tk.Entry(parent, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR,
-                        insertbackground=self.FG_COLOR, relief=tk.FLAT, show=show, **kw)
+                        insertbackground=self.FG_COLOR, relief=ltk.FLAT, show=show, **kw)
     
-    # noinspection PyMissingTypeHints
-    def _button(self, parent, text, command, **kw):
+    def _button(self, parent: tk.Frame | tk.Toplevel, text: str, command: Callable[[], Any], **kw):
         return tk.Button(parent, text=text, command=command,
-                         bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT, **kw)
+                         bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT, **kw)
     
     def _build_ui(self) -> None:
         pad = {"padx": 10, "pady": 4}
         
         # --- Tab bar (Upload / Check / Download) ---
         tab_frame = tk.Frame(self.window, bg=self.BG_COLOR)
-        tab_frame.pack(fill=tk.X, padx=10, pady=(10, 0))
+        tab_frame.pack(fill=ltk.X, padx=10, pady=(10, 0))
         
         self._tab_frames: dict[str, tk.Frame] = {}
         self._tab_buttons: dict[str, tk.Button] = {}
         
         for tab_name in ("Upload", "Check", "Download"):
             btn = self._button(tab_frame, tab_name, lambda n=tab_name: self._show_tab(n))
-            btn.pack(side=tk.LEFT, padx=(0, 4))
+            btn.pack(side=ltk.LEFT, padx=(0, 4))
             self._tab_buttons[tab_name] = btn
-        
-        # --- Content area ---
+
         content = tk.Frame(self.window, bg=self.BG_COLOR)
-        content.pack(fill=tk.BOTH, expand=True, padx=10, pady=6)
+        content.pack(fill=ltk.BOTH, expand=True, padx=10, pady=6)
         
-        # Upload tab
         upload_frame = tk.Frame(content, bg=self.BG_COLOR)
         self._tab_frames["Upload"] = upload_frame
         
-        self._label(upload_frame, "Name:").grid(row=0, column=0, sticky=tk.W, **pad)
+        self._label(upload_frame, "Name:").grid(row=0, column=0, sticky=ltk.W, **pad)
         self.upload_name = self._entry(upload_frame, width=30)
-        self.upload_name.grid(row=0, column=1, sticky=tk.W, **pad)
+        self.upload_name.grid(row=0, column=1, sticky=ltk.W, **pad)
         
-        self._label(upload_frame, "Password:").grid(row=1, column=0, sticky=tk.W, **pad)
+        self._label(upload_frame, "Password:").grid(row=1, column=0, sticky=ltk.W, **pad)
         self.upload_password = self._entry(upload_frame, show="*", width=30)
-        self.upload_password.grid(row=1, column=1, sticky=tk.W, **pad)
+        self.upload_password.grid(row=1, column=1, sticky=ltk.W, **pad)
         
-        self._label(upload_frame, "File:").grid(row=2, column=0, sticky=tk.W, **pad)
+        self._label(upload_frame, "File:").grid(row=2, column=0, sticky=ltk.W, **pad)
         file_row: tk.Frame = tk.Frame(upload_frame, bg=self.BG_COLOR)
-        file_row.grid(row=2, column=1, sticky=tk.W, **pad)  # type: ignore
+        file_row.grid(row=2, column=1, sticky=ltk.W, **pad)  # type: ignore
         self.upload_file_var = tk.StringVar()
-        self._entry(upload_frame, width=22, textvariable=self.upload_file_var).grid(row=2, column=1, sticky=tk.W, **pad)
+        self._entry(upload_frame, width=22, textvariable=self.upload_file_var).grid(row=2, column=1, sticky=ltk.W, **pad)
         self._button(upload_frame, "Browse…", self._browse_upload_file).grid(row=2, column=2, **pad)
         
-        self._button(upload_frame, "Upload", self._do_upload).grid(row=3, column=1, sticky=tk.W, **pad)
+        self._button(upload_frame, "Upload", self._do_upload).grid(row=3, column=1, sticky=ltk.W, **pad)
         
-        # Check tab
         check_frame = tk.Frame(content, bg=self.BG_COLOR)
         self._tab_frames["Check"] = check_frame
         
-        self._label(check_frame, "Name:").grid(row=0, column=0, sticky=tk.W, **pad)
+        self._label(check_frame, "Name:").grid(row=0, column=0, sticky=ltk.W, **pad)
         self.check_name = self._entry(check_frame, width=30)
-        self.check_name.grid(row=0, column=1, sticky=tk.W, **pad)
+        self.check_name.grid(row=0, column=1, sticky=ltk.W, **pad)
         
-        self._button(check_frame, "Check", self._do_check).grid(row=1, column=1, sticky=tk.W, **pad)
+        self._button(check_frame, "Check", self._do_check).grid(row=1, column=1, sticky=ltk.W, **pad)
         
-        # Download tab
         download_frame = tk.Frame(content, bg=self.BG_COLOR)
         self._tab_frames["Download"] = download_frame
         
-        self._label(download_frame, "Name:").grid(row=0, column=0, sticky=tk.W, **pad)
+        self._label(download_frame, "Name:").grid(row=0, column=0, sticky=ltk.W, **pad)
         self.download_name = self._entry(download_frame, width=30)
-        self.download_name.grid(row=0, column=1, sticky=tk.W, **pad)
+        self.download_name.grid(row=0, column=1, sticky=ltk.W, **pad)
         
-        self._label(download_frame, "Password:").grid(row=1, column=0, sticky=tk.W, **pad)
+        self._label(download_frame, "Password:").grid(row=1, column=0, sticky=ltk.W, **pad)
         self.download_password = self._entry(download_frame, show="*", width=30)
-        self.download_password.grid(row=1, column=1, sticky=tk.W, **pad)
+        self.download_password.grid(row=1, column=1, sticky=ltk.W, **pad)
         
-        self._button(download_frame, "Download", self._do_download).grid(row=2, column=1, sticky=tk.W, **pad)
+        self._button(download_frame, "Download", self._do_download).grid(row=2, column=1, sticky=ltk.W, **pad)
         
-        # --- Status / log area ---
-        self._label(self.window, "Status:").pack(anchor=tk.W, padx=10)
+        self._label(self.window, "Status:").pack(anchor=ltk.W, padx=10)
         self.status_text = scrolledtext.ScrolledText(
-                self.window, height=6, state=tk.DISABLED, wrap=tk.WORD,
+                self.window, height=6, state=ltk.DISABLED, wrap=ltk.WORD,
                 font=("Consolas", 9), bg=self.TEXT_BG_COLOR, fg=self.FG_COLOR,
-                relief=tk.FLAT,
+                relief=ltk.FLAT,
         )
-        self.status_text.pack(fill=tk.X, padx=10, pady=(0, 10))
+        self.status_text.pack(fill=ltk.X, padx=10, pady=(0, 10))
         
         self._show_tab("Upload")
     
     def _show_tab(self, name: str):
-        for tab_name, frame in self._tab_frames.items():
+        for _, frame in self._tab_frames.items():
             frame.pack_forget()
-        self._tab_frames[name].pack(fill=tk.BOTH, expand=True)
+        self._tab_frames[name].pack(fill=ltk.BOTH, expand=True)
         for tab_name, btn in self._tab_buttons.items():
-            btn.config(relief=tk.FLAT if tab_name != name else tk.SUNKEN)
-    
+            btn.config(relief=ltk.FLAT if tab_name != name else ltk.SUNKEN)
+        
     def _browse_upload_file(self) -> None:
         path = filedialog.askopenfilename()
         if path:
             self.upload_file_var.set(path)
     
     def log(self, message: str):
-        self.status_text.config(state=tk.NORMAL)
+        self.status_text.config(state=ltk.NORMAL)
         timestamp = time.strftime("%H:%M:%S")
         self.status_text.insert(tk.END, f"[{timestamp}] {message}\n")
         self.status_text.see(tk.END)
-        self.status_text.config(state=tk.DISABLED)
+        self.status_text.config(state=ltk.DISABLED)
     
     # --- Actions (run on background thread so UI stays responsive) ---
     
@@ -460,9 +448,7 @@ def get_image_from_clipboard() -> Image.Image | None:
         img = ImageGrab.grabclipboard()
         if isinstance(img, Image.Image):
             return img
-        elif isinstance(img, list) and img and isinstance(img[0], str):
-            # On some systems, grabclipboard() might return a list of file paths
-            if is_image_file(img[0]):
+        elif isinstance(img, list) and img and isinstance(img[0], str) and is_image_file(img[0]):
                 return Image.open(img[0])
     except Exception:
         pass
@@ -544,7 +530,7 @@ def load_theme_colors(theme_name: tk.StringVar | None = None) -> dict[str, str]:
     if selected:
         theme_path = os.path.join(THEMES_DIR, f"{selected}.json")
         try:
-            with open(theme_path, "r") as f:
+            with open(theme_path) as f:
                 user_colors: dict[str, Any] = json.load(f)
                 default_colors.update(user_colors)
                 return default_colors
@@ -555,7 +541,7 @@ def load_theme_colors(theme_name: tk.StringVar | None = None) -> dict[str, str]:
     legacy_path = str(_PROJECT_ROOT / "theme.json")
     if os.path.exists(legacy_path):
         try:
-            with open(legacy_path, "r") as f:
+            with open(legacy_path) as f:
                 user_colors = json.load(f)
                 default_colors.update(user_colors)
                 return default_colors
@@ -716,10 +702,8 @@ class GUI(UIBase):
         recolor(self.root)  # type: ignore[arg-type]
         
         # Update specific widgets that use named theme color keys
-        try:
+        with contextlib.suppress(AttributeError):
             self.status_label.configure(fg=self.theme_colors.get("STATUS_NOT_CONNECTED", "#ff6b6b"))
-        except AttributeError:
-            pass
         try:
             self.chat_display.configure(bg=self.TEXT_BG_COLOR, fg=self.FG_COLOR)
             self.chat_display.tag_configure("misspelled", underline=True,
@@ -739,13 +723,13 @@ class GUI(UIBase):
     @property
     def capabilities(self) -> UICapability:
         caps = UICapability.NONE
-        caps |= UICapability.FILE_TRANSFER
-        caps |= UICapability.EPHEMERAL_MODE
-        caps |= UICapability.DELIVERY_STATUS
-        caps |= UICapability.NICKNAMES
+        caps |= UICapability.FILE_TRANSFER # type: ignore[operator]
+        caps |= UICapability.EPHEMERAL_MODE # type: ignore[operator]
+        caps |= UICapability.DELIVERY_STATUS # type: ignore[operator]
+        caps |= UICapability.NICKNAMES # type: ignore[operator]
         if PYAUDIO_AVAILABLE:
-            caps |= UICapability.VOICE_CALLS
-        caps |= UICapability.DEADDROP
+            caps |= UICapability.VOICE_CALLS # type: ignore[operator]
+        caps |= UICapability.DEADDROP # type: ignore[operator]
         return caps
     
     def on_tk_thread(self, func: Callable[P, Any], /, *args: P.args, **kwargs: P.kwargs) -> None:
@@ -766,55 +750,55 @@ class GUI(UIBase):
     # noinspection PyAttributeOutsideInit
     def create_widgets(self) -> None:
         main_frame = tk.Frame(self.root, bg=self.BG_COLOR)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        main_frame.pack(fill=ltk.BOTH, expand=True, padx=10, pady=10)
         
         conn_frame = tk.Frame(main_frame, bg=self.BG_COLOR)
-        conn_frame.pack(fill=tk.X, pady=(0, 10))
+        conn_frame.pack(fill=ltk.X, pady=(0, 10))
         
-        tk.Label(conn_frame, text="Host:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=tk.LEFT)
-        self.host_entry = tk.Entry(conn_frame, width=15, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT)
-        self.host_entry.pack(side=tk.LEFT, padx=(5, 10))
+        tk.Label(conn_frame, text="Host:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=ltk.LEFT)
+        self.host_entry = tk.Entry(conn_frame, width=15, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT)
+        self.host_entry.pack(side=ltk.LEFT, padx=(5, 10))
         self.host_entry.insert(0, "localhost")
         
-        tk.Label(conn_frame, text="Port:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=tk.LEFT)
-        self.port_entry = tk.Entry(conn_frame, width=8, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT)
-        self.port_entry.pack(side=tk.LEFT, padx=(5, 10))
+        tk.Label(conn_frame, text="Port:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=ltk.LEFT)
+        self.port_entry = tk.Entry(conn_frame, width=8, bg=self.ENTRY_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT)
+        self.port_entry.pack(side=ltk.LEFT, padx=(5, 10))
         self.port_entry.insert(0, "16384")
         
         self.connect_btn = tk.Button(conn_frame, text="Connect", command=self.toggle_connection,
-                                     bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT)
-        self.connect_btn.pack(side=tk.LEFT, padx=(10, 0))
+                                     bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT)
+        self.connect_btn.pack(side=ltk.LEFT, padx=(10, 0))
         
         self.config_btn = tk.Button(conn_frame, text="Config", command=self.open_config_dialog,
-                                    bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT)
-        self.config_btn.pack(side=tk.LEFT, padx=(10, 0))
+                                    bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT)
+        self.config_btn.pack(side=ltk.LEFT, padx=(10, 0))
         
         if PYAUDIO_AVAILABLE:
             self.voice_call_btn = tk.Button(conn_frame, text="Voice Call", command=self.start_call,
-                                            bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT)
-            self.voice_call_btn.pack(side=tk.LEFT, padx=(10, 0))
+                                            bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT)
+            self.voice_call_btn.pack(side=ltk.LEFT, padx=(10, 0))
             self.mute_btn = tk.Button(conn_frame, text="Mute", command=self.toggle_mute,
-                                      bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT)
+                                      bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT)
         
         self.status_label = tk.Label(conn_frame, text="Not Connected", bg=self.BG_COLOR,
                                      fg=self.theme_colors.get("STATUS_NOT_CONNECTED", "#ff6b6b"),
                                      font=("Consolas", 9, "bold"))
-        self.status_label.pack(side=tk.RIGHT, padx=(10, 0))
+        self.status_label.pack(side=ltk.RIGHT, padx=(10, 0))
         
-        self.chat_display = scrolledtext.ScrolledText(main_frame, state=tk.DISABLED, wrap=tk.WORD, height=20,
+        self.chat_display = scrolledtext.ScrolledText(main_frame, state=ltk.DISABLED, wrap=ltk.WORD, height=20,
                                                       font=("Consolas", 10), bg=self.TEXT_BG_COLOR, fg=self.FG_COLOR,
-                                                      relief=tk.FLAT)
-        self.chat_display.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+                                                      relief=ltk.FLAT)
+        self.chat_display.pack(fill=ltk.BOTH, expand=True, pady=(0, 10))
         if TKINTERDND2_AVAILABLE:
             self.chat_display.drop_target_register(DND_FILES)  # type: ignore[attr-defined]
             self.chat_display.dnd_bind('<<Drop>>', self.handle_drop)  # type: ignore[attr-defined]
         
         self.input_frame = tk.Frame(main_frame, bg=self.BG_COLOR)
-        self.input_frame.pack(fill=tk.X)
+        self.input_frame.pack(fill=ltk.X)
         
         self.message_entry = tk.Text(self.input_frame, height=1, font=("Consolas", 10), bg=self.ENTRY_BG_COLOR,
-                                     fg=self.FG_COLOR, width=15, relief=tk.FLAT, wrap=tk.NONE)
-        self.message_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+                                     fg=self.FG_COLOR, width=15, relief=ltk.FLAT, wrap=ltk.NONE)
+        self.message_entry.pack(side=ltk.LEFT, fill=ltk.X, expand=True, padx=(0, 10))
         self.message_entry.tag_configure("misspelled", underline=True,
                                          underlinefg=self.theme_colors.get("SPELLCHECK_ERROR_COLOR", "red"))
         
@@ -825,16 +809,16 @@ class GUI(UIBase):
         self.message_entry.bind("<Button-3>", self.show_spellcheck_menu)
         
         self.send_btn = tk.Button(self.input_frame, text="Send", command=self.send_message,
-                                  bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT)
-        self.send_btn.pack(side=tk.LEFT)
+                                  bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT)
+        self.send_btn.pack(side=ltk.LEFT)
         
         self.send_file_btn = tk.Button(self.input_frame, text="📁", command=self.on_send_file_click,
-                                       bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT)
-        self.send_file_btn.pack(side=tk.LEFT, padx=(5, 0))
+                                       bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT)
+        self.send_file_btn.pack(side=ltk.LEFT, padx=(5, 0))
         
         self.deaddrop_btn = tk.Button(self.input_frame, text="Dead Drop", command=self.open_deaddrop_window,
-                                      bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT)
-        self.deaddrop_btn.pack(side=tk.LEFT, padx=(5, 0))
+                                      bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT)
+        self.deaddrop_btn.pack(side=ltk.LEFT, padx=(5, 0))
     
     # --- UIBase implementations ---
     def display_regular_message(self, message: str, nickname: str | None = None) -> None:
@@ -890,7 +874,8 @@ class GUI(UIBase):
     
     def prompt_rekey(self) -> bool | None:
         # This is called from the client thread.
-        msg = "Peer requested a rekey. Do you want to proceed?\n\nYes: Proceed\nNo: Disconnect\nCancel: Reject rekey but stay connected"
+        msg = ("Peer requested a rekey. Do you want to proceed?\n\nYes: Proceed\nNo: Disconnect\n"
+               "Cancel: Reject rekey but stay connected")
         res = messagebox.askyesnocancel("Rekey Request", msg)
         if res:
             return True
@@ -900,22 +885,30 @@ class GUI(UIBase):
             return None
     
     def on_connected(self) -> None:
-        self.on_tk_thread(self._update_status, "Connected", self.theme_colors.get("STATUS_CONNECTED", "#4CAF50"))
+        self.on_tk_thread(self._update_status,
+                          "Connected",
+                          self.theme_colors.get("STATUS_CONNECTED", "#4CAF50"))
         self.no_types_tk_thread(self.connect_btn.configure, text="Disconnect")
     
     def on_graceful_disconnect(self, reason: str) -> None:
-        self.on_tk_thread(self._update_status, "Disconnected", self.theme_colors.get("STATUS_NOT_CONNECTED", "#ff6b6b"))
+        self.on_tk_thread(self._update_status,
+                          "Disconnected",
+                          self.theme_colors.get("STATUS_NOT_CONNECTED", "#ff6b6b"))
         self.no_types_tk_thread(self.connect_btn.configure, text="Connect")
         self.on_tk_thread(self._append_to_chat, f"Disconnected: {reason}")
     
     def on_unexpected_disconnect(self, reason: str) -> None:
-        self.on_tk_thread(self._update_status, "Disconnected (Error)", self.theme_colors.get("STATUS_NOT_CONNECTED", "#ff6b6b"))
+        self.on_tk_thread(self._update_status,
+                          "Disconnected (Error)",
+                          self.theme_colors.get("STATUS_NOT_CONNECTED", "#ff6b6b"))
         self.no_types_tk_thread(self.connect_btn.configure, text="Connect")
         self.on_tk_thread(messagebox.showerror, "Disconnected", f"Unexpectedly disconnected: {reason}")
     
     # --- Event Handlers ---
     def on_key_exchange_started(self) -> None:
-        self.on_tk_thread(self._update_status, "Key Exchange...", self.theme_colors.get("STATUS_KEY_EXCHANGE", "#FF9800"))
+        self.on_tk_thread(self._update_status,
+                          "Key Exchange...",
+                          self.theme_colors.get("STATUS_KEY_EXCHANGE", "#FF9800"))
     
     def on_key_exchange_complete(self) -> None:
         self.on_tk_thread(self._update_status, "Encrypted", self.theme_colors.get("STATUS_CONNECTED", "#4CAF50"))
@@ -971,10 +964,8 @@ class GUI(UIBase):
     
     def on_voice_call_data(self, data: dict[str, Any]) -> None:
         """Enqueue incoming audio data for playback."""
-        try:
+        with contextlib.suppress(KeyError, binascii.Error):
             self._voice_data_queue.append(base64.b64decode(data["audio_data"], validate=True))
-        except (KeyError, binascii.Error):
-            pass
     
     def on_voice_call_end(self) -> None:
         self._stop_audio_streams()
@@ -986,18 +977,44 @@ class GUI(UIBase):
             )
             self.on_tk_thread(self.hide_mute_button)
     
-    def file_download_progress(self, transfer_id: str, filename: str, received_chunks: int, total_chunks: int, bytes_transferred: int = -1) -> None:
-        self.on_tk_thread(self.file_transfer_window.update_transfer_progress, filename, received_chunks, total_chunks, bytes_transferred, "Downloading")
+    def file_download_progress(self,
+                               transfer_id: str,
+                               filename: str,
+                               received_chunks: int,
+                               total_chunks: int,
+                               bytes_transferred: int = -1
+        ) -> None:
+
+        self.on_tk_thread(self.file_transfer_window.update_transfer_progress,
+                          filename,
+                          received_chunks,
+                          total_chunks,
+                          bytes_transferred,
+                          "Downloading"
+        )
     
-    def file_upload_progress(self, transfer_id: str, filename: str, sent_chunks: int, total_chunks: int, bytes_transferred: int = -1) -> None:
-        self.on_tk_thread(self.file_transfer_window.update_transfer_progress, filename, sent_chunks, total_chunks, bytes_transferred, "Uploading")
+    def file_upload_progress(self,
+                             transfer_id: str,
+                             filename: str,
+                             sent_chunks: int,
+                             total_chunks: int,
+                             bytes_transferred: int = -1
+        ) -> None:
+
+        self.on_tk_thread(self.file_transfer_window.update_transfer_progress,
+            filename,
+            sent_chunks,
+            total_chunks,
+            bytes_transferred,
+            "Uploading"
+        )
     
     def on_file_transfer_complete(self, transfer_id: str, output_path: str) -> None:
         self.on_tk_thread(self.file_transfer_window.add_transfer_message, f"File transfer complete: {output_path}")
         self.on_tk_thread(self._append_to_chat, f"File transfer complete: {output_path}")
     
     def _append_to_chat(self, text: str, is_message: bool = False, show_time: bool = True) -> None:
-        self.chat_display.config(state=tk.NORMAL)
+        self.chat_display.config(state=ltk.NORMAL)
         timestamp = time.strftime("[%H:%M:%S] ") if show_time else ""
         
         if is_message:
@@ -1012,7 +1029,7 @@ class GUI(UIBase):
         
         self.chat_display.tag_configure("time", foreground=self.theme_colors.get("MESSAGE_TIME_COLOR", "#888888"))
         self.chat_display.see(tk.END)
-        self.chat_display.config(state=tk.DISABLED)
+        self.chat_display.config(state=ltk.DISABLED)
     
     def _update_status(self, status_text: str, color: str = "") -> None:
         self.status_label.config(text=status_text)
@@ -1035,9 +1052,7 @@ class GUI(UIBase):
                 messagebox.showerror("Error", "Invalid port number")
     
     def send_message(self, event: tk.Event | None = None) -> str:
-        if event:
-            # Shift+Enter for new line, Enter to send
-            if isinstance(event.state, int) and event.state & 0x1:  # Shift pressed
+        if event and isinstance(event.state, int) and event.state & 0x1:  # Shift pressed
                 return ""
         
         text = self.message_entry.get("1.0", tk.END).strip()
@@ -1051,7 +1066,7 @@ class GUI(UIBase):
             counter = self.client.next_message_counter
             tag_id = f"sent_{counter}"
             
-            self.chat_display.config(state=tk.NORMAL)
+            self.chat_display.config(state=ltk.NORMAL)
             timestamp = time.strftime("[%H:%M:%S] ")
             self.chat_display.insert(tk.END, timestamp, "time")
             nick = self.client.own_nickname
@@ -1059,10 +1074,12 @@ class GUI(UIBase):
             self.chat_display.insert(tk.END, f"{text} ", tag_id)
             self.chat_display.insert(tk.END, "○\n", f"status_{counter}")
             
-            self.chat_display.tag_configure("own_nick", foreground=self.theme_colors.get("MESSAGE_NICKNAME_COLOR", "#569cd6"))
-            self.chat_display.tag_configure(f"status_{counter}", foreground=self.theme_colors.get("DELIVERY_PENDING_COLOR", "#888888"))
+            self.chat_display.tag_configure("own_nick",
+                                            foreground=self.theme_colors.get("MESSAGE_NICKNAME_COLOR", "#569cd6"))
+            self.chat_display.tag_configure(f"status_{counter}",
+                                            foreground=self.theme_colors.get("DELIVERY_PENDING_COLOR", "#888888"))
             self.chat_display.see(tk.END)
-            self.chat_display.config(state=tk.DISABLED)
+            self.chat_display.config(state=ltk.DISABLED)
             
             self.sent_messages[counter] = f"status_{counter}"
             
@@ -1105,14 +1122,15 @@ class GUI(UIBase):
     def update_message_delivery_status(self, counter: int) -> None:
         tag = self.sent_messages.get(counter)
         if tag:
-            self.chat_display.config(state=tk.NORMAL)
+            self.chat_display.config(state=ltk.NORMAL)
             # Find the text of the tag
             ranges = self.chat_display.tag_ranges(tag)
             if ranges:
                 self.chat_display.delete(ranges[0], ranges[1])
                 self.chat_display.insert(ranges[0], "●\n", tag)
-                self.chat_display.tag_configure(tag, foreground=self.theme_colors.get("DELIVERY_CONFIRMED_COLOR", "#4CAF50"))
-            self.chat_display.config(state=tk.DISABLED)
+                self.chat_display.tag_configure(tag,
+                                                foreground=self.theme_colors.get("DELIVERY_CONFIRMED_COLOR", "#4CAF50"))
+            self.chat_display.config(state=ltk.DISABLED)
     
     def on_send_file_click(self, event=None) -> None:
         file_path = filedialog.askopenfilename()
@@ -1127,9 +1145,9 @@ class GUI(UIBase):
     
     def on_paste(self, event: tk.Event) -> None:
         img = get_image_from_clipboard()
-        if img and self.client:
+        if img and self.client:  # noqa: SIM102
             if messagebox.askyesno("Send Image", "Image found in clipboard. Do you want to send it?"):
-                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".png")  # noqa: SIM115
                 img.save(temp_file.name)
                 temp_file.close()
                 threading.Thread(target=self.client.send_file, args=(Path(temp_file.name),), daemon=True).start()
@@ -1161,7 +1179,12 @@ class GUI(UIBase):
             start_pos = "1.0"
             while True:
                 # search for exact word
-                start_pos = self.message_entry.search(rf"\y{re.escape(word)}\y", start_pos, stopindex=tk.END, regexp=True)
+                start_pos = self.message_entry.search(
+                    rf"\y{re.escape(word)}\y",
+                    start_pos,
+                    stopindex=ltk.END,
+                    regexp=True
+                )
                 if not start_pos:
                     break
                 
@@ -1192,7 +1215,7 @@ class GUI(UIBase):
         self.config_window.resizable(False, False)
         
         container = tk.Frame(self.config_window, bg=self.BG_COLOR)
-        container.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+        container.pack(padx=10, pady=10, fill=ltk.BOTH, expand=True)
         
         # Tk variables reflecting current settings
         self.var_sound_notif = tk.BooleanVar(value=self.notification_enabled)
@@ -1224,8 +1247,8 @@ class GUI(UIBase):
         
         # Theme selector
         theme_frame = tk.Frame(container, bg=self.BG_COLOR)
-        theme_frame.pack(fill=tk.X, pady=(8, 2))
-        tk.Label(theme_frame, text="Theme:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=tk.LEFT)
+        theme_frame.pack(fill=ltk.X, pady=(8, 2))
+        tk.Label(theme_frame, text="Theme:", bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=ltk.LEFT)
         
         available_themes = get_available_themes()
         self.var_theme = tk.StringVar(value=self.current_theme_name if self.current_theme_name in available_themes else (available_themes[0] if available_themes else ""))
@@ -1235,16 +1258,16 @@ class GUI(UIBase):
                                        command=self._on_theme_selected)
             theme_menu.configure(bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR,
                                  activebackground=self.BUTTON_ACTIVE_BG, activeforeground=self.FG_COLOR,
-                                 highlightthickness=0, relief=tk.FLAT)
+                                 highlightthickness=0, relief=ltk.FLAT)
             theme_menu["menu"].configure(bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR)
-            theme_menu.pack(side=tk.LEFT, padx=(5, 0))
+            theme_menu.pack(side=ltk.LEFT, padx=(5, 0))
         else:
             tk.Label(theme_frame, text="No themes found in /themes",
-                     bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=tk.LEFT, padx=(5, 0))
+                     bg=self.BG_COLOR, fg=self.FG_COLOR).pack(side=ltk.LEFT, padx=(5, 0))
         
         # Close button
         btn_close = tk.Button(container, text="Close", command=self.config_window.destroy,
-                              bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=tk.FLAT)
+                              bg=self.BUTTON_BG_COLOR, fg=self.FG_COLOR, relief=ltk.FLAT)
         btn_close.pack(pady=(10, 0))
     
     def _on_theme_selected(self, theme_name: tk.StringVar) -> None:
@@ -1254,10 +1277,7 @@ class GUI(UIBase):
         if hasattr(self, "config_window") and self.config_window and self.config_window.winfo_exists():
             self.config_window.configure(bg=self.BG_COLOR)
             for child in self.config_window.winfo_children():
-                try:
-                    child.configure(bg=self.BG_COLOR)  # type: ignore
-                except tk.TclError:
-                    pass
+                child.configure(bg=self.BG_COLOR)
     
     def start_call(self) -> None:
         if self.client and self.allow_voice_calls:
@@ -1281,7 +1301,7 @@ class GUI(UIBase):
     def show_mute_button(self) -> None:
         """Pack the mute button into the toolbar."""
         if PYAUDIO_AVAILABLE and hasattr(self, "mute_btn"):
-            self.mute_btn.pack(side=tk.LEFT, padx=(5, 0))
+            self.mute_btn.pack(side=ltk.LEFT, padx=(5, 0))
     
     def hide_mute_button(self) -> None:
         """Remove the mute button from the toolbar."""
@@ -1316,22 +1336,18 @@ class GUI(UIBase):
         """Clear the audio queue; running threads will exit on their own when the call ends."""
         self._voice_data_queue.clear()
     
-    def _send_voice_thread(self, stream: "pyaudio.Stream", chunk_size: int) -> None:  # type: ignore[name-defined]
+    def _send_voice_thread(self, stream: pyaudio.Stream, chunk_size: int) -> None:  # type: ignore[name-defined]
         """Continuously read from the mic and send to the peer while the call is active."""
         try:
             while self.client and self.client.voice_call_active:
                 chunk = stream.read(chunk_size, exception_on_overflow=False)
-                if not (self.client and self.client.voice_muted):
-                    if self.client:
-                        self.client.send_voice_data(chunk)
+                if not self.client.voice_muted:
+                    self.client.send_voice_data(chunk)
         finally:
-            try:
-                stream.stop_stream()
-                stream.close()
-            except Exception:
-                pass
+            stream.stop_stream()
+            stream.close()
     
-    def _receive_voice_thread(self, stream: "pyaudio.Stream") -> None:  # type: ignore[name-defined]
+    def _receive_voice_thread(self, stream: pyaudio.Stream) -> None:  # type: ignore[name-defined]
         """Continuously play received audio chunks while the call is active."""
         try:
             while self.client and self.client.voice_call_active:
@@ -1341,11 +1357,8 @@ class GUI(UIBase):
                 else:
                     time.sleep(0.005)
         finally:
-            try:
-                stream.stop_stream()
-                stream.close()
-            except Exception:
-                pass
+            stream.stop_stream()
+            stream.close()
     
     def prompt_voice_call(self, init_msg: dict[str, Any]) -> None:
         if not self.client:
@@ -1439,7 +1452,8 @@ class GUI(UIBase):
         if self._deaddrop_window and self._deaddrop_window.window.winfo_exists():
             pct = (bytes_uploaded / total_bytes * 100) if total_bytes > 0 else 0
             self.on_tk_thread(self._deaddrop_window.log,
-                              f"Upload progress: {name} {pct:.1f}% ({bytes_to_human_readable(bytes_uploaded)} / {bytes_to_human_readable(total_bytes)})")
+                              f"Upload progress: {name} {pct:.1f}% ({bytes_to_human_readable(bytes_uploaded)} "
+                              f"/ {bytes_to_human_readable(total_bytes)})")
     
     def on_deaddrop_upload_complete(self, name: str) -> None:
         self.on_tk_thread(self._append_to_chat, f"SYSTEM: Deaddrop upload complete: {name}")
@@ -1455,7 +1469,8 @@ class GUI(UIBase):
         if self._deaddrop_window and self._deaddrop_window.window.winfo_exists():
             pct = (bytes_downloaded / total_bytes * 100) if total_bytes > 0 else 0
             self.on_tk_thread(self._deaddrop_window.log,
-                              f"Download progress: {name} {pct:.1f}% ({bytes_to_human_readable(bytes_downloaded)} / {bytes_to_human_readable(total_bytes)})")
+                              f"Download progress: {name} {pct:.1f}% ({bytes_to_human_readable(bytes_downloaded)} "
+                              f"/ {bytes_to_human_readable(total_bytes)})")
     
     def on_deaddrop_download_complete(self, name: str, output_path: str) -> None:
         self.on_tk_thread(self._append_to_chat, f"SYSTEM: Deaddrop download complete: {output_path}")
@@ -1513,10 +1528,7 @@ class GUI(UIBase):
 
 
 def run(client_class: type[ClientBase]) -> None:
-    if TKINTERDND2_AVAILABLE:
-        root = TkinterDnD.Tk()
-    else:
-        root = tk.Tk()
+    root = TkinterDnD.Tk() if TKINTERDND2_AVAILABLE else tk.Tk()
     
     ui = GUI(root)
     client = client_class(ui)

@@ -1,0 +1,59 @@
+[project]
+name = "pq-chat"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "black>=26.5.1",
+    "cryptography==49.0.0",
+    "pqcrypto==0.4.0",
+]
+
+[project.optional-dependencies]
+client = [
+    "numpy==2.4.6",
+]
+full = [
+    "numpy==2.4.6",
+    "pillow==12.2.0",
+    "plyer==2.1.0",
+    "tkinterdnd2==0.5.0",
+    "pyspellchecker==0.9.0",
+    "pyaudio==0.2.14",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "hypothesis",
+    "pylint",
+    "ruff",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+omit = [
+    "tests/*",
+    "speed_test.py",
+    "utils/ltk.py",
+    "SecureChatABCs/*",
+]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+ignore = ["W293", "B027"]
+select = [
+    "E",
+    "F",
+    "UP",
+    "B",
+    "SIM",
+    "I",
+]

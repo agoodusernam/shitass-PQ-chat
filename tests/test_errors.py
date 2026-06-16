@@ -6,19 +6,17 @@ import json
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from protocol import errors
 from protocol.errors import (
-    ErrorCode,
     ChatError,
     CryptoError,
-    Severity,
+    ErrorCode,
     ServerError,
+    Severity,
     TransportError,
     describe,
-    format_code,
     dispatch_error,
+    format_code,
     split_code,
 )
 

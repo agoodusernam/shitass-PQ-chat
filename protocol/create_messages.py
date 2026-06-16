@@ -11,10 +11,10 @@ from cryptography.hazmat.primitives.hmac import HMAC
 from protocol.constants import (
     BLAKE2B_DIGEST_SIZE,
     ML_DSA_CONTEXT,
-    MessageType,
     PROTOCOL_VERSION,
     SEND_CHUNK_SIZE,
     TRANSFER_ID_LENGTH,
+    MessageType,
 )
 from protocol.types import FileMetadata
 from protocol.utils import chunk_file, decide_compression
@@ -144,7 +144,11 @@ def create_file_reject_message(transfer_id: str, reason: str = "User declined") 
     }
 
 
-def create_file_metadata_message(file_path: Path, compress: bool = True, chunk_size: int = SEND_CHUNK_SIZE) -> FileMetadata:
+def create_file_metadata_message(
+        file_path: Path,
+        compress: bool = True,
+        chunk_size: int = SEND_CHUNK_SIZE
+    ) -> FileMetadata:
     """Create a file metadata message for file transfer initiation.
     Automatically disables compression for known incompressible types.
     """
@@ -171,7 +175,7 @@ def create_file_metadata_message(file_path: Path, compress: bool = True, chunk_s
         for chunk in chunk_file(file_path, compress=effective_compress, chunk_size=chunk_size):
             total_chunks += 1
             total_processed_size += len(chunk)
-    except (OSError, IOError) as e:
+    except OSError as e:
         print(f"Warning: I/O error during pre-chunking, using estimation: {e}")
         total_chunks = (file_size + chunk_size - 1) // chunk_size
         total_processed_size = file_size if not effective_compress else int(file_size * 0.85)

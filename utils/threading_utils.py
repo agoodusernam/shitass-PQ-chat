@@ -1,6 +1,6 @@
 import threading
+from collections.abc import Iterator, MutableMapping
 from typing import TypeVar, overload
-from collections.abc import MutableMapping, Iterator
 
 K = TypeVar("K")
 V = TypeVar("V")

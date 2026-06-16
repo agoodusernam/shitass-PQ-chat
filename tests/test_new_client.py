@@ -32,7 +32,6 @@ from protocol import create_messages
 from protocol.constants import MAGIC_NUMBER_FILE_TRANSFER, MessageType
 from protocol.shared import SecureChatProtocol
 
-
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
 # ---------------------------------------------------------------------------
@@ -177,8 +176,8 @@ class TestSendMessage:
         
         result = c.send_message("test message")
         assert result is True
-        assert len(c._protocol._message_queue) >= 1
-        item = c._protocol._message_queue[0]
+        assert len(c._connection._message_queue) >= 1
+        item = c._connection._message_queue[0]
         assert isinstance(item, tuple)
         assert item[0].value == "encrypt_text"
         assert item[1] == "test message"
@@ -581,7 +580,7 @@ class TestHandleRekey:
         
         dsa_random_msg = proto_a.create_rekey_dsa_random(is_initiator=True)
         
-        with patch.object(c._protocol, "queue_json"):
+        with patch.object(c._connection, "queue_json"):
             c.handle_rekey(dsa_random_msg)
         assert c._protocol.rekey_in_progress is True
     
@@ -600,11 +599,7 @@ class TestHandleRekey:
         # (skip sending x25519_hqc_ct to proto_b for this test — we just need pending keys on proto_a)
         
         # Manually set pending keys on proto_b to create a valid verification
-        msg5 = (
-            proto_a.process_rekey_mlkem_ct_keys(msg4)
-            if not proto_a._rekey._pending_send_chain_key
-            else None
-        )
+        proto_a.process_rekey_mlkem_ct_keys(msg4)
         # At this point proto_a has pending keys. Fabricate a matching verification from proto_b.
         # We do this by copying proto_a's pending material to proto_b so it produces the same proof.
         proto_b._rekey._pending_key_verification_material = (
@@ -612,7 +607,7 @@ class TestHandleRekey:
         )
         
         b_verif = proto_b.create_rekey_verification()
-        with patch.object(c._protocol, "queue_json"):
+        with patch.object(c._connection, "queue_json"):
             c.handle_rekey(b_verif)
         assert c._protocol.rekey_in_progress is False
 
@@ -689,8 +684,8 @@ class TestRejectFileTransfer:
         
         c.reject_file_transfer("transfer-xyz")
         # Should have queued an encrypt_json tuple
-        assert len(c._protocol._message_queue) >= 1
-        item = c._protocol._message_queue[-1]
+        assert len(c._connection._message_queue) >= 1
+        item = c._connection._message_queue[-1]
         assert isinstance(item, tuple)
         assert item[0].value == "encrypt_json"
         assert item[1]["type"] == MessageType.FILE_REJECT
@@ -783,7 +778,7 @@ class TestEndToEnd:
         alice.send_message("Hello Bob!")
         
         # Drain Alice's queue to find the encrypt_text item
-        ct = self._drain_encrypt_text(alice._protocol, "Hello Bob!")
+        ct = self._drain_encrypt_text(alice, "Hello Bob!")
         
         bob._peer_key_verified = True
         bob.handle_encrypted_message(ct)
@@ -791,9 +786,9 @@ class TestEndToEnd:
         args = bob.ui.display_regular_message.call_args[0]
         assert "Hello Bob!" in args[0]
     
-    def _drain_encrypt_text(self, proto: SecureChatProtocol, text: str) -> bytes:
-        """Pop items from the queue until we find the encrypt_text tuple for `text`."""
-        queue = proto._message_queue
+    def _drain_encrypt_text(self, client: SecureChatClient, text: str) -> bytes:
+        """Pop items from the send queue until we find the encrypt_text tuple for `text`."""
+        queue = client._connection._message_queue
         while queue:
             item = queue.popleft()
             if (
@@ -802,7 +797,7 @@ class TestEndToEnd:
                     and item[1] == text
             ):
                 assert isinstance(item[1], str)
-                return proto._encrypt_text_message(item[1])
+                return client._connection._encrypt_text_message(item[1])
         raise AssertionError(f"encrypt_text item for {text!r} not found in queue")
     
     def test_bidirectional_messages_after_ke(self) -> None:
@@ -813,13 +808,13 @@ class TestEndToEnd:
         
         # Alice → Bob
         alice.send_message("ping")
-        ct_a = self._drain_encrypt_text(alice._protocol, "ping")
+        ct_a = self._drain_encrypt_text(alice, "ping")
         bob.handle_encrypted_message(ct_a)
         bob.ui.display_regular_message.assert_called()
         
         # Bob → Alice
         bob.send_message("pong")
-        ct_b = self._drain_encrypt_text(bob._protocol, "pong")
+        ct_b = self._drain_encrypt_text(bob, "pong")
         alice.handle_encrypted_message(ct_b)
         alice.ui.display_regular_message.assert_called()
     

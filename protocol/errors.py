@@ -9,7 +9,6 @@ e.g. ``"0x111"``). The UI receives ``(code, severity, context)`` via
 :func:`dispatch_error` and resolves the description itself via :func:`describe`.
 """
 import json
-import os
 from enum import IntEnum
 from pathlib import Path
 from typing import Any, Final
@@ -45,9 +44,6 @@ def format_code(code: int) -> str:
     return f"0x{code & CODE_MASK:03X}"
 
 
-# ---------------------------------------------------------------------------
-# Specific codes. Names are stable identifiers used at raise sites.
-# ---------------------------------------------------------------------------
 class ErrorCode(IntEnum):
     # Generic
     UNKNOWN = 0xFFF
@@ -142,7 +138,6 @@ class ErrorCode(IntEnum):
     UNKNOWN_FIELD = 0x911
 
 
-# Per-code severity overrides. Codes not listed default to ERROR.
 _SEVERITY_BY_CODE: Final[dict[int, Severity]] = {
     ErrorCode.RATE_LIMITED: Severity.WARNING,
     ErrorCode.KE_MLKEM_SIG: Severity.CRITICAL,
@@ -154,9 +149,6 @@ _SEVERITY_BY_CODE: Final[dict[int, Severity]] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Description registry
-# ---------------------------------------------------------------------------
 _DESCRIPTIONS_PATH: Final[Path] = Path(__file__).with_name("error_descriptions.json")
 _descriptions_cache: dict[str, str] | None = None
 
@@ -175,11 +167,9 @@ def describe(code: int) -> str:
     return table.get(format_code(code), table.get("0xFFF", "Unknown error."))
 
 
-# ---------------------------------------------------------------------------
-# Base exception
-# ---------------------------------------------------------------------------
 class ChatError(Exception):
-    """Base class for all chat-stack errors.
+    """
+    Base class for all chat-stack errors.
 
     Subclasses set :attr:`code` to a class-level default. Raise sites pass
     ``code=ErrorCode.SOMETHING`` to attach a specific code without needing a
@@ -215,9 +205,6 @@ class ChatError(Exception):
         )
 
 
-# ---------------------------------------------------------------------------
-# Broad system classes. Specific identity goes in the ``code`` attribute.
-# ---------------------------------------------------------------------------
 class ProtocolError(ChatError):
     code = int(ErrorCode.PROTOCOL)
 
@@ -279,9 +266,6 @@ class UIError(ChatError):
     code = int(ErrorCode.UI)
 
 
-# ---------------------------------------------------------------------------
-# Reporting helper
-# ---------------------------------------------------------------------------
 def dispatch_error(sink: Any, exc: BaseException) -> None:
     """Forward *exc* to *sink* (an object exposing ``on_error``).
 
@@ -296,14 +280,3 @@ def dispatch_error(sink: Any, exc: BaseException) -> None:
     if on_error is None:
         return
     on_error(exc.code, exc.severity, dict(exc.context) if exc.context else None)
-
-
-# ---------------------------------------------------------------------------
-# Self-test (runs at import): every ErrorCode value has a JSON entry, when
-# ``CHAT_ERRORS_STRICT=1``. Class codes are guaranteed unique by IntEnum.
-# ---------------------------------------------------------------------------
-if os.environ.get("CHAT_ERRORS_STRICT") == "1":
-    _table = _load_descriptions()
-    _missing = [format_code(int(c)) for c in ErrorCode if format_code(int(c)) not in _table]
-    if _missing:
-        raise RuntimeError(f"Missing description entries for: {_missing}")

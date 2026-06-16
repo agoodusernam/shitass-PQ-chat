@@ -9,11 +9,11 @@ Covers:
 from __future__ import annotations
 
 import pytest
-from protocol.errors import ErrorCode, ChatError
 from cryptography.exceptions import InvalidTag
-from hypothesis import given, strategies as st
+from hypothesis import given
+from hypothesis import strategies as st
 
-from protocol.constants import DOUBLE_KEY_SIZE, NONCE_SIZE, PAD_SIZE, CTR_NONCE_SIZE
+from protocol.constants import CTR_NONCE_SIZE, DOUBLE_KEY_SIZE, NONCE_SIZE, PAD_SIZE
 from protocol.crypto_classes import (
     ChunkIndependentDoubleEncryptor,
     DoubleEncryptor,
@@ -21,6 +21,7 @@ from protocol.crypto_classes import (
     _iso7816_pad,
     _iso7816_unpad,
 )
+from protocol.errors import ChatError
 
 key64 = st.binary(min_size=DOUBLE_KEY_SIZE, max_size=DOUBLE_KEY_SIZE)
 nonce_aead = st.binary(min_size=NONCE_SIZE, max_size=NONCE_SIZE)

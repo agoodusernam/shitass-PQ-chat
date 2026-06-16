@@ -9,11 +9,12 @@ must raise "UnsupportedError".
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import MutableMapping
 from pathlib import Path
-from typing import MutableMapping
+from typing import Any
 
-from SecureChatABCs.ui_base import UIBase
 from protocol.types import FileMetadata
+from SecureChatABCs.ui_base import UIBase
 
 
 class UnsupportedError(Exception):
@@ -145,10 +146,46 @@ class ClientBase(ABC):
         ...
     
     @abstractmethod
-    def send_encoded(self, obj: object) -> str | None:
+    def send_encoded(self, obj: Any) -> str | None:
         """JSON-encode and send a frame over the socket. Returns None on success, an error string otherwise."""
         ...
-    
+
+    @abstractmethod
+    def queue_json(self, obj: dict[str, Any]) -> None:
+        """Encrypt a JSON-serialisable dict and add it to the send queue."""
+        ...
+
+    @abstractmethod
+    def queue_text(self, text: str) -> None:
+        """Encrypt a plain-text chat message and add it to the send queue."""
+        ...
+
+    @abstractmethod
+    def queue_json_then_switch(self, obj: dict[str, Any]) -> None:
+        """Encrypt a JSON dict, send it under the current keys, then activate pending keys."""
+        ...
+
+    @abstractmethod
+    def start_sender_thread(self) -> None:
+        """Start the background sender thread that drains the send queue."""
+        ...
+
+    @abstractmethod
+    def reset_send_state(self) -> None:
+        """Stop the sender thread and drop any queued outgoing messages."""
+        ...
+
+    @property
+    @abstractmethod
+    def send_dummy_messages(self) -> bool:
+        """Whether dummy traffic-shaping packets should currently be sent."""
+        ...
+
+    @send_dummy_messages.setter
+    @abstractmethod
+    def send_dummy_messages(self, value: bool) -> None:
+        ...
+
     # file transfer
     
     def send_file(self, file_path: Path | str, compress: bool = True) -> None:

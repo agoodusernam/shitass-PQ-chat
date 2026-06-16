@@ -13,12 +13,8 @@ from enum import Flag, auto
 from pathlib import Path
 from typing import Any
 
-from protocol.errors import ErrorCode, Severity
+from protocol.errors import Severity
 
-
-# ---------------------------------------------------------------------------
-# Capability flags
-# ---------------------------------------------------------------------------
 
 class UICapability(Flag):
     """
@@ -38,21 +34,21 @@ class UICapability(Flag):
     
     ALL = (
             FILE_TRANSFER
-            | VOICE_CALLS
-            | EPHEMERAL_MODE
-            | DEADDROP
-            | DELIVERY_STATUS
-            | NICKNAMES
+            | VOICE_CALLS # type: ignore[operator]
+            | EPHEMERAL_MODE # type: ignore[operator]
+            | DEADDROP # type: ignore[operator]
+            | DELIVERY_STATUS # type: ignore[operator]
+            | NICKNAMES # type: ignore[operator]
     )
 
 
 class UIBase(ABC):
     """
     Abstract base for all UI front-ends (GUI, TUI, headless, …).
-    
+
     The UI is responsible for displaying messages to the user, prompting
     the user for input, and handling user interactions.
-    
+
     That also includes getting voice data from the mic,
     or setting preferences.
     
@@ -157,7 +153,7 @@ class UIBase(ABC):
     def on_unexpected_disconnect(self, reason: str) -> None:
         """Called when the client gets unexpectedly disconnected"""
         ...
-    
+
     def on_rekey_initiated_by_peer(self) -> None:
         """Called when the peer initiates a rekey."""
     

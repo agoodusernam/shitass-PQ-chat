@@ -13,11 +13,12 @@ import json
 import os
 
 import pytest
-from hypothesis import given, strategies as st
 from cryptography.hazmat.primitives.asymmetric.mldsa import (
     MLDSA87PrivateKey,
     MLDSA87PublicKey,
 )
+from hypothesis import given
+from hypothesis import strategies as st
 
 from protocol import create_messages as cm
 from protocol import parse_messages as pm

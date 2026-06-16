@@ -84,7 +84,7 @@ class DebugClient(SecureChatClient):
             
             case MessageType.EPHEMERAL_MODE_CHANGE:
                 mode = message_json.get("mode", "?")
-                owner = message_json.get("owner_id", None)
+                owner = message_json.get("owner_id")
                 self._debug_log(
                         "EPHEMERAL_MODE_CHANGE",
                         f"mode={mode!r} owner_id={owner!r}",

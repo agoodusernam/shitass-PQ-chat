@@ -1,7 +1,0 @@
-pillow~=12.2.0
-plyer~=2.1.0
-tkinterdnd2~=0.4.3
-pyspellchecker~=0.9.0
-pyaudio~=0.2.14
-numpy~=2.4.6
--r requirements_server.txt

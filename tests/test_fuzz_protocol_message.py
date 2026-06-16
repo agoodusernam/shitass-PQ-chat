@@ -14,16 +14,19 @@ from __future__ import annotations
 import base64
 import json
 import random
+from typing import Any
 
 import pytest
-from protocol.errors import ErrorCode, ChatError
-from hypothesis import given, strategies as st
+from hypothesis import given
+from hypothesis import strategies as st
 
+from protocol.errors import ChatError
+from protocol.shared import SecureChatProtocol
 from tests.test_protocol_shared import _full_key_exchange
 
 
 @pytest.fixture(scope="module")
-def pair():
+def pair() -> tuple[SecureChatProtocol, SecureChatProtocol]:
     return _full_key_exchange("fuzz-server")
 
 
@@ -62,9 +65,9 @@ def _valid_utf8(data: bytes) -> bool:
 def test_out_of_order_delivery(messages: list[str], seed: int) -> None:
     a, b = _full_key_exchange(f"ooo-{seed}")
     wires = [a.encrypt_message(m) for m in messages]
-    order = list(range(len(wires)))
+    order: list[int] = list(range(len(wires)))
     random.Random(seed).shuffle(order)
-    recovered = [None] * len(wires)
+    recovered: list[Any] = [None] * len(wires)
     for i in order:
         recovered[i] = b.decrypt_message(wires[i])
     assert recovered == messages

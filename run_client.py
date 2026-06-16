@@ -2,10 +2,10 @@ import importlib
 from pathlib import Path
 
 from config import ClientConfigHandler
+from new_client import SecureChatClient
 
 ClientConfigHandler()
 
-from new_client import SecureChatClient
 
 if __name__ == "__main__":
     UI_folder: Path = Path(__file__).parent / "UIs"

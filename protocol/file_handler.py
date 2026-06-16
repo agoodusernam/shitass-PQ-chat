@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import gzip
 import os
 import tempfile
@@ -8,8 +9,8 @@ from pathlib import Path
 
 from protocol.constants import SEND_CHUNK_SIZE
 from protocol.errors import (
-    ErrorCode,
     ChatError,
+    ErrorCode,
     FileTransferError,
 )
 from protocol.types import FileMetadata
@@ -36,10 +37,8 @@ class ProtocolFileHandler:
         self.received_chunks = {}
         # Close any open file handles
         for file_handle in self.open_file_handles.values():
-            try:
+            with contextlib.suppress(OSError, ValueError):
                 file_handle.close()
-            except (OSError, ValueError):
-                pass
         self.open_file_handles = {}
         
         # Clean up any temporary files
@@ -63,10 +62,8 @@ class ProtocolFileHandler:
         for transfer_id, file_handle in self.open_file_handles.items():
             if transfer_id in self.sending_transfers:
                 continue
-            try:
+            with contextlib.suppress(OSError, ValueError):
                 file_handle.close()
-            except (OSError, ValueError):
-                pass
             ids_to_remove.append(transfer_id)
         
         for transfer_id in ids_to_remove:
@@ -75,11 +72,15 @@ class ProtocolFileHandler:
     @property
     def has_active_file_transfers(self) -> bool:
         """Check if any file transfers (sending or receiving) are currently active."""
-        if self.received_chunks or self.open_file_handles or self.sending_transfers:
-            return True
-        return False
+        return bool(self.received_chunks or self.open_file_handles or self.sending_transfers)
     
-    def add_file_chunk(self, transfer_id: str, chunk_index: int, chunk_data: bytes, total_chunks: int, chunk_size: int = SEND_CHUNK_SIZE) -> bool:
+    def add_file_chunk(self,
+                       transfer_id: str,
+                       chunk_index: int,
+                       chunk_data: bytes,
+                       total_chunks: int,
+                       chunk_size: int = SEND_CHUNK_SIZE
+        ) -> bool:
         """
         Add a received file chunk and return True if file is complete.
 
@@ -89,22 +90,29 @@ class ProtocolFileHandler:
         """
         
         if chunk_index < 0 or chunk_index >= total_chunks:
-            raise FileTransferError(code=ErrorCode.FT_INVALID_CHUNK_INDEX, 
+            raise FileTransferError(
+                code=ErrorCode.FT_INVALID_CHUNK_INDEX,
                 context={"chunk_index": chunk_index, "total_chunks": total_chunks}
             )
 
         if not transfer_id.isalnum():
-            raise FileTransferError(code=ErrorCode.FT_INVALID_TRANSFER_ID, context={"transfer_id": transfer_id, "reason": "non-alphanumeric"})
+            raise FileTransferError(
+                code=ErrorCode.FT_INVALID_TRANSFER_ID,
+                context={"transfer_id": transfer_id, "reason": "non-alphanumeric"}
+            )
 
         if len(transfer_id) > 64:
-            raise FileTransferError(code=ErrorCode.FT_INVALID_TRANSFER_ID, context={"length": len(transfer_id), "reason": "too long"})
+            raise FileTransferError(
+                code=ErrorCode.FT_INVALID_TRANSFER_ID,
+                context={"length": len(transfer_id), "reason": "too long"}
+            )
         
         # Initialise tracking structures if this is the first chunk for this transfer
         if transfer_id not in self.received_chunks:
             self.received_chunks[transfer_id] = set()
             
             try:
-                temp_file = tempfile.NamedTemporaryFile(
+                temp_file = tempfile.NamedTemporaryFile(  # noqa: SIM115
                         mode='w+b',
                         prefix=f'transfer_{transfer_id}_',
                         suffix='.tmp',
@@ -117,7 +125,7 @@ class ProtocolFileHandler:
                 self.open_file_handles[transfer_id] = temp_file  # type: ignore
             
             except OSError as e:
-                raise FileTransferError(code=ErrorCode.FT_TEMP_FILE, context={"error": str(e)}, cause=e)
+                raise FileTransferError(code=ErrorCode.FT_TEMP_FILE, context={"error": str(e)}, cause=e) from None
         
         # Get the open file handle
         file_handle = self.open_file_handles[transfer_id]
@@ -129,25 +137,28 @@ class ProtocolFileHandler:
             
             actual_position = file_handle.tell()
             if actual_position != position:
-                raise FileTransferError(code=ErrorCode.FT_SEEK, context={"expected": position, "actual": actual_position})
+                raise FileTransferError(
+                    code=ErrorCode.FT_SEEK,
+                    context={"expected": position, "actual": actual_position}
+                )
 
             bytes_written = file_handle.write(chunk_data)
             if bytes_written != len(chunk_data):
-                raise FileTransferError(code=ErrorCode.FT_WRITE, context={"written": bytes_written, "expected": len(chunk_data)})
+                raise FileTransferError(
+                    code=ErrorCode.FT_WRITE,
+                    context={"written": bytes_written, "expected": len(chunk_data)}
+                )
 
-        except (OSError, IOError) as e:
+        except OSError as e:
             raise FileTransferError(code=ErrorCode.FT_WRITE, 
                 context={"chunk_index": chunk_index, "position": position, "error": str(e)},
                 cause=e,
-            )
+            ) from None
         
-        # Mark this chunk as received
         self.received_chunks[transfer_id].add(chunk_index)
         
-        # Check if all chunks are received
         is_complete = len(self.received_chunks[transfer_id]) == total_chunks
         
-        # If transfer is complete, close the file handle
         if is_complete:
             file_handle.close()
             del self.open_file_handles[transfer_id]
@@ -166,7 +177,6 @@ class ProtocolFileHandler:
         temp_received_path = self._close_and_get_temp_path(transfer_id)
         
         final_file_path = temp_received_path
-        # Always remove the received temp file on error; also remove decompressed temp if created
         cleanup_on_error: list[Path] = [temp_received_path]
         
         try:
@@ -192,7 +202,11 @@ class ProtocolFileHandler:
             if isinstance(e, ChatError):
                 raise
             if isinstance(e, (OSError, IOError, gzip.BadGzipFile)):
-                raise FileTransferError(code=ErrorCode.FT_IO, context={"transfer_id": transfer_id, "error": str(e)}, cause=e) from e
+                raise FileTransferError(
+                    code=ErrorCode.FT_IO,
+                    context={"transfer_id": transfer_id, "error": str(e)},
+                    cause=e
+                ) from e
             raise FileTransferError(code=ErrorCode.FT_IO, 
                 context={"transfer_id": transfer_id, "error": str(e), "kind": type(e).__name__},
                 cause=e,
@@ -210,10 +224,8 @@ class ProtocolFileHandler:
             raise FileTransferError(code=ErrorCode.FT_NO_ACTIVE_TRANSFER, context={"transfer_id": transfer_id})
         
         if transfer_id in self.open_file_handles:
-            try:
+            with contextlib.suppress(OSError):
                 self.open_file_handles[transfer_id].close()
-            except OSError:
-                pass
             del self.open_file_handles[transfer_id]
         
         temp_received_path = self.temp_file_paths[transfer_id]

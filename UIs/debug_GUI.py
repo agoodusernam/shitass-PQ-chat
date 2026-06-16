@@ -10,6 +10,7 @@ guards so the GUI degrades gracefully when internals change.
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import os
 import threading
@@ -19,11 +20,10 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext
 from typing import Any, Literal
 
-from SecureChatABCs.client_base import ClientBase
-from SecureChatABCs.ui_base import UIBase, UICapability
 from debug_client import DebugClient
-from protocol.errors import ErrorCode, Severity, describe, format_code
-
+from protocol.errors import Severity, describe, format_code
+from SecureChatABCs.client_base import ClientBase, UnsupportedError
+from SecureChatABCs.ui_base import UIBase, UICapability
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -126,9 +126,9 @@ class DebugGUI(UIBase):
     def capabilities(self) -> UICapability:
         return (
                 UICapability.FILE_TRANSFER
-                | UICapability.EPHEMERAL_MODE
-                | UICapability.DELIVERY_STATUS
-                | UICapability.NICKNAMES
+                | UICapability.EPHEMERAL_MODE # type: ignore
+                | UICapability.DELIVERY_STATUS # type: ignore
+                | UICapability.NICKNAMES # type: ignore
         )
     
     # ------------------------------------------------------------------
@@ -666,10 +666,8 @@ class DebugGUI(UIBase):
             
             # -- Deaddrop --
             dd_active = False
-            try:
+            with contextlib.suppress(UnsupportedError):
                 dd_active = c.deaddrop_session_active()
-            except Exception:
-                pass
             lines.append("DEADDROP:")
             lines.append(f"  Session active:     {'Yes' if dd_active else 'No'}")
             dd_sup = getattr(c, "deaddrop_supported", None)
@@ -847,7 +845,7 @@ class DebugGUI(UIBase):
         lines: list[str] = []
         header_ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         lines.append(f"{'=' * 70}")
-        lines.append(f"SECURE CHAT DEBUG EXPORT")
+        lines.append("SECURE CHAT DEBUG EXPORT")
         lines.append(f"Generated: {header_ts}")
         lines.append(f"{'=' * 70}")
         lines.append("")
@@ -953,10 +951,7 @@ class DebugGUI(UIBase):
                     lines.append(f"\n  [{title}]")
                     for attr in attrs:
                         val = getattr(obj, attr, "<not found>")
-                        if isinstance(val, bytes):
-                            display = val.hex() if val else "<empty>"
-                        else:
-                            display = str(val)
+                        display = (val.hex() if val else "<empty>") if isinstance(val, bytes) else str(val)
                         lines.append(f"    {attr:<35} {display}")
                 
                 _section(
@@ -1017,10 +1012,8 @@ class DebugGUI(UIBase):
     
     def _on_closing(self) -> None:
         if self.client:
-            try:
+            with contextlib.suppress(Exception):
                 self.client.disconnect()
-            except Exception:
-                pass
         self.root.destroy()
 
 
