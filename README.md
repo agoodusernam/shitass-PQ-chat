@@ -1,7 +1,6 @@
 # Post-Quantum E2E Encrypted Chat
 
->
-**Mirrors**: [Primary](https://git.nerds-inc.com/HardlineMouse16/PQ-chat) · [GitHub (read-only)](https://github.com/agoodusernam/shitass-PQ-chat)
+> **Mirrors**: [Primary](https://git.nerds-inc.com/HardlineMouse16/PQ-chat) · [GitHub (read-only)](https://github.com/agoodusernam/shitass-PQ-chat)
 
 > [!CAUTION]
 > **This should NOT be used for anything important.**
