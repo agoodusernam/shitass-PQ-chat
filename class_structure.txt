@@ -1,0 +1,8 @@
+Client + slim ABC: the thing that actually runs.
+Connection Manager + ABC: Class to handle network connections (TCP, QUIC, HTTPS, whatever)
+Protocol: crypto operations
+UI + ABC: well... the UI
+
+Maybes:
+    File Manager: File operations
+    Deaddrop Manager

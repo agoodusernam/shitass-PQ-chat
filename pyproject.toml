@@ -1,0 +1,31 @@
+[project]
+name = "pq-chat"
+version = "0.1.0"
+requires-python = ">=3.13"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "mypy",
+    "ruff",
+]
+
+[tool.ruff]
+line-length = 100
+indent-width = 4
+target-version = "py313"
+fix = true
+
+[tool.ruff.lint]
+select = ["ALL"]
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.mypy]
+strict = true
+python_version = "3.13"
