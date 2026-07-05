@@ -3,6 +3,7 @@ Connection Manager + ABC: Class to handle network connections (TCP, QUIC, HTTPS,
 Protocol: crypto operations
 UI + ABC: well... the UI
 
+
 Maybes:
     File Manager: File operations
     Deaddrop Manager
