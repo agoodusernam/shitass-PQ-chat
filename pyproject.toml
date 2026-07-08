@@ -1,7 +1,7 @@
 [project]
 name = "pq-chat"
 version = "0.1.0"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 
 [dependency-groups]
 dev = [
@@ -13,7 +13,7 @@ dev = [
 [tool.ruff]
 line-length = 100
 indent-width = 4
-target-version = "py313"
+target-version = "py312"
 fix = true
 
 [tool.ruff.lint]
@@ -28,4 +28,4 @@ convention = "google"
 
 [tool.mypy]
 strict = true
-python_version = "3.13"
+python_version = "3.12"
